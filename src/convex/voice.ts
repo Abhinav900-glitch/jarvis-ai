@@ -226,7 +226,9 @@ const TTS_FALLBACK_VOICE = "Celeste";
 // TTS is unavailable (no Groq key / model terms not accepted / model error).
 // eleven_turbo_v2_5 is fast, multilingual (Hindi, Russian, Arabic, ...) and
 // cheap — a good match for the multi-country live mode. Override the voice
-// with ELEVENLABS_VOICE_ID (defaults to Rachel).
+// with ELEVENLABS_VOICE_ID. Default is Brian (deep resonant), verified to
+// work on the free plan — Rachel and other popular voices return 402
+// "paid_plan_required" for free users via the API.
 // ---------------------------------------------------------------------------
 async function speakWithElevenLabs(
   text: string,
@@ -234,7 +236,7 @@ async function speakWithElevenLabs(
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) return { audio: null, voice: "browser" };
 
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // Rachel
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || "nPczCjzI2devNBz1zQrb"; // Brian (free-plan safe)
   const clipped = text.trim().slice(0, 2500); // keep latency + cost sane
   if (!clipped) return { audio: null, voice: "browser" };
 
