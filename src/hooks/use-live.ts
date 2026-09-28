@@ -7,20 +7,24 @@ import { getCountry } from "@/lib/languages";
 // useLiveMode — hands-free voice conversation (ChatGPT / Gemini Live style)
 //
 // Architecture (fully free stack, per the Groq voice pipeline):
-//   1. Hearing: MediaRecorder captures your voice → Groq Whisper
-//      (whisper-large-v3) transcribes it in milliseconds. Multilingual —
+//   1. Hearing: the mic runs continuously. Voice activity detection waits for
+//      you to *start* speaking, then for you to *finish* (a short pause) —
+//      only then is the clip cut and sent to Groq Whisper
+//      (whisper-large-v3) for a near-instant transcript. Multilingual —
 //      Hindi, Russian, Arabic, and 90+ languages, guided by the selected
 //      country.
 //   2. Thinking: the transcript goes through the normal chat pipeline
 //      (Groq LLM with automatic fallback).
-//   3. Speaking: the reply is spoken via Web Speech API (browser-native,
-//      free) with a voice matched to the selected country's language.
+//   3. Speaking: the reply is spoken via ElevenLabs / Groq neural TTS, then
+//      the browser's Web Speech voice, with a voice matched to the selected
+//      country's language.
 //
 // Extras:
 //   • Barge-in / natural interruption: mic volume is monitored while Jarvis
 //     talks — if you speak over him, speech is cancelled instantly and he
 //     listens again.
-//   • Auto-restart: after each reply, listening resumes automatically.
+//   • Auto-restart: after each reply, listening resumes automatically, so the
+//     conversation keeps flowing hands-free.
 // ---------------------------------------------------------------------------
 
 export interface LiveMode {
@@ -33,6 +37,8 @@ export interface LiveMode {
   error: string | null;
   start: () => void;
   stop: () => void;
+  /** Skip the reply currently being spoken and listen again immediately. */
+  skipSpeaking: () => void;
   /** Feed Jarvis's reply text — spoken aloud, then listening resumes. */
   deliverReply: (text: string) => void;
 }
@@ -44,6 +50,16 @@ export interface LiveMode {
 export type LiveTurnHandler = (audio: Blob, countryCode: string) => Promise<string>;
 
 const SILENCE_DB = 0.045; // RMS threshold for barge-in detection
+
+// --- Turn endpointing -------------------------------------------------------
+// This is what makes live mode behave like a ChatGPT / Gemini voice call: the
+// mic never stops, we wait for you to begin a statement, then wait for you to
+// finish it, and only then cut the clip and send it for transcription. Without
+// it the recorder would run forever and Jarvis would never get a turn.
+const SPEECH_RMS = 0.022; // above this level the user counts as speaking
+const TURN_END_SILENCE_MS = 750; // pause in speech that ends the turn
+const MIN_SPEECH_MS = 350; // ignore blips shorter than this (cough, door)
+const MAX_TURN_MS = 20_000; // hard cap so a monologue can't record forever
 
 export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveMode {
   const [active, setActive] = useState(false);
@@ -73,6 +89,12 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   const silenceStartRef = useRef<number | null>(null);
   const bargeInRef = useRef(false);
   const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Voice-activity state for turn endpointing
+  const speechStartRef = useRef<number | null>(null);
+  const quietStartRef = useRef<number | null>(null);
+  // stopRecording is declared after the level monitor, so the monitor calls
+  // it through a ref to avoid a stale closure.
+  const stopRecordingRef = useRef<() => void>(() => {});
 
   /** Stop Groq-TTS audio playback instantly (barge-in / session end). */
   const stopTtsAudio = useCallback(() => {
@@ -90,7 +112,11 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   const country = getCountry(countryCode);
 
   // ------------------------------------------------------------------
-  // Mic level monitoring + barge-in (interrupt Jarvis by speaking)
+  // Mic level monitoring
+  //   • while speaking → barge-in (interrupt Jarvis by talking over him)
+  //   • while listening → voice-activity turn endpointing: detect that the
+  //     user started a statement, and cut the clip once they pause at the end
+  //     of it, so Whisper transcribes the complete thought.
   // ------------------------------------------------------------------
   const startLevelMonitor = useCallback(() => {
     const analyser = analyserRef.current;
@@ -105,8 +131,8 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
       const rms = Math.sqrt(sum / buf.length);
       setLevel(Math.min(1, rms * 6));
 
-      // While Jarvis speaks, watch for the user talking over him
       if (speakingRef.current) {
+        // While Jarvis speaks, watch for the user talking over him
         if (rms > SILENCE_DB) {
           if (silenceStartRef.current === null) {
             silenceStartRef.current = Date.now();
@@ -118,6 +144,26 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
           }
         } else {
           silenceStartRef.current = null;
+        }
+      } else if (recorderRef.current?.state === "recording") {
+        // Listening: track speech start / end to close the turn.
+        if (rms > SPEECH_RMS) {
+          if (speechStartRef.current === null) speechStartRef.current = Date.now();
+          quietStartRef.current = null; // still talking — reset the pause timer
+        } else if (speechStartRef.current !== null) {
+          if (quietStartRef.current === null) {
+            quietStartRef.current = Date.now();
+          } else if (Date.now() - quietStartRef.current > TURN_END_SILENCE_MS) {
+            // The user paused after speaking → end of turn, send it.
+            stopRecordingRef.current();
+          }
+        }
+        // Hard cap so a long monologue can't record forever.
+        if (
+          speechStartRef.current !== null &&
+          Date.now() - speechStartRef.current > MAX_TURN_MS
+        ) {
+          stopRecordingRef.current();
         }
       }
       levelRafRef.current = requestAnimationFrame(tick);
@@ -139,6 +185,8 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   const startRecording = useCallback(() => {
     const stream = streamRef.current;
     if (!stream || speakingRef.current || processingRef.current || !activeRef.current) return;
+    // Never stack two recorders on the same stream.
+    if (recorderRef.current?.state === "recording") return;
 
     try {
       const mime = MediaRecorder.isTypeSupported("audio/webm")
@@ -154,8 +202,14 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
       rec.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
         chunksRef.current = [];
-        if (blob.size < 3000 || !activeRef.current) {
-          // too short / stopped — resume listening
+        const spokeMs = speechStartRef.current ? Date.now() - speechStartRef.current : 0;
+        // Reset endpointing state for the next turn.
+        speechStartRef.current = null;
+        quietStartRef.current = null;
+
+        // Reject clips that held no real speech (a blip, or a recorder we cut
+        // off before the user said anything) and just keep listening.
+        if (blob.size < 1500 || spokeMs < MIN_SPEECH_MS || !activeRef.current) {
           window.setTimeout(() => startRecording(), 300);
           return;
         }
@@ -177,6 +231,8 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
       };
       rec.start();
       recorderRef.current = rec;
+      speechStartRef.current = null;
+      quietStartRef.current = null;
       setListening(true);
       setError(null);
     } catch {
@@ -190,6 +246,9 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
     }
     setListening(false);
   }, []);
+
+  // The level monitor (declared above) closes turns by calling this.
+  stopRecordingRef.current = stopRecording;
 
   // ------------------------------------------------------------------
   // Speak a reply via browser TTS with a country-matched voice
@@ -370,6 +429,18 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
     }
   }, [startLevelMonitor, startRecording]);
 
+  /** Skip the current spoken reply and go straight back to listening. */
+  const skipSpeaking = useCallback(() => {
+    if (!activeRef.current) return;
+    bargeInRef.current = false;
+    speakingRef.current = false;
+    setSpeaking(false);
+    window.speechSynthesis?.cancel();
+    stopTtsAudio(); // server TTS (ElevenLabs / Groq) audio buffer
+    if (processingRef.current) return;
+    window.setTimeout(() => startRecording(), 150);
+  }, [stopTtsAudio, startRecording]);
+
   const deliverReply = useCallback(
     (text: string) => {
       if (!activeRef.current) return;
@@ -403,5 +474,16 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
     [],
   );
 
-  return { active, listening, speaking, processing, level, error, start, stop, deliverReply };
+  return {
+    active,
+    listening,
+    speaking,
+    processing,
+    level,
+    error,
+    start,
+    stop,
+    skipSpeaking,
+    deliverReply,
+  };
 }

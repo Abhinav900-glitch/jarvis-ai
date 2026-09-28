@@ -7,19 +7,25 @@
 // the `transcript` prop (live user speech + last Jarvis reply text).
 // ---------------------------------------------------------------------------
 
+import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { SkipForward, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type HudPhase = "listening" | "processing" | "speaking" | "idle";
 
+export interface LiveTurn {
+  user: string;
+  assistant: string;
+}
+
 export interface JarvisHudProps {
   open: boolean;
   phase: HudPhase;
   /** 0..1 live mic level — drives the orb pulse + waveform bars */
   level: number;
-  /** Most recent live exchange shown as a caption at the bottom */
-  transcript: { user: string; assistant: string } | null;
+  /** Rolling conversation log, oldest first — mirrors a ChatGPT voice call */
+  transcript: LiveTurn[];
   /** Selected country/language name for the HUD readout */
   language: string;
   onStop: () => void;
@@ -82,6 +88,44 @@ function Waveform({ level, phase }: { level: number; phase: HudPhase }) {
           />
         );
       })}
+    </div>
+  );
+}
+
+/** ChatGPT-call style caption log: you on the right, Jarvis answering below. */
+function ConversationLog({ turns }: { turns: LiveTurn[] }) {
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [turns.length, turns[turns.length - 1]?.assistant]);
+
+  if (turns.length === 0) {
+    return (
+      <p className="text-center text-sm text-cyan-100/50">
+        Go ahead — I&rsquo;m listening.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {turns.map((turn, i) => (
+        <div key={i} className="space-y-1.5">
+          {turn.user && (
+            <p className="ml-auto max-w-[85%] rounded-2xl rounded-br-sm border border-cyan-400/20 bg-cyan-400/10 px-3.5 py-2 text-sm leading-6 text-cyan-50/90">
+              {turn.user}
+            </p>
+          )}
+          {turn.assistant && (
+            <p className="line-clamp-3 max-w-[92%] text-sm leading-6 text-cyan-100/80">
+              <span className="font-semibold tracking-wide text-cyan-300/90">JARVIS</span>{" "}
+              {turn.assistant}
+            </p>
+          )}
+        </div>
+      ))}
+      <div ref={endRef} />
     </div>
   );
 }
@@ -155,27 +199,20 @@ export function JarvisHud({
         </div>
 
         {/* Status readout */}
-        <div className="absolute bottom-16 left-0 right-0 flex flex-col items-center gap-3">
+        <div className="absolute bottom-14 left-0 right-0 flex flex-col items-center gap-3">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.35em] text-cyan-200">
             <span className="inline-block h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.9)] jarvis-hud-blink" />
             {STATUS_LABELS[phase]}
             <span className="inline-block h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.9)] jarvis-hud-blink" />
           </div>
           <Waveform level={level} phase={phase} />
-          {transcript && (
-            <div className="mx-auto max-w-xl px-6 text-center">
-              {transcript.user && (
-                <p className="text-sm text-cyan-100/90">
-                  <span className="font-semibold text-cyan-300">You:</span> {transcript.user}
-                </p>
-              )}
-              {transcript.assistant && (
-                <p className="mt-1 line-clamp-2 text-sm text-foreground/80">
-                  <span className="font-semibold text-cyan-300/70">Jarvis:</span> {transcript.assistant}
-                </p>
-              )}
-            </div>
-          )}
+        </div>
+      </div>
+
+      {/* Conversation log — sits below the orb, above the status readout */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-40 top-24 mx-auto max-w-2xl px-6">
+        <div className="flex h-full flex-col justify-end overflow-y-auto pb-2">
+          <ConversationLog turns={transcript} />
         </div>
       </div>
 

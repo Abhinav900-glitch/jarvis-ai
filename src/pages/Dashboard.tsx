@@ -46,7 +46,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { JarvisIcon } from "@/components/jarvis-icon";
-import { JarvisHud, type HudPhase } from "@/components/jarvis-hud";
+import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud";
 import { JarvisOrb } from "@/components/jarvis-orb";
 import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage, looksLikeMathOrMarkdown } from "@/components/markdown-message";
@@ -742,15 +742,16 @@ export default function Dashboard() {
 
   // ---- Live mode: Whisper STT → chat pipeline → spoken reply ----
   const liveTurnRef = useRef<(text: string) => Promise<void>>(async () => {});
-  // Transcript shown on the full-screen JARVIS HUD
-  const [liveTranscript, setLiveTranscript] = useState<{ user: string; assistant: string } | null>(null);
+  // Rolling conversation shown on the full-screen JARVIS HUD (live voice call)
+  const [liveTranscript, setLiveTranscript] = useState<LiveTurn[]>([]);
   const live = useLiveMode(
     async (audio: Blob, country: string) => {
       const lang = getCountry(country).language;
       const bytes = await audio.arrayBuffer();
       const { text } = await transcribeWhisperAction({ audio: bytes, language: lang });
       if (!text) return "";
-      setLiveTranscript((t) => ({ user: text, assistant: t?.assistant ?? "" }));
+      // The user finished a statement → caption it immediately, then answer.
+      setLiveTranscript((t) => [...t.slice(-5), { user: text, assistant: "" }]);
       await liveTurnRef.current(text);
       return text;
     },
@@ -766,7 +767,13 @@ export default function Dashboard() {
       spokenReplyRef.current !== last._id
     ) {
       spokenReplyRef.current = last._id;
-      setLiveTranscript((t) => ({ user: t?.user ?? "", assistant: last.content }));
+      setLiveTranscript((turns) => {
+        const next = turns.slice();
+        const open = next[next.length - 1];
+        if (open && !open.assistant) next[next.length - 1] = { ...open, assistant: last.content };
+        else next.push({ user: "", assistant: last.content });
+        return next.slice(-5);
+      });
       live.deliverReply(last.content);
     }
   }, [messages, sending, live]);
@@ -3205,9 +3212,9 @@ export default function Dashboard() {
         language={getCountry(countryCode).name}
         onStop={() => {
           live.stop();
-          setLiveTranscript(null);
+          setLiveTranscript([]);
         }}
-        onSkip={() => window.speechSynthesis?.cancel()}
+        onSkip={() => live.skipSpeaking()}
       />
     </TooltipProvider>
   );
