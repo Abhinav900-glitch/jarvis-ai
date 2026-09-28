@@ -1,0 +1,21 @@
+# ---------------------------------------------------------------------------
+# Optional GPU acceleration.
+#
+#   pip install -r requirements-gpu.txt
+#
+# On an NVIDIA GPU this moves Whisper to float16/CUDA, which is the single
+# biggest latency win in the pipeline. The LLM is served separately (llama.cpp
+# or vLLM) and is not listed here.
+# ---------------------------------------------------------------------------
+
+# CUDA build of ctranslate2 for faster-whisper.
+# Install from the official wheel index, not PyPI:
+#   pip install nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*
+#   pip install ctranslate2 --extra-index-url https://pypi.nvidia.com
+ctranslate2>=4.4
+
+# Torch-backed Silero (only needed if you prefer the JIT model over ONNX).
+# torch>=2.2
+
+# Optional: ORT CUDA provider for onnxruntime.
+# onnxruntime-gpu>=1.17
