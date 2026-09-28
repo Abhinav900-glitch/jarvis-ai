@@ -58,7 +58,11 @@ const SILENCE_DB = 0.045; // RMS threshold for barge-in detection
 // it the recorder would run forever and Jarvis would never get a turn.
 const SPEECH_RMS = 0.022; // above this level the user counts as speaking
 const TURN_END_SILENCE_MS = 750; // pause in speech that ends the turn
-const MIN_SPEECH_MS = 350; // ignore blips shorter than this (cough, door)
+// Short utterances matter: "hello", "thanks", "yes" are real turns. Gate on
+// genuine *voiced* time (not wall clock, which would include the trailing
+// pause) so a one-word greeting is accepted while blips still are not.
+const MIN_VOICED_MS = 180; // ignore blips shorter than this (cough, door)
+const MIN_CLIP_BYTES = 500; // floor for a decodable webm frame
 const MAX_TURN_MS = 20_000; // hard cap so a monologue can't record forever
 
 export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveMode {
@@ -91,6 +95,7 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
   // Voice-activity state for turn endpointing
   const speechStartRef = useRef<number | null>(null);
+  const lastLoudRef = useRef<number | null>(null);
   const quietStartRef = useRef<number | null>(null);
   // stopRecording is declared after the level monitor, so the monitor calls
   // it through a ref to avoid a stale closure.
@@ -148,7 +153,9 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
       } else if (recorderRef.current?.state === "recording") {
         // Listening: track speech start / end to close the turn.
         if (rms > SPEECH_RMS) {
-          if (speechStartRef.current === null) speechStartRef.current = Date.now();
+          const now = Date.now();
+          if (speechStartRef.current === null) speechStartRef.current = now;
+          lastLoudRef.current = now; // most recent voiced frame
           quietStartRef.current = null; // still talking — reset the pause timer
         } else if (speechStartRef.current !== null) {
           if (quietStartRef.current === null) {
@@ -202,14 +209,21 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
       rec.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
         chunksRef.current = [];
-        const spokeMs = speechStartRef.current ? Date.now() - speechStartRef.current : 0;
+        // Voiced time = last loud frame - first loud frame. Using the wall
+        // clock here would fold the trailing pause into the number and let
+        // every blip through, which is why short greetings were unreliable.
+        const voicedMs =
+          speechStartRef.current && lastLoudRef.current
+            ? lastLoudRef.current - speechStartRef.current
+            : 0;
         // Reset endpointing state for the next turn.
         speechStartRef.current = null;
+        lastLoudRef.current = null;
         quietStartRef.current = null;
 
         // Reject clips that held no real speech (a blip, or a recorder we cut
         // off before the user said anything) and just keep listening.
-        if (blob.size < 1500 || spokeMs < MIN_SPEECH_MS || !activeRef.current) {
+        if (blob.size < MIN_CLIP_BYTES || voicedMs < MIN_VOICED_MS || !activeRef.current) {
           window.setTimeout(() => startRecording(), 300);
           return;
         }
@@ -232,6 +246,7 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
       rec.start();
       recorderRef.current = rec;
       speechStartRef.current = null;
+      lastLoudRef.current = null;
       quietStartRef.current = null;
       setListening(true);
       setError(null);

@@ -178,6 +178,12 @@ export const transcribeWhisper = action({
     form.append("model", "whisper-large-v3");
     form.append("response_format", "json");
     form.append("temperature", "0");
+    // Bias short clips toward real speech instead of Whisper's usual
+    // hallucinated filler, and keep greetings transcribed as greetings.
+    form.append(
+      "prompt",
+      "Live voice assistant session. The user says short utterances to a voice assistant, such as: hello, hi, thanks, yes, no, stop, what is the weather, tell me a joke.",
+    );
     if (args.language) {
       form.append("language", args.language);
     }
@@ -196,8 +202,10 @@ export const transcribeWhisper = action({
     }
 
     const data = (await res.json()) as { text?: string; language?: string };
+    // An empty transcript is a valid outcome for a very short clip — the live
+    // loop just resumes listening. Throwing here surfaced a red error for
+    // ordinary quiet utterances like a soft "hello".
     const text = (data.text ?? "").trim();
-    if (!text) throw new Error("No speech detected.");
     return { text, language: data.language ?? args.language ?? "en" };
   },
 });
