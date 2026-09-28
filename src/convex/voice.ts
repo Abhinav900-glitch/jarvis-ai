@@ -225,18 +225,55 @@ const TTS_FALLBACK_VOICE = "Celeste";
 // Activates automatically when ELEVENLABS_API_KEY is set (Keys tab) and Groq
 // TTS is unavailable (no Groq key / model terms not accepted / model error).
 // eleven_turbo_v2_5 is fast, multilingual (Hindi, Russian, Arabic, ...) and
-// cheap — a good match for the multi-country live mode. Override the voice
-// with ELEVENLABS_VOICE_ID. Default is Brian (deep resonant), verified to
-// work on the free plan — Rachel and other popular voices return 402
-// "paid_plan_required" for free users via the API.
+// cheap — a good match for the multi-country live mode.
+//
+// Voice selection order: ELEVENLABS_VOICE (name or id) → ELEVENLABS_VOICE_ID
+// → the voice passed by the client → ELEVENLABS_DEFAULT_VOICE.
+//
+// Every id below was verified to return real audio on a free plan. Rachel and
+// other popular voices return 402 "paid_plan_required" for free users via the
+// API, so they are intentionally absent.
 // ---------------------------------------------------------------------------
+const ELEVENLABS_VOICES: Record<string, string> = {
+  brian: "nPczCjzI2devNBz1zQrb", // deep, resonant — Jarvis default
+  sarah: "EXAVITQu4vr4xnSDxMaL", // mature, reassuring, confident
+  daniel: "onwK4e9ZLuTAKqWW03F9", // steady broadcaster
+  adam: "pNInz6obpgDQGcFmaJgB", // dominant, firm
+  roger: "CwhRBWXzGAHq8TQ4Fs17", // laid-back, casual
+  chris: "iP95p4xoKVk53GoZ742B", // charming, down-to-earth
+  alice: "Xb7hH8MSUJpSbSDYk0k2", // clear, engaging educator
+  george: "JBFqnCBsd6RMkjVDRZzb", // warm, captivating storyteller
+  matilda: "XrExE9yKIg1WjnnlVkGX", // knowledgeable, professional
+  river: "SAz9YHcvj6GT2YYXdXww", // relaxed, neutral, informative
+};
+
+const ELEVENLABS_DEFAULT_VOICE = "brian";
+
+/** Resolve a voice name ("sarah") or raw ElevenLabs voice id to an id. */
+function resolveElevenLabsVoice(requested?: string): string {
+  for (const candidate of [
+    process.env.ELEVENLABS_VOICE,
+    process.env.ELEVENLABS_VOICE_ID,
+    requested,
+  ]) {
+    const value = candidate?.trim();
+    if (!value) continue;
+    const named = ELEVENLABS_VOICES[value.toLowerCase()];
+    if (named) return named;
+    // A raw ElevenLabs voice id is a 20-char alphanumeric token.
+    if (/^[a-zA-Z0-9]{20}$/.test(value)) return value;
+  }
+  return ELEVENLABS_VOICES[ELEVENLABS_DEFAULT_VOICE];
+}
+
 async function speakWithElevenLabs(
   text: string,
+  preferredVoice?: string,
 ): Promise<{ audio: ArrayBuffer | null; voice: string }> {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) return { audio: null, voice: "browser" };
 
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || "nPczCjzI2devNBz1zQrb"; // Brian (free-plan safe)
+  const voiceId = resolveElevenLabsVoice(preferredVoice);
   const clipped = text.trim().slice(0, 2500); // keep latency + cost sane
   if (!clipped) return { audio: null, voice: "browser" };
 
@@ -282,7 +319,7 @@ export const speak = action({
     if (userId === null) throw new Error("Sign in to use speech output.");
 
     const key = process.env.GROQ_API_KEY;
-    if (!key) return speakWithElevenLabs(args.text);
+    if (!key) return speakWithElevenLabs(args.text, args.voice);
 
     const voice = TTS_VOICES.includes((args.voice ?? "") as never)
       ? (args.voice as string)
@@ -319,7 +356,7 @@ export const speak = action({
       }
       // Graceful: try ElevenLabs next; the client falls back to browser TTS
       // only when every server provider is unavailable (no user-facing error).
-      return speakWithElevenLabs(text);
+      return speakWithElevenLabs(text, args.voice);
     }
 
     const audioBuffer = await res.arrayBuffer();
