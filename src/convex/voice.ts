@@ -5,6 +5,7 @@ import { action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internal as internalApi } from "./_generated/api";
 import { sanitizeForSpeech } from "../lib/speech";
+import { getSarvamLanguage, isIndicLangTag } from "../lib/languages";
 
 const ASSEMBLYAI_BASE = "https://api.assemblyai.com";
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024; // 20 MB
@@ -317,32 +318,108 @@ async function speakWithElevenLabs(
   }
 }
 
-/**
- * Speak text aloud. TTS chain: Groq Orpheus (WAV) → ElevenLabs (MP3) →
- * browser speech synthesis. Returns audio bytes when a server model is
- * available, or { audio: null } when none is — the client falls back to the
- * browser's built-in speech synthesis in that case (no user-facing error).
- */
-export const speak = action({
-  args: { text: v.string(), voice: v.optional(v.string()) },
-  handler: async (ctx, args): Promise<{ audio: ArrayBuffer | null; voice: string }> => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use speech output.");
+// ---------------------------------------------------------------------------
+// Sarvam TTS — the Indic-language fallback (and first choice for them).
+//
+// Groq's Orpheus model is English-only and ElevenLabs is multilingual but
+// generic, so for Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, Kannada,
+// Malayalam, Punjabi and Odia, Sarvam's Bulbul models are the only provider
+// here that actually speaks the language natively. Sarvam is therefore tried
+// FIRST for those languages and LAST for everything else.
+// ---------------------------------------------------------------------------
 
-    const key = process.env.GROQ_API_KEY;
-    if (!key) return speakWithElevenLabs(args.text, args.voice);
+/** Bulbul v3 caps input at 2500 characters. */
+const SARVAM_MAX_CHARS = 2500;
 
-    const voice = TTS_VOICES.includes((args.voice ?? "") as never)
-      ? (args.voice as string)
-      : TTS_FALLBACK_VOICE;
+/** Documented default voice for bulbul:v3. */
+const SARVAM_DEFAULT_SPEAKER = "shubh";
 
-    // TTS models cap input at 10K characters — and nothing markup-shaped
-    // should ever be read aloud (headings, tables, LaTeX, code, URLs).
-    const text = sanitizeForSpeech(args.text, 4000);
-    if (!text) return { audio: null, voice: "browser" };
+/** Decode the base64 WAV Sarvam returns into raw bytes. */
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
 
-    // playai-tts was decommissioned by Groq; canopylabs/orpheus-v1-english is
-    // the current model (requires one-time org terms acceptance on the key).
+async function speakWithSarvam(
+  text: string,
+  langTag?: string,
+  preferredSpeaker?: string,
+): Promise<{ audio: ArrayBuffer | null; voice: string }> {
+  const apiKey = process.env.SARVAM_API_KEY;
+  if (!apiKey) return { audio: null, voice: "browser" };
+
+  // Sarvam only serves eleven languages; skip the request entirely for the
+  // rest rather than spending latency on a guaranteed 422.
+  const languageCode = getSarvamLanguage(langTag);
+  if (!languageCode) return { audio: null, voice: "browser" };
+
+  const clipped = sanitizeForSpeech(text, SARVAM_MAX_CHARS);
+  if (!clipped) return { audio: null, voice: "browser" };
+
+  const speaker = (
+    preferredSpeaker ??
+    process.env.SARVAM_SPEAKER ??
+    SARVAM_DEFAULT_SPEAKER
+  )
+    .trim()
+    .toLowerCase();
+
+  try {
+    const res = await fetch("https://api.sarvam.ai/text-to-speech", {
+      method: "POST",
+      headers: {
+        "api-subscription-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        text: clipped,
+        language_code: languageCode,
+        model: "bulbul:v3",
+        speaker,
+        output_audio_codec: "wav",
+        speech_sample_rate: "24000",
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      // Sarvam returns 403 (not 401) for a bad or missing key.
+      const errText = await res.text().catch(() => "");
+      console.error("Sarvam TTS error", res.status, errText.slice(0, 300));
+      return { audio: null, voice: "browser" };
+    }
+
+    const data = (await res.json()) as { audios?: string[] };
+    const encoded = data.audios?.[0];
+    if (!encoded) return { audio: null, voice: "browser" };
+
+    return {
+      audio: base64ToArrayBuffer(encoded),
+      voice: `sarvam:${languageCode}/${speaker}`,
+    };
+  } catch (err) {
+    console.error("Sarvam TTS failed:", err instanceof Error ? err.message : err);
+    return { audio: null, voice: "browser" };
+  }
+}
+
+/** Groq PlayAI / Orpheus — fast neural English voice. */
+async function speakWithGroq(
+  text: string,
+  requestedVoice?: string,
+): Promise<{ audio: ArrayBuffer | null; voice: string }> {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) return { audio: null, voice: "browser" };
+
+  const voice = TTS_VOICES.includes((requestedVoice ?? "") as never)
+    ? (requestedVoice as string)
+    : TTS_FALLBACK_VOICE;
+
+  // playai-tts was decommissioned by Groq; canopylabs/orpheus-v1-english is
+  // the current model (requires one-time org terms acceptance on the key).
+  try {
     const res = await fetch("https://api.groq.com/openai/v1/audio/speech", {
       method: "POST",
       headers: {
@@ -361,18 +438,64 @@ export const speak = action({
       const errText = await res.text().catch(() => "");
       if (errText.includes("model_terms_required")) {
         console.error(
-          "Groq TTS needs one-time activation: accept the orpheus-v1-english model terms at console.groq.com (client falls back to browser voice).",
+          "Groq TTS needs one-time activation: accept the orpheus-v1-english model terms at console.groq.com (trying the next provider).",
         );
       } else {
         console.error("Groq TTS error", res.status, errText);
       }
-      // Graceful: try ElevenLabs next; the client falls back to browser TTS
-      // only when every server provider is unavailable (no user-facing error).
-      return speakWithElevenLabs(text, args.voice);
+      return { audio: null, voice: "browser" };
     }
 
-    const audioBuffer = await res.arrayBuffer();
-    return { audio: audioBuffer, voice };
+    return { audio: await res.arrayBuffer(), voice };
+  } catch (err) {
+    console.error("Groq TTS failed:", err instanceof Error ? err.message : err);
+    return { audio: null, voice: "browser" };
+  }
+}
+
+/**
+ * Speak text aloud. TTS chain: Sarvam (Indic) → Groq Orpheus → ElevenLabs →
+ * Sarvam (as the general last resort) → the client's browser voice.
+ *
+ * Returns audio bytes from the first provider that answers, or { audio: null }
+ * when none is available — the client then falls back to the browser's speech
+ * synthesis, so a provider outage is never a user-facing error.
+ */
+export const speak = action({
+  args: {
+    text: v.string(),
+    voice: v.optional(v.string()),
+    /** BCP-47 tag of the selected region, e.g. "hi-IN". Picks the Sarvam voice. */
+    langTag: v.optional(v.string()),
+    /** Sarvam speaker name; defaults to the environment, then to "shubh". */
+    speaker: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<{ audio: ArrayBuffer | null; voice: string }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use speech output.");
+
+    // Nothing markup-shaped should ever be read aloud (headings, tables,
+    // LaTeX, code, URLs) — the providers get prose, not the raw reply.
+    const text = sanitizeForSpeech(args.text, 4000);
+    if (!text) return { audio: null, voice: "browser" };
+
+    const sarvam = () => speakWithSarvam(text, args.langTag, args.speaker);
+    const groq = () => speakWithGroq(text, args.voice);
+    const eleven = () => speakWithElevenLabs(text, args.voice);
+
+    // Indic languages go to Sarvam first — sending Hindi to an English-only
+    // model produces accented nonsense. For every other language Sarvam is
+    // the final fallback, after the two general-purpose providers.
+    const chain = isIndicLangTag(args.langTag)
+      ? [sarvam, eleven, groq]
+      : [groq, eleven, sarvam];
+
+    for (const provider of chain) {
+      const result = await provider();
+      if (result.audio) return result;
+    }
+
+    return { audio: null, voice: "browser" };
   },
 });
 

@@ -1758,7 +1758,10 @@ export default function Dashboard() {
     player.setLoadingId(id);
     setAssistantError(null);
     try {
-      const { audio } = await speakAction({ text: content });
+      const { audio } = await speakAction({
+        text: content,
+        langTag: getCountry(countryCode).langTag,
+      });
       if (audio) {
         player.play(id, audio);
       } else {

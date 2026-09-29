@@ -381,7 +381,12 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
         try {
           // Primary: server TTS (Groq Orpheus → ElevenLabs). Returns null audio
           // when no provider is available — falls back to the browser voice.
-          const { audio } = await speakTts({ text: spoken });
+          // langTag picks the Sarvam voice for Indic regions; the server
+          // reorders the provider chain around it.
+          const { audio } = await speakTts({
+            text: spoken,
+            langTag: getCountry(countryRef.current).langTag,
+          });
           if (bargeInRef.current || !activeRef.current) {
             finish();
             return;

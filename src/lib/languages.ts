@@ -175,6 +175,53 @@ export const COUNTRIES: CountryConfig[] = [
 
 export const DEFAULT_COUNTRY = "IN";
 
+// ---------------------------------------------------------------------------
+// Sarvam TTS language mapping
+//
+// Sarvam's Bulbul models cover eleven languages: ten Indic ones plus en-IN.
+// It is the only provider in the voice chain that speaks those languages
+// natively, so it is tried first for them and acts as the last-resort
+// fallback everywhere else.
+// ---------------------------------------------------------------------------
+
+/** Language codes the Sarvam TTS API accepts. */
+export const SARVAM_LANGUAGES = [
+  "bn-IN", "en-IN", "gu-IN", "hi-IN", "kn-IN", "ml-IN",
+  "mr-IN", "od-IN", "pa-IN", "ta-IN", "te-IN",
+] as const;
+
+/** Bare ISO codes that Sarvam serves with the Indian regional voice. */
+const SARVAM_INDIC = new Set([
+  "bn", "gu", "hi", "kn", "ml", "mr", "od", "pa", "ta", "te",
+]);
+
+/** The base language code of a BCP-47 tag ("hi-IN" → "hi"). */
+function baseLanguage(langTag: string | null | undefined): string {
+  return (langTag ?? "").trim().toLowerCase().split(/[-_]/)[0];
+}
+
+/**
+ * The Sarvam language_code for a BCP-47 tag, or null when Sarvam does not
+ * serve that language at all (Arabic, Russian, Japanese, …) — in which case
+ * the caller should skip the provider instead of burning a request.
+ */
+export function getSarvamLanguage(langTag: string | null | undefined): string | null {
+  const tag = (langTag ?? "").trim();
+  if ((SARVAM_LANGUAGES as readonly string[]).includes(tag)) return tag;
+
+  const base = baseLanguage(tag);
+  if (!base) return null;
+  if (SARVAM_INDIC.has(base)) return `${base}-IN`;
+  // English from anywhere maps onto Sarvam's Indian English voice.
+  if (base === "en") return "en-IN";
+  return null;
+}
+
+/** True when a tag needs Sarvam to sound right (any non-English Indic language). */
+export function isIndicLangTag(langTag: string | null | undefined): boolean {
+  return SARVAM_INDIC.has(baseLanguage(langTag));
+}
+
 export function getCountry(code: string | null | undefined): CountryConfig {
   return (
     COUNTRIES.find((c) => c.code === code) ??
