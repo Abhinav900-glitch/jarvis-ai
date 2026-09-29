@@ -22,23 +22,28 @@ export function useVoiceRecorder(onDone: (audio: Blob) => void): VoiceRecorder {
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const onDoneRef = useRef(onDone);
-  onDoneRef.current = onDone;
 
-  const clearTimer = () => {
+  // Synced after commit, never during render — the recorder's `onstop` handler
+  // is long-lived and must always call the newest callback.
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
+
+  const releaseResources = useCallback(() => {
     if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
-  };
-
-  const cleanup = () => {
-    clearTimer();
     recorderRef.current?.stream.getTracks().forEach((t) => t.stop());
     recorderRef.current = null;
     chunksRef.current = [];
+  }, []);
+
+  const cleanup = useCallback(() => {
+    releaseResources();
     setRecording(false);
     setSeconds(0);
-  };
+  }, [releaseResources]);
 
   const stop = useCallback(() => {
     if (recorderRef.current?.state === "recording") {
@@ -47,7 +52,7 @@ export function useVoiceRecorder(onDone: (audio: Blob) => void): VoiceRecorder {
     } else {
       cleanup();
     }
-  }, []);
+  }, [cleanup]);
 
   const start = useCallback(async () => {
     setError(null);
@@ -95,9 +100,11 @@ export function useVoiceRecorder(onDone: (audio: Blob) => void): VoiceRecorder {
     } catch {
       setError("Microphone access denied or unavailable.");
     }
-  }, []);
+  }, [cleanup]);
 
-  useEffect(() => cleanup, []);
+  // Unmount releases the mic. Deliberately not `cleanup`: setting state on an
+  // unmounting component is pointless work.
+  useEffect(() => releaseResources, [releaseResources]);
 
   return { recording, seconds, error, start, stop };
 }

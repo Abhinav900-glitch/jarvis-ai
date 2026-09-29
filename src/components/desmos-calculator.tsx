@@ -185,7 +185,7 @@ export function expressionToTex(src: string): string {
   tex = tex.replace(/\|([^|]+)\|/g, "\\left|$1\\right|");
   tex = replaceBalanced(tex, "abs", (a) => `\\left|${a}\\right|`);
   tex = tex.replace(FUNCTION_NAME_RE, "\\$1");
-  tex = tex.replace(/\<=/g, "\\le").replace(/>=/g, "\\ge");
+  tex = tex.replace(/<=/g, "\\le").replace(/>=/g, "\\ge");
   tex = braceScripts(tex);
   tex = tex.replace(/\(/g, "\\left(").replace(/\)/g, "\\right)");
   tex = tex.replace(/\*/g, "\\cdot ");
@@ -282,6 +282,9 @@ export function DesmosCalculator({ source }: { source: string }) {
   const [showExprs, setShowExprs] = useState(false);
   const [liveExpressions, setLiveExpressions] = useState<string[]>([]);
 
+  // Loading the Desmos API is inherently asynchronous, so the status starts
+  // out wrong and is corrected here.
+  /* eslint-disable react-hooks/set-state-in-effect -- async load, unavoidable */
   useEffect(() => {
     let destroyed = false;
 
@@ -432,6 +435,7 @@ export function DesmosCalculator({ source }: { source: string }) {
       calcRef.current = null;
     };
   }, [config, spec.mode, spec.zoom, spec.expressions]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Desmos-canonical LaTeX once available; falls back to the parsed list.
   const exprList = liveExpressions.length > 0 ? liveExpressions : spec.expressions;

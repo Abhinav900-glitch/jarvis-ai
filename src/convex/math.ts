@@ -34,7 +34,6 @@ export const linearRegression = action({
     const sumY = pts.reduce((s, p) => s + p.y, 0);
     const sumXY = pts.reduce((s, p) => s + p.x * p.y, 0);
     const sumX2 = pts.reduce((s, p) => s + p.x * p.x, 0);
-    const sumY2 = pts.reduce((s, p) => s + p.y * p.y, 0);
 
     const denom = n * sumX2 - sumX * sumX;
     if (denom === 0) throw new Error("All x-values are identical — cannot compute slope.");
@@ -472,7 +471,7 @@ function inverseMatrix(m: number[][]): number[][] {
 }
 
 function multiplyMatrices(a: number[][], b: number[][]): number[][] {
-  const rows = a.length, cols = b[0].length, inner = b.length;
+  const rows = a.length, cols = b[0].length;
   return Array.from({ length: rows }, (_, i) =>
     Array.from({ length: cols }, (_, j) =>
       Math.round(a[i].reduce((s, _, k) => s + a[i][k] * b[k][j], 0) * 10000) / 10000

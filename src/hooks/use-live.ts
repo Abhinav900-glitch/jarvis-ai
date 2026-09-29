@@ -88,21 +88,21 @@ export function useLiveMode(
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
+  // "Latest value" refs. These are read from long-lived callbacks (mic
+  // timers, media event handlers) that must not be re-created on every render,
+  // so they are synced in an effect below rather than assigned during render —
+  // assigning a ref while rendering is unsafe under concurrent rendering.
   const activeRef = useRef(false);
   const speakingRef = useRef(false);
   const processingRef = useRef(false);
   const onTurnRef = useRef(onTurn);
-  onTurnRef.current = onTurn;
   const countryRef = useRef(countryCode);
-  countryRef.current = countryCode;
   // Voice selection lives in the composer; live mode just follows it.
   const voicePrefRef = useRef(voicePref);
-  voicePrefRef.current = voicePref;
   // Live translation target. Null (the default) means "speak in the country
   // language"; a tag means the reply was translated and needs a matching
   // voice on both the server TTS call and the browser fallback.
   const speechLangRef = useRef<string | null>(speechLangTag ?? null);
-  speechLangRef.current = speechLangTag ?? null;
   const speakTts = useAction(api.voice.speak);
 
   // Recording machinery
@@ -112,7 +112,6 @@ export function useLiveMode(
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const levelRafRef = useRef<number | null>(null);
-  const levelTimerRef = useRef<number | null>(null);
   const silenceStartRef = useRef<number | null>(null);
   const bargeInRef = useRef(false);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -129,6 +128,18 @@ export function useLiveMode(
   // stopRecording is declared after the level monitor, so the monitor calls
   // it through a ref to avoid a stale closure.
   const stopRecordingRef = useRef<() => void>(() => {});
+  // Self-recursive restart: the clip handler re-arms the recorder after a
+  // blip or a finished turn, so it goes through a ref rather than closing over
+  // its own binding.
+  const startRecordingRef = useRef<() => void>(() => {});
+
+  // Keep the "latest value" refs in step with props/state after every commit.
+  useEffect(() => {
+    onTurnRef.current = onTurn;
+    countryRef.current = countryCode;
+    voicePrefRef.current = voicePref;
+    speechLangRef.current = speechLangTag ?? null;
+  });
 
   /** Stop server TTS playback instantly (barge-in / skip / session end). */
   const stopTtsAudio = useCallback(() => {
@@ -148,8 +159,6 @@ export function useLiveMode(
     ttsSettleRef.current = null;
     settle?.();
   }, []);
-
-  const country = getCountry(countryCode);
 
   /**
    * Prime audio output for the rest of the session. Must be called from inside
@@ -275,7 +284,7 @@ export function useLiveMode(
         // Reject clips that held no real speech (a blip, or a recorder we cut
         // off before the user said anything) and just keep listening.
         if (blob.size < MIN_CLIP_BYTES || voicedMs < MIN_VOICED_MS || !activeRef.current) {
-          window.setTimeout(() => startRecording(), 300);
+          window.setTimeout(() => startRecordingRef.current(), 300);
           return;
         }
         processingRef.current = true;
@@ -300,7 +309,7 @@ export function useLiveMode(
           // Resume listening after the turn completes (reply delivery also
           // triggers resume via deliverReply → utterance end)
           if (!speakingRef.current && activeRef.current) {
-            window.setTimeout(() => startRecording(), 400);
+            window.setTimeout(() => startRecordingRef.current(), 400);
           }
         }
       };
@@ -324,7 +333,13 @@ export function useLiveMode(
   }, []);
 
   // The level monitor (declared above) closes turns by calling this.
-  stopRecordingRef.current = stopRecording;
+  useEffect(() => {
+    stopRecordingRef.current = stopRecording;
+  }, [stopRecording]);
+
+  useEffect(() => {
+    startRecordingRef.current = startRecording;
+  }, [startRecording]);
 
   // ------------------------------------------------------------------
   // Speak a reply via browser TTS with a country-matched voice

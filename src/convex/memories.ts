@@ -1,6 +1,5 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { type Doc, type Id } from "./_generated/dataModel";
 
 /** Trim, dedupe-ish helper so junk never lands in the store. */

@@ -22,7 +22,7 @@ export interface CameraState {
   starting: boolean;
   error: string | null;
   /** Attach to the <video> element that should show the preview. */
-  videoRef: React.RefObject<HTMLVideoElement | null>;
+  bindVideo: (el: HTMLVideoElement | null) => void;
   /** The most recent captured frame as a data URL, or null. */
   lastFrame: string | null;
   enable: () => Promise<void>;
@@ -140,6 +140,22 @@ export function useCamera(): CameraState {
     return dataUrl;
   }, []);
 
+  // Callback ref for the preview element. Exposing a `ref` object from the
+  // hook leaked ref access into every render of the consumer, and it silently
+  // left the preview black if React mounted the <video> *after* the stream
+  // had already been granted — binding here closes that race.
+  const bindVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    const stream = streamRef.current;
+    if (!el || !stream) return;
+    el.srcObject = stream;
+    el.muted = true;
+    el.playsInline = true;
+    void el.play().catch(() => {
+      // Autoplay can still be blocked; the preview starts on its own shortly.
+    });
+  }, []);
+
   // Hard guarantee: the camera is released when the component goes away,
   // even if the user never hit the toggle off.
   useEffect(() => () => stopStream(streamRef.current), []);
@@ -148,7 +164,7 @@ export function useCamera(): CameraState {
     enabled,
     starting,
     error,
-    videoRef,
+    bindVideo,
     lastFrame,
     enable,
     disable,

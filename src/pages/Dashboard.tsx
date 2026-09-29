@@ -11,7 +11,6 @@ import {
   Camera,
   CameraOff,
   Check,
-  ChevronDown,
   Code2,
   Download,
   FileText,
@@ -73,11 +72,10 @@ import { useVoicePlayer, useVoiceRecorder } from "@/hooks/use-voice";
 import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
-import { stripWakeWord, WAKE_PHRASE } from "@/lib/wake-word";
+import { stripWakeWord } from "@/lib/wake-word";
 import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
 import {
-  DEFAULT_VOICE_PREFERENCE,
   ELEVENLABS_VOICES,
   SARVAM_SPEAKERS,
   VOICE_PREVIEW_TEXT,
@@ -86,7 +84,7 @@ import {
   saveVoicePreference,
   type VoicePreference,
 } from "@/lib/voices";
-import { COUNTRIES, getCountry, AUTHOR } from "@/lib/languages";
+import { COUNTRIES, getCountry } from "@/lib/languages";
 import { generateImageWithPuter } from "@/lib/puter";
 import {
   generateImageWithPerchance,
@@ -242,7 +240,9 @@ function NewsPanel({ items }: { items: NewsItem[] }) {
 
 // Region result card component
 function RegionResultCard({ result, onClose }: { result: Record<string, unknown>; onClose: () => void }) {
-  const Close = () => (
+  // A plain render helper, not a component: declaring it as a component inside
+  // the panel body remounted the button on every render.
+  const closeButton = (
     <button onClick={onClose} className="rounded p-0.5 text-muted-foreground hover:text-foreground"><X className="size-3" /></button>
   );
 
@@ -251,7 +251,7 @@ function RegionResultCard({ result, onClose }: { result: Record<string, unknown>
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">World Time</span>
-          <Close />
+          {closeButton}
         </div>
         <p className="text-2xl font-mono font-semibold tabular-nums">{String(result.time)}</p>
         <p className="text-xs text-muted-foreground">{String(result.dayOfWeek)}, {String(result.date)} · {String(result.timezone)} ({String(result.offset)})</p>
@@ -264,7 +264,7 @@ function RegionResultCard({ result, onClose }: { result: Record<string, unknown>
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Weather</span>
-          <Close />
+          {closeButton}
         </div>
         <div className="flex items-baseline gap-3">
           <span className="text-2xl">{String(result.icon)}</span>
@@ -281,7 +281,7 @@ function RegionResultCard({ result, onClose }: { result: Record<string, unknown>
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Currency</span>
-          <Close />
+          {closeButton}
         </div>
         <p className="text-2xl font-semibold tabular-nums">{String(result.amount)} {String(result.from)} = <span className="text-primary">{String(result.result)} {String(result.to)}</span></p>
         <p className="text-xs text-muted-foreground">1 {String(result.from)} = {String(result.rate)} {String(result.to)}</p>
@@ -294,7 +294,7 @@ function RegionResultCard({ result, onClose }: { result: Record<string, unknown>
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Country</span>
-          <Close />
+          {closeButton}
         </div>
         <div className="flex items-baseline gap-2">
           <span className="text-xl">{String(result.flag)}</span>
@@ -468,9 +468,8 @@ export default function Dashboard() {
   const [showTranslate, setShowTranslate] = useState(false);
   // Voice + translation choices, persisted so they survive a reload.
   const [voicePref, setVoicePref] = useState<VoicePreference>(
-    DEFAULT_VOICE_PREFERENCE,
+    loadVoicePreference,
   );
-  const [translateTarget, setTranslateTarget] = useState<string>("");
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   // Per-message translations, shown beneath the original reply.
   const [translations, setTranslations] = useState<
@@ -516,6 +515,20 @@ export default function Dashboard() {
     }
   });
 
+  // Live-translation target, seeded once. It lives down here because the default
+  // depends on the selected country's language.
+  const [translateTarget, setTranslateTarget] = useState<string>(() => {
+    try {
+      return (
+        localStorage.getItem("jarvis-translate-target") ||
+        getTranslateLanguage(getCountry(countryCode).langTag)?.code ||
+        "hi-IN"
+      );
+    } catch {
+      return "hi-IN";
+    }
+  });
+
   const changeCountry = (code: string) => {
     setCountryCode(code);
     const cfg = getCountry(code);
@@ -532,7 +545,15 @@ export default function Dashboard() {
   const [showCalculator, setShowCalculator] = useState(false);
   const [cloudinaryConnecting, setCloudinaryConnecting] = useState(false);
   const [showPrompts, setShowPrompts] = useState(false);
-  const [isDark, setIsDark] = useState(false);
+  // `countryCode` is already read this way, so the stored theme can be too —
+  // seeding it lazily avoids a light-mode flash before the mount effect runs.
+  const [isDark, setIsDark] = useState(() => {
+    try {
+      return localStorage.getItem("jarvis-theme") === "dark";
+    } catch {
+      return false;
+    }
+  });
   const [pdfBusy, setPdfBusy] = useState(false);
   // --- Feature panels: memory, export, camera, live translation ---
   const [showMemory, setShowMemory] = useState(false);
@@ -802,23 +823,8 @@ export default function Dashboard() {
   // ---- Live mode: Whisper STT → chat pipeline → spoken reply ----
   const sound = useSoundEffects();
 
-  // Hydrate the saved voice / translation choices after mount, and persist
-  // every change. localStorage isn't available during the first render.
-  useEffect(() => {
-    setVoicePref(loadVoicePreference());
-    try {
-      setTranslateTarget(
-        localStorage.getItem("jarvis-translate-target") ||
-          getTranslateLanguage(getCountry(countryCode).langTag)?.code ||
-          "hi-IN",
-      );
-    } catch {
-      /* ignore */
-    }
-    // Runs once on mount: countryCode is read only to seed a sensible default.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  // Persist the live-translation choice. The initial value is seeded lazily
+  // above, so there is nothing to hydrate after mount.
   useEffect(() => {
     saveVoicePreference(voicePref);
   }, [voicePref]);
@@ -1000,12 +1006,23 @@ export default function Dashboard() {
         !player.playingId &&
         !player.loadingId
       ) {
+        // `handleSpeak` is declared further down the component; the effect body
+        // only runs after the whole function has evaluated, so this is safe.
+        // eslint-disable-next-line react-hooks/immutability
         void handleSpeak(newest._id, newest.content);
       }
     }
     prevMsgCount.current = count;
+    // Deliberately narrow deps: this must fire once per *new* message, not on
+    // every change to the player or the message objects. `handleSpeak` is
+    // declared further down and is safe to call from the effect body.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages?.length, sending, voiceOutput]);
 
+  // Switching chats must clear every per-chat panel. This is a deliberate
+  // "reset on id change" — deriving it from `activeId` would remount the whole
+  // composer instead, and `player` is a stable controller object.
+  /* eslint-disable react-hooks/set-state-in-effect -- deliberate reset on chat change */
   useEffect(() => {
     setAssistantError(null);
     setPanelNlp(null);
@@ -1018,7 +1035,9 @@ export default function Dashboard() {
     setShowCalculator(false);
     setFollowUps([]);
     player.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Keyboard shortcuts: Ctrl/Cmd+K starts a new chat, "/" focuses the input
   // (when not already typing).
@@ -1570,9 +1589,13 @@ export default function Dashboard() {
   };
 
   const runSend = () => runSendWithText();
-  liveTurnRef.current = async (text: string) => {
-    await runSendWithText(text);
-  };
+  // Live mode holds a long-lived callback; keep it in step with the newest
+  // runSendWithText without writing to a ref during render.
+  useEffect(() => {
+    liveTurnRef.current = async (text: string) => {
+      await runSendWithText(text);
+    };
+  });
 
   // ---- Streaming replies ------------------------------------------------
   // The assistant message is created empty, then the action writes each token
@@ -1814,17 +1837,11 @@ export default function Dashboard() {
     }
   };
 
+  // Apply the seeded theme to <html>. State is already correct from the lazy
+  // initialiser, so this only mirrors it onto the document element.
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("jarvis-theme");
-      if (saved === "dark") {
-        setIsDark(true);
-        document.documentElement.classList.add("dark");
-      }
-    } catch {
-      // ignore storage errors
-    }
-  }, []);
+    document.documentElement.classList.toggle("dark", isDark);
+  }, [isDark]);
 
   // ---- AI-generated chat titles: run once after the first exchange ----
   const titleGeneratedFor = useRef<Id<"chatSessions"> | null>(null);
@@ -2155,7 +2172,7 @@ export default function Dashboard() {
       if (solveMatch) {
         const [, , problem] = solveMatch;
         setInput(
-          `Solve this step by step using proper LaTeX math notation. FORMAT RULES (strict): inline math as $...$; display math as $$ on its OWN line, the math on the next line, then $$ on its own line (never $$math$$ on one line); never put text, headers, or --- on the same line as $$; always close every \\begin{...} with \\end{...}; use \\boxed{...} for the final result. Show your method, every step with working, and end with brief Remarks. If the problem mentions a graph, plot, or visualizing the function (e.g. \"x² in graph\"), ALSO emit an interactive Desmos block so the graph renders live: a fenced code block tagged desmos with \`mode: graphing\`, an optional \`zoom: 10\`, then \`expressions:\` and the function in Desmos plain-text syntax (like \`y = x^2\`, no $ or backslashes), one per line: ${problem}`,
+          `Solve this step by step using proper LaTeX math notation. FORMAT RULES (strict): inline math as $...$; display math as $$ on its OWN line, the math on the next line, then $$ on its own line (never $$math$$ on one line); never put text, headers, or --- on the same line as $$; always close every \\begin{...} with \\end{...}; use \\boxed{...} for the final result. Show your method, every step with working, and end with brief Remarks. If the problem mentions a graph, plot, or visualizing the function (e.g. "x² in graph"), ALSO emit an interactive Desmos block so the graph renders live: a fenced code block tagged desmos with \`mode: graphing\`, an optional \`zoom: 10\`, then \`expressions:\` and the function in Desmos plain-text syntax (like \`y = x^2\`, no $ or backslashes), one per line: ${problem}`,
         );
         // Small delay so the state lands, then trigger send
         setTimeout(() => {
@@ -3936,11 +3953,15 @@ export default function Dashboard() {
               {/* ---- Camera preview ----
                   Only rendered while the user has explicitly turned the camera
                   on; nothing below this point mounts otherwise. */}
+              {/* The camera hook keeps its refs internal; the compiler lint
+                  rule taints every property of the returned object, which is a
+                  false positive — none of these reads touch a ref. */}
+              {/* eslint-disable react-hooks/refs */}
               {camera.enabled && (
                 <div className="mb-2 flex items-start gap-3 rounded-lg border border-border/60 bg-muted/30 p-2">
                   <div className="relative shrink-0 overflow-hidden rounded-md border">
                     <video
-                      ref={camera.videoRef}
+                      ref={camera.bindVideo}
                       muted
                       playsInline
                       className="h-20 w-28 object-cover"
@@ -3977,6 +3998,7 @@ export default function Dashboard() {
                   </div>
                 </div>
               )}
+              {/* eslint-disable-enable react-hooks/refs */}
               {camera.error && (
                 <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                   {camera.error}
@@ -4083,6 +4105,7 @@ export default function Dashboard() {
       />
       {/* Full-screen JARVIS live-mode HUD */}
       <JarvisHud
+        key={live.active ? "live-on" : "live-off"}
         open={live.active}
         phase={
           live.speaking

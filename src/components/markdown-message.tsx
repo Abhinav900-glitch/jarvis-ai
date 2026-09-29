@@ -90,7 +90,7 @@ function repairMathBlock(tex: string): string {
   // Heal a truncated env command first: `\end{aligned` (no closing brace) is
   // invisible to the begin/end counters below and would get a DUPLICATE
   // \end{aligned} appended. Complete any \begin{x / \end{x missing its } }.
-  let pre = tex.replace(/(\\(?:begin|end)\{[a-zA-Z]*)(?=[\s]|$)/g, "$1}");
+  const pre = tex.replace(/(\\(?:begin|end)\{[a-zA-Z]*)(?=[\s]|$)/g, "$1}");
   const opens = [...pre.matchAll(/\\begin\{([a-zA-Z*]+)\}/g)].map((m) => m[1]);
   const closes = [...pre.matchAll(/\\end\{([a-zA-Z*]+)\}/g)].map((m) => m[1]);
   const count = (arr: string[], s: string) => arr.filter((x) => x === s).length;
@@ -277,6 +277,8 @@ export function repairLegacyMath(input: string): string {
   // (Devanagari, emoji, CJK, …) are prose — math-wrapping them corrupts the
   // neighbouring $$ fences (the closing $$ gets absorbed and every later
   // fence in the document then mispairs, producing the raw-red-LaTeX dump).
+  // The control range is exactly what "is this pure ASCII?" means here.
+  // eslint-disable-next-line no-control-regex
   const isAsciiMathCandidate = (seg: string) => ! /[^\x00-\x7F]/.test(seg);
 
   const isProtected = (seg: string) =>
@@ -340,7 +342,7 @@ export function repairLegacyMath(input: string): string {
  * so prose in between is never typeset as math.
  */
 export function wrapBareMath(segment: string): string {
-  const MATHY = /^[\w\\^_{}()\[\]=+\-*/.,±≈|:]+$/;
+  const MATHY = /^[\w\\^_{}()[\]=+\-*/.,±≈|:]+$/;
   const INDICATOR =
     /\\|^|_|\{|\}|=|\/|\b(frac|sqrt|over|sum|prod|int|lim|log|ln|exp|approx|cdot|times|pm|infty)\b/;
   const isWord = (t: string) => /^[a-z]{2,}$/.test(t) && !/\\/.test(t);

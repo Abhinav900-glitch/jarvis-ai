@@ -73,10 +73,11 @@ function Equalizer() {
  */
 function ConversationLog({ turns }: { turns: LiveTurn[] }) {
   const endRef = useRef<HTMLDivElement>(null);
+  const lastReply = turns[turns.length - 1]?.assistant;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [turns.length, turns[turns.length - 1]?.assistant]);
+  }, [turns.length, lastReply]);
 
   if (turns.length === 0) {
     return (
@@ -127,17 +128,15 @@ export function JarvisHud({
 }: JarvisHudProps) {
   const [boost, setBoost] = useState(false);
 
-  // A manual boost only makes sense while the session is running; drop it
-  // when the HUD closes so the next call starts at the phase-driven speed.
-  useEffect(() => {
-    if (!open) setBoost(false);
-  }, [open]);
-
   if (!open) return null;
 
+  // A manual boost only makes sense while the session is running. Deriving it
+  // (rather than clearing it in an effect) means the next call always starts
+  // at the phase-driven speed without a wasted render.
+  const boosting = boost;
   // Speaking already spins fast, so the boost toggle is only meaningful for
   // the slower phases.
-  const fast = boost || phase === "speaking";
+  const fast = boosting || phase === "speaking";
   const glowBoost = level * 0.5;
 
   return (
@@ -169,19 +168,46 @@ export function JarvisHud({
       <div className="flex h-full w-full flex-col items-center px-6 pt-16 pb-6">
         <div className="sphere-scene relative flex shrink-0 flex-col items-center">
           <div
-            className="relative grid aspect-square w-[78vw] max-w-[300px] place-items-center"
+            className="sphere-frame relative grid aspect-square w-[78vw] max-w-[300px] place-items-center"
             style={{ transform: `scale(${1 + glowBoost * 0.06})` }}
           >
             <button
               type="button"
               onClick={() => setBoost((v) => !v)}
-              aria-pressed={boost}
+              aria-pressed={boosting}
               aria-label={
-                boost ? "Return the sphere to its normal speed" : "Spin the sphere faster"
+                boosting ? "Return the sphere to its normal speed" : "Spin the sphere faster"
               }
               className={cn("sphere-button", fast && "fast")}
             >
+              {/* The lit body. It only breathes — all rotation is in the cage,
+                  because in-plane rotation is what makes a sphere read flat. */}
               <span className="sphere" />
+              {/* 3D wireframe cage: latitude great circles (sized to
+                    R·sinθ so they sit on the ball), meridian great circles,
+                    and two orbits whose paired dots swap in/out of view via
+                    backface-visibility. This is what makes the sphere read as
+                    a rotating sphere rather than a spinning flat disc. */}
+              <span className="sphere-axis" aria-hidden="true">
+                <i className="sphere-lat" style={{ transform: "rotateX(72deg)" }} />
+                <i className="sphere-lat-36" style={{ transform: "rotateX(36deg)" }} />
+                <i className="sphere-lat-12" style={{ transform: "rotateX(12deg)" }} />
+                <i className="sphere-lat-12" style={{ transform: "rotateX(-12deg)" }} />
+                <i className="sphere-lat-36" style={{ transform: "rotateX(-36deg)" }} />
+                <i className="sphere-lat" style={{ transform: "rotateX(-72deg)" }} />
+                <i className="sphere-mer" style={{ transform: "rotateY(0deg)" }} />
+                <i className="sphere-mer" style={{ transform: "rotateY(45deg)" }} />
+                <i className="sphere-mer" style={{ transform: "rotateY(90deg)" }} />
+                <i className="sphere-mer" style={{ transform: "rotateY(135deg)" }} />
+                <span className="sphere-orbit sphere-orbit-a">
+                  <i />
+                  <i />
+                </span>
+                <span className="sphere-orbit sphere-orbit-b">
+                  <i />
+                  <i />
+                </span>
+              </span>
             </button>
             <span className="sphere-glow" aria-hidden="true" />
           </div>
@@ -201,7 +227,7 @@ export function JarvisHud({
             </div>
           </div>
 
-          {boost && phase !== "speaking" && (
+          {boosting && phase !== "speaking" && (
             <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#818cf8]/30 bg-[#818cf8]/10 px-2.5 py-1 text-[10px] font-semibold tracking-[0.2em] text-[#a5b4fc] uppercase">
               <Zap className="size-3" />
               Boost

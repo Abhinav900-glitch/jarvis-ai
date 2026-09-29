@@ -1,5 +1,4 @@
 import { query } from "./_generated/server";
-import { v } from "convex/values";
 
 // ---------------------------------------------------------------------------
 // Public client config. Only items that are SAFE to expose in the browser

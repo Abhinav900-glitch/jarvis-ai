@@ -288,14 +288,17 @@ interface StatsResult {
   percentiles: Record<string, number>;
 }
 
-function StatsResult({ data }: { data: StatsResult }) {
-  const Stat = ({ label, value }: { label: string; value: string | number }) => (
+/** One label/value row in the statistics table. */
+function Stat({ label, value }: { label: string; value: string | number }) {
+  return (
     <div className="flex items-baseline justify-between">
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="font-mono text-xs font-medium">{value}</span>
     </div>
   );
+}
 
+function StatsResult({ data }: { data: StatsResult }) {
   return (
     <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
       <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">

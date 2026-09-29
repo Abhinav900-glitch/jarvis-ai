@@ -29,9 +29,13 @@ export function Lightbox({
   const total = images.length;
 
   // Keep index in sync when a new gallery opens
+  /* eslint-disable react-hooks/set-state-in-effect -- syncing a prop into
+     state; the alternative (remounting via a key) would remount the whole
+     viewer on every image. */
   useEffect(() => {
     if (open) setIndex(Math.max(0, Math.min(startIndex, total - 1)));
   }, [open, startIndex, total]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const go = useCallback(
     (dir: 1 | -1) => {

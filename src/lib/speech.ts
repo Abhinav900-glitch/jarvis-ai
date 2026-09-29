@@ -421,8 +421,12 @@ export function sanitizeForSpeech(
   text = text.replace(/\|+/g, " ");
 
   // --- Emoji ---------------------------------------------------------------
+  // Unicode properties rather than hand-rolled ranges: the old \u{2600}-\u{27BF}
+  // span swallowed plenty of non-emoji dingbats, and it also mixed combining
+  // marks into a character class, which is exactly the kind of thing that
+  // silently breaks a regex.
   text = text.replace(
-    /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F1E6}-\u{1F1FF}\u{2B00}-\u{2BFF}]/gu,
+    /[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE00}-\u{FE0F}\u{1F1E6}-\u{1F1FF}\u{2B00}-\u{2BFF}]/gu,
     " ",
   );
 
