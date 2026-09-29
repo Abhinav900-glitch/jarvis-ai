@@ -390,6 +390,17 @@ export const SOUND_CUES: SoundCue[] = [
 const REQUEST_VERBS =
   /\b(play|make|give|produce|create|do a|hear|sound|sounds|sounding|imitate|emulate|mimic|can you|could you|would you|let me hear)\b/i;
 
+/**
+ * Verbs that mean the user is asking a *question about* the sound, not for the
+ * sound. Without this, "summarise the article about barking dogs" would bark.
+ */
+const NON_REQUEST_VERBS =
+  /\b(summari[sz]e|write|explain|translate|define|describe|compare|difference|article|story|essay|history|book|meaning|spell|pronounce|who|when|where|why|how many|search|cite|references?|list|give me a list)\b/i;
+
+/** Nouns that mark a request for a sound rather than a mention of an animal. */
+const SOUND_NOUNS =
+  /\b(sound|sounds|noise|noises|cry|cries|call|calls|voice|say|says|said|make|makes|imitate|imitates|mimic|imitates)\b/i;
+
 /** Filler words that carry no intent of their own. */
 const FILLER_WORDS = new Set([
   "please", "can", "could", "would", "you", "i", "want", "to", "hear", "play",
@@ -460,8 +471,11 @@ function isBareSoundRequest(text: string, cue: SoundCue): boolean {
 export function matchSoundCue(input: string): SoundCue | null {
   const text = input?.trim() ?? "";
   if (!text || text.length > MAX_INTENT_CHARS) return null;
+  // Asking *about* a sound is not asking for one.
+  if (NON_REQUEST_VERBS.test(text)) return null;
 
   const byId = new Map(SOUND_CUES.map((cue) => [cue.id, cue]));
+  const wordCount = (text.match(/[\p{L}\p{N}']+/gu) ?? []).length;
 
   // "what does a dog say" / "what sound does a cow make"
   const animalQuestion = text.match(
@@ -470,6 +484,27 @@ export function matchSoundCue(input: string): SoundCue | null {
   if (animalQuestion) {
     const cue = byId.get(ANIMAL_BY_NAME[animalQuestion[1].toLowerCase()]);
     if (cue) return cue;
+  }
+
+  // "make a sound like a horse" — the name follows the noun.
+  const soundLike = text.match(
+    /\bsounds?\s+like\s+(?:an?|the)?\s*([a-z]+)/i,
+  );
+  if (soundLike) {
+    const cue = byId.get(ANIMAL_BY_NAME[soundLike[1].toLowerCase()]);
+    if (cue && (REQUEST_VERBS.test(text) || wordCount <= 6)) return cue;
+  }
+
+  // The phrasing that motivates all of this: an animal plus a word about
+  // sound, in any order — "the sound of a dog", "a dog sounds", "a cow sound".
+  // A request verb (or a very short message) is still required so that
+  // "the dog barked up the wrong tree" stays quiet.
+  for (const [name, cueId] of Object.entries(ANIMAL_BY_NAME)) {
+    const animalRe = new RegExp(`\\b${name}(?:s|'s)?\\b`, "i");
+    if (!animalRe.test(text)) continue;
+    if (!SOUND_NOUNS.test(text)) continue;
+    const cue = byId.get(cueId);
+    if (cue && (REQUEST_VERBS.test(text) || wordCount <= 6)) return cue;
   }
 
   const explicit = REQUEST_VERBS.test(text);
@@ -483,6 +518,16 @@ export function matchSoundCue(input: string): SoundCue | null {
     const pattern = new RegExp(`(?:^|\\b)${escapeRegExp(keyword)}(?:\\b|$)`, "i");
     if (!pattern.test(text)) continue;
     if (cue.needsExplicitRequest && !explicit && !isBareSoundRequest(text, cue)) {
+      continue;
+    }
+    // A keyword on its own is a request only when something asks for it, or
+    // when the message is essentially just the sound's name.
+    if (
+      !cue.needsExplicitRequest &&
+      !explicit &&
+      !isBareSoundRequest(text, cue) &&
+      contentTokens(text).length > 3
+    ) {
       continue;
     }
     return cue;
