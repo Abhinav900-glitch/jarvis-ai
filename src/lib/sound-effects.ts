@@ -388,7 +388,7 @@ export const SOUND_CUES: SoundCue[] = [
 
 /** Words that mean "I am asking for a sound", not "I am mentioning one". */
 const REQUEST_VERBS =
-  /\b(play|make|give|produce|create|do a|hear|sound|sounds|sounding|imitate|emulate|mimic|can you|could you|would you|let me hear)\b/i;
+  /\b(play|make|give|produce|create|do a|hear|sound|sounds|sounding|imitate|emulate|mimic|can you|could you|would you|let me hear|then|next|afterwards|after that|followed by|first|also)\b/i;
 
 /**
  * Verbs that mean the user is asking a *question about* the sound, not for the
@@ -397,9 +397,21 @@ const REQUEST_VERBS =
 const NON_REQUEST_VERBS =
   /\b(summari[sz]e|write|explain|translate|define|describe|compare|difference|article|story|essay|history|book|meaning|spell|pronounce|who|when|where|why|how many|search|cite|references?|list|give me a list)\b/i;
 
-/** Nouns that mark a request for a sound rather than a mention of an animal. */
+/**
+ * Nouns that mark a request for a sound rather than a mention of an animal.
+ * "make"/"makes" is deliberately absent — it is a request verb, but it also
+ * appears in "make a dog house", which is not a request for a bark. The
+ * "what does a cow make" phrasing is handled by its own question rule below.
+ */
 const SOUND_NOUNS =
-  /\b(sound|sounds|noise|noises|cry|cries|call|calls|voice|say|says|said|make|makes|imitate|imitates|mimic|imitates)\b/i;
+  /\b(sound|sounds|noise|noises|cry|cries|call|calls|voice|say|says|imitate|imitates|mimic)\b/i;
+
+/**
+ * Sequencing words. A bare list of animals only means "play me those" when it
+ * is chained — "dog then cat" is a request, "make a dog house" is not.
+ */
+const CHAIN_WORDS =
+  /\b(then|next|afterwards|after that|followed by|first of all|and then)\b/i;
 
 /** Filler words that carry no intent of their own. */
 const FILLER_WORDS = new Set([
@@ -410,6 +422,9 @@ const FILLER_WORDS = new Set([
 
 /** Above this length a message is treated as prose, not a sound request. */
 const MAX_INTENT_CHARS = 160;
+
+/** Longest chain of sounds we will play back in one message. */
+const MAX_CHAIN = 5;
 
 /** "what does a dog say" → the dog cue, without listing every phrasing. */
 const ANIMAL_BY_NAME: Record<string, string> = {
@@ -468,71 +483,84 @@ function isBareSoundRequest(text: string, cue: SoundCue): boolean {
  * Find the sound cue a message is asking for, or null when it is an ordinary
  * question. Exported for the composer chips and the live voice loop.
  */
-export function matchSoundCue(input: string): SoundCue | null {
+/**
+ * Every cue a message asks for, in the order they were asked for.
+ *
+ * A single request is the common case and returns a one-item array. A chain —
+ * "dog then cat then lion" — returns all three, ordered by where each name
+ * appears in the sentence, so the sounds play back the way they were asked.
+ */
+export function findSoundCues(input: string): SoundCue[] {
   const text = input?.trim() ?? "";
-  if (!text || text.length > MAX_INTENT_CHARS) return null;
-  // Asking *about* a sound is not asking for one.
-  if (NON_REQUEST_VERBS.test(text)) return null;
+  if (!text || text.length > MAX_INTENT_CHARS) return [];
+  // Asking *about* sounds is not asking for them.
+  if (NON_REQUEST_VERBS.test(text)) return [];
 
   const byId = new Map(SOUND_CUES.map((cue) => [cue.id, cue]));
   const wordCount = (text.match(/[\p{L}\p{N}']+/gu) ?? []).length;
-
-  // "what does a dog say" / "what sound does a cow make"
-  const animalQuestion = text.match(
-    /\b(?:what|which)\b[^.?!]*?\b(?:does|do|is|are)\b[^.?!]*?\b(dog|cat|kitten|puppy|lion|tiger|wolf|horse|cow|cattle|pig|sheep|lamb|goat|duck|goose|rooster|owl|frog|bee|bird|whale|monkey|snake|mouse|rat|cricket)\b[^.?!]*\b(?:say|says|make|makes|sound|sounds|noise|noises)\b/i,
-  );
-  if (animalQuestion) {
-    const cue = byId.get(ANIMAL_BY_NAME[animalQuestion[1].toLowerCase()]);
-    if (cue) return cue;
-  }
-
-  // "make a sound like a horse" — the name follows the noun.
-  const soundLike = text.match(
-    /\bsounds?\s+like\s+(?:an?|the)?\s*([a-z]+)/i,
-  );
-  if (soundLike) {
-    const cue = byId.get(ANIMAL_BY_NAME[soundLike[1].toLowerCase()]);
-    if (cue && (REQUEST_VERBS.test(text) || wordCount <= 6)) return cue;
-  }
-
-  // The phrasing that motivates all of this: an animal plus a word about
-  // sound, in any order — "the sound of a dog", "a dog sounds", "a cow sound".
-  // A request verb (or a very short message) is still required so that
-  // "the dog barked up the wrong tree" stays quiet.
-  for (const [name, cueId] of Object.entries(ANIMAL_BY_NAME)) {
-    const animalRe = new RegExp(`\\b${name}(?:s|'s)?\\b`, "i");
-    if (!animalRe.test(text)) continue;
-    if (!SOUND_NOUNS.test(text)) continue;
-    const cue = byId.get(cueId);
-    if (cue && (REQUEST_VERBS.test(text) || wordCount <= 6)) return cue;
-  }
-
   const explicit = REQUEST_VERBS.test(text);
+  // Some intent has to be present, or "the dog barked up the wrong tree" plays.
+  if (!explicit && wordCount > 6) return [];
 
-  // Longer keywords win: "dog sound" must beat "dog".
+  // cue id -> earliest position it was mentioned at
+  const hits = new Map<string, number>();
+  const record = (cue: SoundCue | undefined, index: number) => {
+    if (!cue || index < 0) return;
+    const current = hits.get(cue.id);
+    if (current === undefined || index < current) hits.set(cue.id, index);
+  };
+
+  // 1. Literal keywords, longest first so "dog sound" beats a bare "dog".
   const ranked = SOUND_CUES.flatMap((cue) =>
     cue.keywords.map((keyword) => ({ cue, keyword })),
   ).sort((a, b) => b.keyword.length - a.keyword.length);
-
   for (const { cue, keyword } of ranked) {
     const pattern = new RegExp(`(?:^|\\b)${escapeRegExp(keyword)}(?:\\b|$)`, "i");
-    if (!pattern.test(text)) continue;
-    if (cue.needsExplicitRequest && !explicit && !isBareSoundRequest(text, cue)) {
-      continue;
-    }
-    // A keyword on its own is a request only when something asks for it, or
-    // when the message is essentially just the sound's name.
-    if (
-      !cue.needsExplicitRequest &&
-      !explicit &&
-      !isBareSoundRequest(text, cue) &&
-      contentTokens(text).length > 3
-    ) {
-      continue;
-    }
-    return cue;
+    const index = text.search(pattern);
+    if (index >= 0) record(cue, index);
   }
-  return null;
+
+  // 2. An animal name beside a word about sound, in any order — "the sound of
+  //    a dog", "a dog sounds", "a cow sound", "sound like a horse". A chain
+  //    ("dog then cat") counts too, since a chained bare list of animals is
+  //    unmistakably a list of sounds.
+  if (SOUND_NOUNS.test(text) || CHAIN_WORDS.test(text)) {
+    for (const [name, cueId] of Object.entries(ANIMAL_BY_NAME)) {
+      const index = text.search(new RegExp(`\\b${name}(?:s|'s)?\\b`, "i"));
+      record(byId.get(cueId), index);
+    }
+  }
+
+  // 3. "what does a dog say" — the animal is the subject, the verb is a sound.
+  for (const [name, cueId] of Object.entries(ANIMAL_BY_NAME)) {
+    const pattern = new RegExp(
+      `\\b(?:what|which)\\b[^.?!]*?\\b(?:does|do|is|are)\\b[^.?!]*?\\b${name}\\b[^.?!]*?\\b(?:say|says|make|makes|sound|sounds|noise|noises)\\b`,
+      "i",
+    );
+    const index = text.search(pattern);
+    record(byId.get(cueId), index);
+  }
+
+  // Drop cues whose own strictness rules aren't satisfied, then play in the
+  // order the user asked for them.
+  return [...hits.entries()]
+    .filter(([cueId]) => {
+      const cue = byId.get(cueId);
+      if (!cue) return false;
+      if (cue.needsExplicitRequest && !explicit && !isBareSoundRequest(text, cue)) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => a[1] - b[1])
+    .slice(0, MAX_CHAIN)
+    .map(([cueId]) => byId.get(cueId)!)
+    .filter(Boolean);
+}
+
+/** The single best cue, or null. Use {@link findSoundCues} for chains. */
+export function matchSoundCue(input: string): SoundCue | null {
+  return findSoundCues(input)[0] ?? null;
 }
 
 /**
@@ -546,4 +574,13 @@ export function isSoundOnlyRequest(input: string): boolean {
   // "what does a dog say" is answered with the bark alone; "explain how a dog
   // barks to a child" is a real question and still needs prose.
   return contentTokens(text).length <= 2;
+}
+
+/**
+ * The written line that accompanies a sound: "🐕 Dog barking" for one cue, or
+ * a chain like "🐕 Dog barking → 🐈 Cat meowing → 🦁 Lion roaring".
+ */
+export function cueLine(cues: SoundCue[], markdown = false): string {
+  const joined = cues.map((cue) => `${cue.emoji}  ${cue.label}`).join("  →  ");
+  return markdown ? `*${joined}*` : joined;
 }

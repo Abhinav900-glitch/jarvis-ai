@@ -66,7 +66,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useVoicePlayer, useVoiceRecorder } from "@/hooks/use-voice";
 import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
-import { matchSoundCue, isSoundOnlyRequest, SOUND_CUES } from "@/lib/sound-effects";
+import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
 import { stripWakeWord, WAKE_PHRASE } from "@/lib/wake-word";
 import { playAckChime } from "@/lib/audio";
 import { getTranslateLanguage } from "@/lib/languages";
@@ -797,16 +797,17 @@ export default function Dashboard() {
         playAckChime();
       }
 
-      // A sound request ("bark", "do a cat meow") is answered with the actual
-      // sound, not a sentence about it. Wait for the clip to finish before
-      // returning, otherwise the recorder picks the bark up as user speech.
-      const cue = matchSoundCue(text);
-      if (cue) {
+      // A sound request ("bark", "do a cat meow", "dog then cat then lion")
+      // is answered with the actual sounds, not sentences about them. Wait for
+      // the clips to finish, otherwise the recorder picks the bark up as the
+      // user talking.
+      const cues = findSoundCues(text);
+      if (cues.length > 0) {
         setLiveTranscript((t) => [
           ...t.slice(-5),
-          { user: text, assistant: `${cue.emoji}  ${cue.label}` },
+          { user: text, assistant: cueLine(cues) },
         ]);
-        await sound.playCue(cue);
+        await sound.playCues(cues);
         return "";
       }
 
@@ -1106,7 +1107,7 @@ export default function Dashboard() {
    * per prompt and cached server-side, so repeating the request is instant.
    */
   const runSoundEffectMessage = async (
-    cue: (typeof SOUND_CUES)[number],
+    cues: SoundCue[],
     originalText: string,
   ) => {
     setSending(true);
@@ -1126,15 +1127,18 @@ export default function Dashboard() {
       }
 
       setGenerating(true);
-      const played = await sound.playCue(cue);
+      const played = await sound.playCues(cues);
       setGenerating(false);
 
-      // A bare "bark" needs no prose; a question that merely mentions the
-      // sound still deserves an answer from the model.
+      // A bare "bark" needs no prose; a chain is unambiguously a sound
+      // request; a question that merely mentions the sound still deserves an
+      // answer from the model.
+      const onlySounds =
+        isSoundOnlyRequest(originalText) || cues.length > 1;
       const reply = played
-        ? isSoundOnlyRequest(originalText)
-          ? `${cue.emoji}  *${cue.label}*`
-          : `${cue.emoji}  That was a real ${cue.label.toLowerCase()} — a language model can only describe the sound, so I generated it.`
+        ? onlySounds
+          ? cueLine(cues, true)
+          : `${cues[0].emoji}  That was a real ${cues[0].label.toLowerCase()} — a language model can only describe the sound, so I generated it.`
         : `I couldn't generate that sound right now${sound.error ? ` — ${sound.error}` : ""}.`;
 
       await appendMessage({
@@ -1177,9 +1181,9 @@ export default function Dashboard() {
     // Sound effects: "bark", "play a dog sound", "what does a cat say" —
     // answered with the real audio, which is the one thing a text model
     // cannot do for itself.
-    const soundCue = matchSoundCue(text);
-    if (!editingId && soundCue && !pendingFile) {
-      await runSoundEffectMessage(soundCue, text);
+    const soundCues = findSoundCues(text);
+    if (!editingId && soundCues.length > 0 && !pendingFile) {
+      await runSoundEffectMessage(soundCues, text);
       return;
     }
 
@@ -3287,7 +3291,12 @@ export default function Dashboard() {
                     <span className="ml-1 font-normal normal-case tracking-normal">
                       — generated, not described
                     </span>
-                    {sound.playing && <Loader2 className="ml-auto size-3 animate-spin" />}
+                    {sound.playing && (
+                      <span className="ml-auto inline-flex items-center gap-1 normal-case tracking-normal">
+                        <Loader2 className="size-3 animate-spin" />
+                        {sound.currentCue?.label}
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {SOUND_CUES.map((cue) => (
@@ -3295,7 +3304,7 @@ export default function Dashboard() {
                         key={cue.id}
                         onClick={() => {
                           setShowSounds(false);
-                          void runSoundEffectMessage(cue, cue.label);
+                          void runSoundEffectMessage([cue], cue.label);
                         }}
                         disabled={sending}
                         className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground disabled:opacity-40"

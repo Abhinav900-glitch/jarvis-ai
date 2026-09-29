@@ -2,15 +2,22 @@ import { useCallback, useRef, useState } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { audioMimeType, unlockAudioElement } from "@/lib/audio";
-import { type SoundCue, matchSoundCue } from "@/lib/sound-effects";
+import { type SoundCue, findSoundCues } from "@/lib/sound-effects";
 
 export interface SoundEffects {
-  /** Play the cue a message is asking for. Resolves true when audio played. */
-  play: (textOrCue: string | SoundCue) => Promise<boolean>;
-  /** Play a cue by id from the catalog. */
+  /**
+   * Play every cue a message asks for, in order. Resolves true when at least
+   * one clip played. A chain like "dog then cat then lion" plays all three.
+   */
+  play: (text: string) => Promise<boolean>;
+  /** Play one cue. */
   playCue: (cue: SoundCue) => Promise<boolean>;
-  /** True while a clip is being fetched and played. */
+  /** Play a sequence of cues back to back. */
+  playCues: (cues: SoundCue[]) => Promise<boolean>;
+  /** True while any clip is being fetched or played. */
   playing: boolean;
+  /** The cue currently being generated/played, for progress UI. */
+  currentCue: SoundCue | null;
   /** Last failure, or null. */
   error: string | null;
   stop: () => void;
@@ -31,6 +38,7 @@ export function useSoundEffects(): SoundEffects {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlRef = useRef<string | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [currentCue, setCurrentCue] = useState<SoundCue | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const stop = useCallback(() => {
@@ -47,6 +55,7 @@ export function useSoundEffects(): SoundEffects {
       urlRef.current = null;
     }
     setPlaying(false);
+    setCurrentCue(null);
   }, []);
 
   const playCue = useCallback(
@@ -56,6 +65,7 @@ export function useSoundEffects(): SoundEffects {
       void unlockAudioElement();
 
       setPlaying(true);
+      setCurrentCue(cue);
       try {
         const { audio, error: serverError } = await generate({
           prompt: cue.prompt,
@@ -80,6 +90,8 @@ export function useSoundEffects(): SoundEffects {
         el.preload = "auto";
         el.volume = 1;
         audioRef.current = el;
+        setCurrentCue(cue);
+        setPlaying(true);
 
         await new Promise<void>((resolve, reject) => {
           el.onended = () => resolve();
@@ -97,15 +109,29 @@ export function useSoundEffects(): SoundEffects {
     [generate, stop],
   );
 
-  const play = useCallback(
-    (textOrCue: string | SoundCue) => {
-      const cue =
-        typeof textOrCue === "string" ? matchSoundCue(textOrCue) : textOrCue;
-      if (!cue) return Promise.resolve(false);
-      return playCue(cue);
+  /**
+   * Play a chain of cues one after another. A failure part-way through stops
+   * the sequence rather than firing the remaining clips out of nowhere.
+   */
+  const playCues = useCallback(
+    async (cues: SoundCue[]): Promise<boolean> => {
+      if (cues.length === 0) return false;
+      let played = false;
+      for (const cue of cues) {
+        const ok = await playCue(cue);
+        if (!ok) break;
+        played = true;
+      }
+      stop();
+      return played;
     },
-    [playCue],
+    [playCue, stop],
   );
 
-  return { play, playCue, playing, error, stop };
+  const play = useCallback(
+    (text: string) => playCues(findSoundCues(text)),
+    [playCues],
+  );
+
+  return { play, playCue, playCues, playing, currentCue, error, stop };
 }
