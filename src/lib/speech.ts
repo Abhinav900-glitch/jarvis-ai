@@ -18,6 +18,281 @@ const DEFAULT_MAX_CHARS = 1400;
 /** Symbols that add nothing when spoken. */
 const PUNCTUATION = /[.!?…:;,'"“”‘’`()]/;
 
+// ---------------------------------------------------------------------------
+// Pronunciation
+//
+// Stripping the markup is only half the job. A TTS engine is a phonetic
+// machine, not a reader: it has no idea that "°C" means "degrees celsius", so
+// it spells it out letter by letter, and it happily shouts "WARNING" in the
+// same flat voice it uses for "warning". Everything below rewrites the symbols
+// and shorthand a reply uses on screen into the words a person would say.
+// ---------------------------------------------------------------------------
+
+const ONES = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+  "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+  "sixteen", "seventeen", "eighteen", "nineteen",
+];
+const TENS = [
+  "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+  "eighty", "ninety",
+];
+
+/** Spell out 0–999. Used for times, ordinals and fractions. */
+function numberWords(value: number): string {
+  if (!Number.isFinite(value) || value < 0 || value > 999) return String(value);
+  if (value < 20) return ONES[value];
+  if (value < 100) {
+    const tens = TENS[Math.floor(value / 10)];
+    const ones = value % 10;
+    return ones ? `${tens}-${ONES[ones]}` : tens;
+  }
+  const hundreds = `${ONES[Math.floor(value / 100)]} hundred`;
+  const rest = value % 100;
+  return rest ? `${hundreds} ${numberWords(rest)}` : hundreds;
+}
+
+/** 1st → first, 22nd → twenty-second, 31st → thirty-first. */
+function ordinalWords(value: number): string {
+  const irregular: Record<number, string> = {
+    1: "first", 2: "second", 3: "third", 5: "fifth", 8: "eighth",
+    9: "ninth", 12: "twelfth",
+  };
+  if (irregular[value]) return irregular[value];
+  if (value < 20) return `${ONES[value]}th`;
+  if (value >= 100) return `${numberWords(value)}th`;
+  const tens = TENS[Math.floor(value / 10)];
+  switch (value % 10) {
+    // Hyphenated so the synthesiser reads them as two words: "twenty-first".
+    case 1: return `${tens}-first`;
+    case 2: return `${tens}-second`;
+    case 3: return `${tens}-third`;
+    // The "-eth" forms are single words already: twentieth, thirtieth.
+    default: return `${tens.replace(/y$/, "ie")}th`;
+  }
+}
+
+/** "1.5" → "one point five"; plain integers are left as digits. */
+function numberPhrase(value: string): string {
+  if (!value.includes(".")) return value;
+  const [whole, fraction] = value.split(".");
+  const wholeWords = whole && Number(whole) <= 999 ? numberWords(Number(whole)) : whole;
+  const fractionWords = (fraction ?? "")
+    .split("")
+    .map((d) => ONES[Number(d)])
+    .join(" ");
+  return `${wholeWords} point ${fractionWords}`;
+}
+
+const MAGNITUDES: Record<string, string> = {
+  k: "thousand", m: "million", b: "billion", t: "trillion",
+};
+
+const CURRENCY: Record<string, string> = {
+  $: "dollars",
+  "€": "euros",
+  "£": "pounds",
+  "₹": "rupees",
+  "¥": "yen",
+};
+
+/** Denominator → fraction noun, e.g. 4 → quarter. */
+const FRACTION_NOUNS: Record<number, [string, string]> = {
+  2: ["half", "halves"],
+  3: ["third", "thirds"],
+  4: ["quarter", "quarters"],
+  5: ["fifth", "fifths"],
+  6: ["sixth", "sixths"],
+  8: ["eighth", "eighths"],
+  10: ["tenth", "tenths"],
+};
+
+/**
+ * Rewrites symbols, units and shorthand into spoken words. Runs on prose only
+ * (markup is already gone), so it never fights the markdown stripper.
+ */
+export function pronounceForSpeech(input: string): string {
+  let text = input;
+  if (!text) return "";
+
+  // --- Degrees: the "°C" case, before the bare degree sign -------------------
+  text = text
+    .replace(/[℃]/g, " degrees celsius")
+    .replace(/[℉]/g, " degrees fahrenheit")
+    .replace(/°\s*C\b/gi, " degrees celsius")
+    .replace(/°\s*F\b/gi, " degrees fahrenheit")
+    .replace(/\bdeg(?:rees?)?\.?\s*C\b/gi, " degrees celsius")
+    .replace(/\bdeg(?:rees?)?\.?\s*F\b/gi, " degrees fahrenheit")
+    .replace(/°/g, " degrees ");
+
+  // --- Units ----------------------------------------------------------------
+  const UNITS: Array<[RegExp, string]> = [
+    [/\bkilomet(?:er|re)s?\s*(?:per|\/)\s*h(?:ou)?r/gi, "kilometres per hour"],
+    [/\bmiles?\s*(?:per|\/)\s*h(?:ou)?r/gi, "miles per hour"],
+    [/\bkm\s*\/\s*h\b/gi, "kilometres per hour"],
+    [/\bmph\b/gi, "miles per hour"],
+    [/\bkm\s*\/\s*s\b/gi, "kilometres per second"],
+    [/\bcm\b/gi, "centimetres"],
+    [/\bmm\b/gi, "millimetres"],
+    [/\bkm\b/gi, "kilometres"],
+    [/\bmg\b/gi, "milligrams"],
+    [/\bkg\b/gi, "kilograms"],
+    [/\bml\b/gi, "millilitres"],
+    [/\bms\b/gi, "milliseconds"],
+    [/\bgb\b/gi, "gigabytes"],
+    [/\bmb\b/gi, "megabytes"],
+    [/\bhz\b/gi, "hertz"],
+    [/\bghz\b/gi, "gigahertz"],
+    [/\bmhz\b/gi, "megahertz"],
+    [/\bhrs?\b/gi, "hours"],
+    [/\bsecs?\b/gi, "seconds"],
+    [/\bmins?\b/gi, "minutes"],
+    [/\bfps\b/gi, "frames per second"],
+    [/\brpm\b/gi, "revolutions per minute"],
+    [/\bmetres?\s*\/\s*s\b/gi, "metres per second"],
+    [/\bm\s*\/\s*s\b/g, "metres per second"],
+    [/\bknots?\b/gi, "knots"],
+  ];
+  for (const [pattern, words] of UNITS) text = text.replace(pattern, words);
+
+  // --- Percentages, maths and operators -------------------------------------
+  // Two-character comparisons go first, or they decompose into nonsense
+  // ("<=" would become "less than equals").
+  text = text
+    .replace(/<=/g, " less than or equal to ")
+    .replace(/>=/g, " greater than or equal to ")
+    .replace(/!=/g, " is not equal to ")
+    .replace(/==/g, " equals ")
+    .replace(/%/g, " percent ")
+    .replace(/&/g, " and ")
+    .replace(/&amp;/gi, " and ")
+    .replace(/=/g, " equals ")
+    .replace(/</g, " less than ")
+    .replace(/>/g, " greater than ")
+    .replace(/~/g, " approximately ")
+    .replace(/@/g, " at ")
+    .replace(/\+/g, " plus ")
+    .replace(/\*/g, " times ")
+    .replace(/⁄/g, " slash ")
+    .replace(/²/g, " squared")
+    .replace(/³/g, " cubed")
+    // 1/2 → one half, 3/4 → three quarters
+    .replace(/\b(\d+)\s*\/\s*(\d+)\b/g, (match, num: string, den: string) => {
+      const noun = FRACTION_NOUNS[Number(den)];
+      if (!noun) return match;
+      return Number(num) === 1 ? noun[0] : `${numberWords(Number(num))} ${noun[1]}`;
+    });
+
+  // --- Currency and magnitudes ----------------------------------------------
+  // "$1.5M" → "one point five million dollars", "2.5k" → "two point five thousand".
+  const withMagnitude = (num: string, gap = "", mag?: string) =>
+    `${numberPhrase(num)}${gap}${mag ? ` ${MAGNITUDES[mag.toLowerCase()]}` : ""}`;
+
+  text = text
+    .replace(
+      /([$€£₹¥])(\s*)(\d+(?:\.\d+)?)(\s*)([kmbtKMBT])?/g,
+      (_m, sym: string, pre: string, num: string, post: string, mag?: string) =>
+        `${CURRENCY[sym]} ${pre}${withMagnitude(num, "", mag)}${post}`,
+    )
+    .replace(
+      /(\d+(?:\.\d+)?)(\s*)([$€£₹¥])/g,
+      (_m, num: string, gap: string, sym: string) =>
+        `${withMagnitude(num)}${gap || " "}${CURRENCY[sym]}`,
+    )
+    .replace(
+      /\b(\d+(?:\.\d+)?)(\s*)([kmbtKMBT])\b/g,
+      (m, num: string, gap: string, mag: string) =>
+        // Leave "5 ft" style lone letters alone; only expand known magnitudes.
+        MAGNITUDES[mag.toLowerCase()]
+          ? `${withMagnitude(num, gap || " ", mag)}`
+          : m,
+    )
+    .replace(/[$€£₹¥]/g, "");
+
+  // --- Unicode vulgar fractions ---------------------------------------------
+  const VULGAR: Record<string, string> = {
+    "½": "one half", "¼": "one quarter", "¾": "three quarters",
+    "⅓": "one third", "⅔": "two thirds", "⅛": "one eighth",
+  };
+  text = text.replace(/[½¼¾⅓⅔⅛]/g, (m) => VULGAR[m] ?? m);
+
+  // --- Numbers: clock times, ratios, ranges, negative values, ordinals -----
+  text = text
+    // 3:30 → "half past three", 9:00 → "nine o'clock"
+    .replace(/\b(\d{1,2}):(\d{2})\b/g, (_m, h: string, min: string) => {
+      const hour = Number(h);
+      const minute = Number(min);
+      if (minute === 0) return `${numberWords(hour)} o'clock`;
+      if (minute === 30) return `half past ${numberWords(hour)}`;
+      return `${numberWords(hour)} ${numberWords(minute)}`;
+    })
+    // 16:9 → "sixteen by nine" (aspect ratios and similar)
+    .replace(/\b(\d+):(\d+)\b/g, (_m, a: string, b: string) =>
+      Number(a) <= 999 && Number(b) <= 999
+        ? `${numberWords(Number(a))} by ${numberWords(Number(b))}`
+        : `${a} to ${b}`,
+    )
+    // 5'9" → "five foot nine"
+    .replace(/\b(\d+)\s*['′]\s*(\d+(?:\.\d+)?)\s*["″]/g,
+      (_m, feet: string, inches: string) =>
+        `${numberWords(Number(feet))} foot ${numberWords(Number(inches))}`,
+    )
+    // 10-20 → "10 to 20" (word-anchored so "COVID-19" is left alone)
+    .replace(/(^|[\s(])(\d+)\s*[-–—]\s*(\d+)/g, "$1$2 to $3")
+    // -4 → "minus four", once ranges have already been consumed
+    .replace(/(^|[\s(])[-−]\s*(\d)/g, "$1 minus $2")
+    // 21st → "twenty-first"
+    .replace(/\b(\d{1,2})(?:st|nd|rd|th)\b/gi, (_m, n: string) => ordinalWords(Number(n)));
+
+  // --- Abbreviations a synthesiser reads as letter soup ---------------------
+  const ABBREVIATIONS: Array<[RegExp, string]> = [
+    [/\be\.g\.,?/gi, "for example"],
+    [/\bi\.e\.,?/gi, "that is"],
+    [/\betc\.,?/gi, "et cetera"],
+    [/\bvs\.?/gi, "versus"],
+    [/\bapprox\.,?/gi, "approximately"],
+    [/\bno\.\s*/gi, "number "],
+    [/\bfig\.\s*/gi, "figure "],
+    [/\bDr\./g, "Doctor"],
+    [/\bMr\./g, "Mister"],
+    [/\bMrs\./g, "Missus"],
+    [/\bMs\./g, "Miss"],
+    [/\bProf\./g, "Professor"],
+    [/\bSt\./g, "Saint"],
+    [/\bJr\./g, "Junior"],
+    [/\bSr\./g, "Senior"],
+    [/\bJan\./g, "January"],
+    [/\bFeb\./g, "February"],
+    [/\bMar\./g, "March"],
+    [/\bApr\./g, "April"],
+    [/\bJun\./g, "June"],
+    [/\bJul\./g, "July"],
+    [/\bAug\./g, "August"],
+    [/\bSep\./g, "September"],
+    [/\bSept\./g, "September"],
+    [/\bOct\./g, "October"],
+    [/\bNov\./g, "November"],
+    [/\bDec\./g, "December"],
+  ];
+  for (const [pattern, words] of ABBREVIATIONS) text = text.replace(pattern, words);
+
+  // --- Tone -----------------------------------------------------------------
+  // Emphasis headers should not be shouted in a flat synthetic voice, and a
+  // run of punctuation reads as noise rather than emphasis.
+  text = text.replace(
+    /\b(IMPORTANT|WARNING|NOTICE|CAUTION|URGENT|CRITICAL|TIP|NOTE|SUMMARY|ANSWER|EXAMPLE)\b/g,
+    (word) => word[0] + word.slice(1).toLowerCase(),
+  );
+  text = text
+    .replace(/!{2,}/g, "!")
+    .replace(/\?{2,}/g, "?")
+    .replace(/…{1,}|\.{3,}/g, ", ")
+    .replace(/\s*(?:—|--)\s*/g, ", ")
+    .replace(/\s+([,.!?;:])/g, "$1");
+
+  return text;
+}
+
 /** Common LaTeX macros → words, so an equation isn't read as gibberish. */
 const LATEX_WORDS: Array<[RegExp, string | ((match: string) => string)]> = [
   [/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, "$1 over $2"],
@@ -152,6 +427,27 @@ export function sanitizeForSpeech(
   );
 
   // --- Shape the prose -----------------------------------------------------
+  // Symbols first: whatever the markup strippers could not express as a word
+  // (arrows, comparison signs, the odd glyph) gets spoken here, then the whole
+  // line is normalised to words by the pronunciation pass.
+  text = text
+    .replace(/[→⇒]/g, " leads to ")
+    .replace(/[←⇐]/g, " comes from ")
+    .replace(/[↔⇔]/g, " is related to ")
+    .replace(/≤/g, " less than or equal to ")
+    .replace(/≥/g, " greater than or equal to ")
+    .replace(/≠/g, " not equal to ")
+    .replace(/≈/g, " approximately ")
+    .replace(/[×✕]/g, " times ")
+    .replace(/÷/g, " divided by ")
+    .replace(/±/g, " plus or minus ")
+    // Note: < and > are deliberately left for the pronunciation pass, which
+    // turns them into "less than" / "greater than".
+    .replace(/[{}[\]|]/g, " ");
+
+  // Turn what is left into words a person would actually say.
+  text = pronounceForSpeech(text);
+
   // One sentence per source line: a line that doesn't already end in
   // punctuation gets a full stop so the TTS engine pauses in the right place
   // instead of running two list items together.
@@ -164,20 +460,6 @@ export function sanitizeForSpeech(
 
   text = text.replace(/\s+/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
   text = text.replace(/([,.;:!?]){2,}/g, "$1");
-  // Arrows and other symbols that a TTS engine would spell out letter by letter.
-  text = text
-    .replace(/[→⇒]/g, " leads to ")
-    .replace(/[←⇐]/g, " comes from ")
-    .replace(/[↔⇔]/g, " is related to ")
-    .replace(/[⇒]/g, " therefore ")
-    .replace(/≤/g, " less than or equal to ")
-    .replace(/≥/g, " greater than or equal to ")
-    .replace(/≠/g, " not equal to ")
-    .replace(/≈/g, " approximately ")
-    .replace(/[×✕]/g, " times ")
-    .replace(/÷/g, " divided by ")
-    .replace(/±/g, " plus or minus ")
-    .replace(/[<>{}[\]|]/g, " ");
   text = text.replace(/\s+/g, " ").trim();
 
   // A reply that was nothing but code/math has no words to say — speaking
