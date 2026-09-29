@@ -65,6 +65,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { useVoicePlayer, useVoiceRecorder } from "@/hooks/use-voice";
 import { useLiveMode } from "@/hooks/use-live";
+import { useSoundEffects } from "@/hooks/use-sound-effects";
+import { matchSoundCue, isSoundOnlyRequest, SOUND_CUES } from "@/lib/sound-effects";
 import { COUNTRIES, getCountry, AUTHOR } from "@/lib/languages";
 import { generateImageWithPuter } from "@/lib/puter";
 import {
@@ -436,6 +438,7 @@ export default function Dashboard() {
   const [modeNews, setModeNews] = useState(false);
   const [modeAnalyze, setModeAnalyze] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>([]);
+  const [showSounds, setShowSounds] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [assistantError, setAssistantError] = useState<string | null>(null);
   const [panelNlp, setPanelNlp] = useState<NlpResult | null>(null);
@@ -742,6 +745,7 @@ export default function Dashboard() {
   const recorder = useVoiceRecorder(handleRecording);
 
   // ---- Live mode: Whisper STT → chat pipeline → spoken reply ----
+  const sound = useSoundEffects();
   const liveTurnRef = useRef<(text: string) => Promise<void>>(async () => {});
   // Rolling conversation shown on the full-screen JARVIS HUD (live voice call)
   const [liveTranscript, setLiveTranscript] = useState<LiveTurn[]>([]);
@@ -751,6 +755,20 @@ export default function Dashboard() {
       const bytes = await audio.arrayBuffer();
       const { text } = await transcribeWhisperAction({ audio: bytes, language: lang });
       if (!text) return "";
+
+      // A sound request ("bark", "do a cat meow") is answered with the actual
+      // sound, not a sentence about it. Wait for the clip to finish before
+      // returning, otherwise the recorder picks the bark up as user speech.
+      const cue = matchSoundCue(text);
+      if (cue) {
+        setLiveTranscript((t) => [
+          ...t.slice(-5),
+          { user: text, assistant: `${cue.emoji}  ${cue.label}` },
+        ]);
+        await sound.playCue(cue);
+        return "";
+      }
+
       // The user finished a statement → caption it immediately, then answer.
       setLiveTranscript((t) => [...t.slice(-5), { user: text, assistant: "" }]);
       await liveTurnRef.current(text);
@@ -1042,6 +1060,57 @@ export default function Dashboard() {
     }
   };
 
+  /**
+   * Answer a sound request with the sound itself. The clip is generated once
+   * per prompt and cached server-side, so repeating the request is instant.
+   */
+  const runSoundEffectMessage = async (
+    cue: (typeof SOUND_CUES)[number],
+    originalText: string,
+  ) => {
+    setSending(true);
+    setAssistantError(null);
+    setInput("");
+    if (recorder.recording) recorder.stop();
+
+    try {
+      let sessionId: Id<"chatSessions">;
+      if (!activeId) {
+        const { sessionId: sid } = await startWithMessage({ content: originalText });
+        sessionId = sid;
+        setActiveId(sid);
+      } else {
+        sessionId = activeId;
+        await appendMessage({ sessionId, role: "user", content: originalText });
+      }
+
+      setGenerating(true);
+      const played = await sound.playCue(cue);
+      setGenerating(false);
+
+      // A bare "bark" needs no prose; a question that merely mentions the
+      // sound still deserves an answer from the model.
+      const reply = played
+        ? isSoundOnlyRequest(originalText)
+          ? `${cue.emoji}  *${cue.label}*`
+          : `${cue.emoji}  That was a real ${cue.label.toLowerCase()} — a language model can only describe the sound, so I generated it.`
+        : `I couldn't generate that sound right now${sound.error ? ` — ${sound.error}` : ""}.`;
+
+      await appendMessage({
+        sessionId,
+        role: "assistant",
+        content: reply,
+        model: "elevenlabs-sound-effects",
+      });
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Sound effect failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  };
+
   const runSendWithText = async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
     if ((!text && pendingImages.length === 0 && !pendingFile) || sending)
@@ -1063,6 +1132,15 @@ export default function Dashboard() {
     const effectiveText = editingId || deepResearch || pendingImages.length > 0 || pendingFile
       ? text
       : `${text}\n\n[System: ${countryPersona}]`;
+
+    // Sound effects: "bark", "play a dog sound", "what does a cat say" —
+    // answered with the real audio, which is the one thing a text model
+    // cannot do for itself.
+    const soundCue = matchSoundCue(text);
+    if (!editingId && soundCue && !pendingFile) {
+      await runSoundEffectMessage(soundCue, text);
+      return;
+    }
 
     // Natural-language image generation: "generate an image of..." etc.
     if (!editingId && text && pendingImages.length === 0 && !pendingFile && !deepResearch) {
@@ -3006,6 +3084,17 @@ export default function Dashboard() {
                   />
                 <div className="absolute right-1.5 bottom-1.5 flex items-center gap-0.5">
                   <button
+                    onClick={() => setShowSounds((v) => !v)}
+                    title="Sound effects — hear a real animal or object sound"
+                    className={`inline-flex size-7 items-center justify-center rounded-lg transition-colors ${
+                      showSounds
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    }`}
+                  >
+                    <Volume2 className="size-3.5" />
+                  </button>
+                  <button
                     onClick={() =>
                       recorder.recording
                         ? recorder.stop()
@@ -3059,6 +3148,34 @@ export default function Dashboard() {
                 </div>
               </div>
               </div>
+              {showSounds && (
+                <div className="mb-2 rounded-lg border bg-muted/30 p-2">
+                  <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    <Volume2 className="size-3" />
+                    Sound effects
+                    <span className="ml-1 font-normal normal-case tracking-normal">
+                      — generated, not described
+                    </span>
+                    {sound.playing && <Loader2 className="ml-auto size-3 animate-spin" />}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SOUND_CUES.map((cue) => (
+                      <button
+                        key={cue.id}
+                        onClick={() => {
+                          setShowSounds(false);
+                          void runSoundEffectMessage(cue, cue.label);
+                        }}
+                        disabled={sending}
+                        className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground disabled:opacity-40"
+                      >
+                        <span aria-hidden>{cue.emoji}</span>
+                        {cue.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {live.active && (
                 <div className="mb-2 flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs">
                   <Radio className={`size-3.5 text-red-500 ${live.speaking ? "" : "animate-pulse"}`} />

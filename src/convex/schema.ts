@@ -109,6 +109,16 @@ const schema = defineSchema(
       createdAt: v.number(),
     }).index("by_user", ["userId"]),
 
+    // Generated sound effects (dog bark, thunder, ...). The prompt hash is the
+    // cache key, so a given sound is only ever generated once and is then
+    // served straight out of file storage.
+    soundEffects: defineTable({
+      promptHash: v.string(),
+      prompt: v.string(),
+      storageId: v.id("_storage"),
+      createdAt: v.number(),
+    }).index("by_hash", ["promptHash"]),
+
     // Cloudinary OAuth 2.0 connection (one row per user)
     cloudinaryAuth: defineTable({
       userId: v.id("users"),

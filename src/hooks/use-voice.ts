@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { audioMimeType } from "@/lib/utils";
+import { audioMimeType } from "@/lib/audio";
 
 // ---------------------------------------------------------------------------
 // useVoiceRecorder — MediaRecorder wrapper for the mic button
