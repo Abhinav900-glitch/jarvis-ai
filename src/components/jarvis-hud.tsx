@@ -12,9 +12,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { SkipForward, X, Zap } from "lucide-react";
+import { Mic, MicOff, SkipForward, X, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownMessage } from "@/components/markdown-message";
+import { WAKE_PHRASE } from "@/lib/wake-word";
 
 export type HudPhase = "listening" | "processing" | "speaking" | "idle";
 
@@ -32,6 +33,9 @@ export interface JarvisHudProps {
   transcript: LiveTurn[];
   /** Selected country/language name for the HUD readout */
   language: string;
+  /** When true, turns that don't open with the wake phrase are ignored */
+  wakeGated: boolean;
+  onToggleWake: () => void;
   onStop: () => void;
   /** Interrupt the spoken reply — drop straight back to listening */
   onSkip: () => void;
@@ -116,6 +120,8 @@ export function JarvisHud({
   level,
   transcript,
   language,
+  wakeGated,
+  onToggleWake,
   onStop,
   onSkip,
 }: JarvisHudProps) {
@@ -186,7 +192,9 @@ export function JarvisHud({
               aria-live="polite"
               className="text-sm tracking-[0.015em] text-[#f3f4ff]"
             >
-              {STATUS_LABELS[phase]}
+              {wakeGated && (phase === "listening" || phase === "idle")
+                ? `Say “${WAKE_PHRASE}” to wake it`
+                : STATUS_LABELS[phase]}
             </div>
             <div className="text-center text-xs text-[#8189a7]">
               {STATUS_HINTS[phase]}
@@ -208,6 +216,23 @@ export function JarvisHud({
           </div>
 
           <div className="flex h-12 shrink-0 items-center justify-center gap-4">
+            <button
+              onClick={onToggleWake}
+              title={
+                wakeGated
+                  ? `Wake gate on — turns are ignored until you say “${WAKE_PHRASE}”`
+                  : "Wake gate off — Jarvis answers anything it hears"
+              }
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] transition-colors",
+                wakeGated
+                  ? "border-[#818cf8]/40 bg-[#818cf8]/15 text-[#a5b4fc]"
+                  : "border-white/10 bg-white/[0.04] text-[#8189a7] hover:bg-white/[0.08]",
+              )}
+            >
+              {wakeGated ? <Mic className="size-3" /> : <MicOff className="size-3" />}
+              {wakeGated ? "Wake gate on" : "Wake gate off"}
+            </button>
             {phase === "speaking" && (
               <button
                 onClick={onSkip}

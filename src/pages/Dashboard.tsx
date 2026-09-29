@@ -67,6 +67,9 @@ import { useVoicePlayer, useVoiceRecorder } from "@/hooks/use-voice";
 import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { matchSoundCue, isSoundOnlyRequest, SOUND_CUES } from "@/lib/sound-effects";
+import { stripWakeWord, WAKE_PHRASE } from "@/lib/wake-word";
+import { playAckChime } from "@/lib/audio";
+import { getTranslateLanguage } from "@/lib/languages";
 import { COUNTRIES, getCountry, AUTHOR } from "@/lib/languages";
 import { generateImageWithPuter } from "@/lib/puter";
 import {
@@ -408,6 +411,7 @@ export default function Dashboard() {
   const transcribeAction = useAction(api.voice.transcribe);
   const transcribeWhisperAction = useAction(api.voice.transcribeWhisper);
   const speakAction = useAction(api.voice.speak);
+  const translateAction = useAction(api.translate.translate);
   const getSignedUploadUrl = useAction(api.cloudinary.getSignedUploadUrl);
   const generateImageAction = useAction(api.cloudinary.generateImage);
   const summarizeUrlAction = useAction(api.ai.summarizeUrl);
@@ -439,6 +443,11 @@ export default function Dashboard() {
   const [modeAnalyze, setModeAnalyze] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>([]);
   const [showSounds, setShowSounds] = useState(false);
+  // Per-message translations, shown beneath the original reply.
+  const [translations, setTranslations] = useState<
+    Record<string, { text: string; language: string; engine: string }>
+  >({});
+  const [translatingId, setTranslatingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [assistantError, setAssistantError] = useState<string | null>(null);
   const [panelNlp, setPanelNlp] = useState<NlpResult | null>(null);
@@ -746,6 +755,23 @@ export default function Dashboard() {
 
   // ---- Live mode: Whisper STT → chat pipeline → spoken reply ----
   const sound = useSoundEffects();
+  // While the wake gate is on, live mode ignores any turn that doesn't start
+  // with "Hey Jarvis" — so a passing conversation never becomes a command.
+  const [wakeGate, setWakeGate] = useState(() => {
+    try {
+      return localStorage.getItem("jarvis-wake-gate") === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("jarvis-wake-gate", String(wakeGate));
+    } catch {
+      /* ignore */
+    }
+  }, [wakeGate]);
+
   const liveTurnRef = useRef<(text: string) => Promise<void>>(async () => {});
   // Rolling conversation shown on the full-screen JARVIS HUD (live voice call)
   const [liveTranscript, setLiveTranscript] = useState<LiveTurn[]>([]);
@@ -753,8 +779,23 @@ export default function Dashboard() {
     async (audio: Blob, country: string) => {
       const lang = getCountry(country).language;
       const bytes = await audio.arrayBuffer();
-      const { text } = await transcribeWhisperAction({ audio: bytes, language: lang });
-      if (!text) return "";
+      const { text: raw } = await transcribeWhisperAction({ audio: bytes, language: lang });
+      if (!raw) return "";
+
+      // Wake gate: drop the turn entirely unless it opened with the phrase.
+      let text = raw;
+      if (wakeGate) {
+        const wake = stripWakeWord(raw);
+        if (!wake.woke) return "";
+        if (wake.onlyWake) {
+          // "Hey Jarvis" on its own: acknowledge, then keep listening.
+          playAckChime();
+          setLiveTranscript((t) => [...t.slice(-5), { user: "", assistant: "" }]);
+          return "";
+        }
+        text = wake.text;
+        playAckChime();
+      }
 
       // A sound request ("bark", "do a cat meow") is answered with the actual
       // sound, not a sentence about it. Wait for the clip to finish before
@@ -1749,6 +1790,68 @@ export default function Dashboard() {
     synth.speak(utt);
   };
 
+  const handleTranslate = async (id: string, content: string) => {
+    // Tapping again on an already-translated message reveals the original.
+    if (translations[id]) {
+      setTranslations((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      return;
+    }
+
+    const target = getTranslateLanguage(getCountry(countryCode).langTag);
+    if (!target) {
+      setAssistantError(
+        `Translation isn't available for ${getCountry(countryCode).name}.`,
+      );
+      return;
+    }
+
+    setTranslatingId(id);
+    setAssistantError(null);
+    try {
+      // Sarvam first; if the key is missing or the language is unsupported,
+      // the chat model translates instead so the button still does something.
+      const result = await translateAction({
+        text: content,
+        target: target.code,
+      });
+
+      if (result.translated) {
+        setTranslations((prev) => ({
+          ...prev,
+          [id]: {
+            text: result.translated!,
+            language: result.targetName,
+            engine: result.engine,
+          },
+        }));
+        return;
+      }
+
+      const fallback = await askAction({
+        prompt: `Translate the following text into ${target.name} (${target.native}). Reply with ONLY the translation, no preamble, no quotes, no explanation. Preserve any markdown structure.\n\n${content}`,
+        history: [],
+      });
+      setTranslations((prev) => ({
+        ...prev,
+        [id]: {
+          text: fallback.text,
+          language: target.name,
+          engine: fallback.model,
+        },
+      }));
+    } catch (err) {
+      setAssistantError(
+        err instanceof Error ? err.message : "Translation failed.",
+      );
+    } finally {
+      setTranslatingId(null);
+    }
+  };
+
   const handleSpeak = async (id: string, content: string) => {
     if (player.playingId === id) {
       player.stop();
@@ -2438,6 +2541,17 @@ export default function Dashboard() {
                               </span>
                             ) : null}
                             <button
+                              onClick={() => void handleTranslate(m._id, m.content)}
+                              title={`Translate to ${getCountry(countryCode).languageName.split(" /")[0]}`}
+                              className="rounded p-0.5 transition-colors hover:text-foreground"
+                            >
+                              {translatingId === m._id ? (
+                                <Loader2 className="size-3 animate-spin" />
+                              ) : (
+                                <Languages className="size-3" />
+                              )}
+                            </button>
+                            <button
                               onClick={() =>
                                 void handleSpeak(m._id, m.content)
                               }
@@ -2555,6 +2669,20 @@ export default function Dashboard() {
                             content={m.content}
                             sources={m.sources}
                           />
+                          {translations[m._id] && (
+                            <div className="mt-3 rounded-lg border border-dashed bg-muted/30 px-3.5 py-2.5">
+                              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                                <Languages className="size-3" />
+                                {translations[m._id].language}
+                                <span className="ml-auto normal-case tracking-normal opacity-70">
+                                  {translations[m._id].engine}
+                                </span>
+                              </div>
+                              <div className="text-sm leading-7 text-foreground/90">
+                                <MarkdownMessage content={translations[m._id].text} />
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                       {m.role === "assistant" &&
@@ -3333,6 +3461,8 @@ export default function Dashboard() {
         level={live.level}
         transcript={liveTranscript}
         language={getCountry(countryCode).name}
+        wakeGated={wakeGate}
+        onToggleWake={() => setWakeGate((v) => !v)}
         onStop={() => {
           live.stop();
           setLiveTranscript([]);

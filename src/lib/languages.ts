@@ -222,6 +222,69 @@ export function isIndicLangTag(langTag: string | null | undefined): boolean {
   return SARVAM_INDIC.has(baseLanguage(langTag));
 }
 
+// ---------------------------------------------------------------------------
+// Sarvam translation languages
+//
+// The translate model covers all 22 scheduled Indian languages plus English —
+// a much wider set than the ten the TTS voices cover, so this is its own
+// list rather than a reuse of SARVAM_LANGUAGES.
+// ---------------------------------------------------------------------------
+
+export interface TranslateLanguage {
+  code: string;
+  name: string;
+  native: string;
+}
+
+export const TRANSLATE_LANGUAGES: TranslateLanguage[] = [
+  { code: "en-IN", name: "English", native: "English" },
+  { code: "hi-IN", name: "Hindi", native: "हिन्दी" },
+  { code: "bn-IN", name: "Bengali", native: "বাংলা" },
+  { code: "ta-IN", name: "Tamil", native: "தமிழ்" },
+  { code: "te-IN", name: "Telugu", native: "తెలుగు" },
+  { code: "mr-IN", name: "Marathi", native: "मराठी" },
+  { code: "gu-IN", name: "Gujarati", native: "ગુજરાતી" },
+  { code: "kn-IN", name: "Kannada", native: "ಕನ್ನಡ" },
+  { code: "ml-IN", name: "Malayalam", native: "മലയാളം" },
+  { code: "pa-IN", name: "Punjabi", native: "ਪੰਜਾਬੀ" },
+  { code: "od-IN", name: "Odia", native: "ଓଡ଼ିଆ" },
+  { code: "ur-IN", name: "Urdu", native: "اردو" },
+  { code: "as-IN", name: "Assamese", native: "অসমীয়া" },
+  { code: "ne-IN", name: "Nepali", native: "नेपाली" },
+  { code: "sa-IN", name: "Sanskrit", native: "संस्कृतम्" },
+  { code: "kok-IN", name: "Konkani", native: "कोंकणी" },
+  { code: "mai-IN", name: "Maithili", native: "मैथिली" },
+  { code: "mni-IN", name: "Manipuri", native: "মৈতৈলোন্" },
+  { code: "sat-IN", name: "Santali", native: "সাঁতালি" },
+  { code: "sd-IN", name: "Sindhi", native: "سنڌي" },
+  { code: "doi-IN", name: "Dogri", native: "डोगरी" },
+  { code: "ks-IN", name: "Kashmiri", native: "कٲशُر" },
+  { code: "brx-IN", name: "Bodo", native: "बर' मैथिली" },
+];
+
+const TRANSLATE_CODES = new Set(TRANSLATE_LANGUAGES.map((l) => l.code));
+
+/**
+ * The Sarvam target language for a BCP-47 tag, or null when it is outside the
+ * 22 scheduled languages. Callers skip the request rather than 422.
+ */
+export function getTranslateLanguage(
+  langTag: string | null | undefined,
+): TranslateLanguage | null {
+  const tag = (langTag ?? "").trim();
+  if (TRANSLATE_CODES.has(tag)) {
+    return TRANSLATE_LANGUAGES.find((l) => l.code === tag) ?? null;
+  }
+  const base = baseLanguage(tag);
+  if (base === "en") {
+    return TRANSLATE_LANGUAGES[0];
+  }
+  const regional = `${base}-IN`;
+  return TRANSLATE_CODES.has(regional)
+    ? TRANSLATE_LANGUAGES.find((l) => l.code === regional) ?? null
+    : null;
+}
+
 export function getCountry(code: string | null | undefined): CountryConfig {
   return (
     COUNTRIES.find((c) => c.code === code) ??

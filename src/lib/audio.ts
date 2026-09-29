@@ -54,3 +54,55 @@ export async function unlockAudioElement(): Promise<void> {
     // caller falls back to speech synthesis. Nothing else to do.
   }
 }
+
+// ---------------------------------------------------------------------------
+// UI chimes, synthesised on the fly.
+//
+// Acknowledgement sounds are tiny, fixed and used constantly, so generating
+// them with two oscillators is cheaper than shipping audio files — and it
+// means the wake tone can never 404 or bloat the bundle.
+// ---------------------------------------------------------------------------
+
+let chimeCtx: AudioContext | null = null;
+
+function getChimeContext(): AudioContext | null {
+  try {
+    if (chimeCtx && chimeCtx.state !== "closed") return chimeCtx;
+    const Ctor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+    chimeCtx = new Ctor();
+    return chimeCtx;
+  } catch {
+    return null;
+  }
+}
+
+/** Short two-note "I'm listening" chime. Resolves when it finishes. */
+export function playAckChime(volume = 0.12): void {
+  const ctx = getChimeContext();
+  if (!ctx) return;
+  void ctx.resume().catch(() => {});
+
+  const now = ctx.currentTime;
+  // E6 → A6: a rising perfect fifth reads as "acknowledged" without being loud.
+  const notes = [
+    { freq: 1318.51, at: 0, dur: 0.09 },
+    { freq: 1760.0, at: 0.085, dur: 0.16 },
+  ];
+
+  for (const note of notes) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(note.freq, now + note.at);
+    // A short attack/decay envelope stops the click a raw gate would make.
+    gain.gain.setValueAtTime(0.0001, now + note.at);
+    gain.gain.exponentialRampToValueAtTime(volume, now + note.at + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + note.at + note.dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now + note.at);
+    osc.stop(now + note.at + note.dur + 0.02);
+  }
+}
