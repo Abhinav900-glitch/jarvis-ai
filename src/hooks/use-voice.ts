@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { audioMimeType } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // useVoiceRecorder — MediaRecorder wrapper for the mic button
@@ -125,10 +126,15 @@ export function useVoicePlayer() {
   const play = useCallback(
     (id: string, audio: ArrayBuffer) => {
       stop();
-      const url = URL.createObjectURL(new Blob([audio], { type: "audio/wav" }));
+      // The TTS action returns WAV from Groq but MP3 from ElevenLabs — sniff
+      // the real type, or Safari refuses to play the blob at all.
+      const url = URL.createObjectURL(
+        new Blob([audio], { type: audioMimeType(audio) }),
+      );
       urlRef.current = url;
       const el = new Audio(url);
       el.onended = stop;
+      el.onerror = stop;
       audioRef.current = el;
       setPlayingId(id);
       void el.play().catch(stop);

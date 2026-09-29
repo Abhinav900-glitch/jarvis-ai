@@ -3,6 +3,7 @@ import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { getCountry } from "@/lib/languages";
 import { sanitizeForSpeech, speechSentences } from "@/lib/speech";
+import { audioMimeType } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // useLiveMode — hands-free voice conversation (ChatGPT / Gemini Live style)
@@ -66,6 +67,14 @@ const MIN_VOICED_MS = 180; // ignore blips shorter than this (cough, door)
 const MIN_CLIP_BYTES = 500; // floor for a decodable webm frame
 const MAX_TURN_MS = 20_000; // hard cap so a monologue can't record forever
 
+// A fraction of a second of digital silence. Mobile browsers (iOS Safari,
+// Chrome on Android) only let an <audio> element play later without a fresh
+// user gesture if that element has already been "unlocked" by playing during
+// one. Starting live mode IS a user gesture, so we prime it here — otherwise
+// every reply after the first is silently dropped on a phone.
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
 export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveMode {
   const [active, setActive] = useState(false);
   const [listening, setListening] = useState(false);
@@ -93,7 +102,12 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   const levelTimerRef = useRef<number | null>(null);
   const silenceStartRef = useRef<number | null>(null);
   const bargeInRef = useRef(false);
-  const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsUrlRef = useRef<string | null>(null);
+  // Resolver for the in-flight playback promise. `pause()` does not fire an
+  // `ended` event, so an explicit stop (barge-in / Skip) has to settle it —
+  // otherwise the turn never finishes and the mic never resumes.
+  const ttsSettleRef = useRef<(() => void) | null>(null);
   // Voice-activity state for turn endpointing
   const speechStartRef = useRef<number | null>(null);
   const lastLoudRef = useRef<number | null>(null);
@@ -102,20 +116,50 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   // it through a ref to avoid a stale closure.
   const stopRecordingRef = useRef<() => void>(() => {});
 
-  /** Stop Groq-TTS audio playback instantly (barge-in / session end). */
+  /** Stop server TTS playback instantly (barge-in / skip / session end). */
   const stopTtsAudio = useCallback(() => {
-    const src = ttsSourceRef.current;
-    if (src) {
-      try {
-        src.stop();
-      } catch {
-        /* already stopped */
-      }
-      ttsSourceRef.current = null;
+    const el = ttsAudioRef.current;
+    if (el) {
+      el.pause();
+      el.onended = null;
+      el.onerror = null;
+      el.src = "";
+      ttsAudioRef.current = null;
     }
+    if (ttsUrlRef.current) {
+      URL.revokeObjectURL(ttsUrlRef.current);
+      ttsUrlRef.current = null;
+    }
+    const settle = ttsSettleRef.current;
+    ttsSettleRef.current = null;
+    settle?.();
   }, []);
 
   const country = getCountry(countryCode);
+
+  /**
+   * Prime audio output for the rest of the session. Must be called from inside
+   * the user gesture that starts live mode: it resumes the AudioContext (iOS
+   * starts it suspended) and plays a moment of silence through an <audio>
+   * element, which is what lets us start playback later without a gesture.
+   */
+  const unlockAudio = useCallback(async () => {
+    try {
+      const ctx = audioCtxRef.current;
+      if (ctx && ctx.state === "suspended") await ctx.resume();
+    } catch {
+      /* resume is best-effort */
+    }
+    try {
+      const el = new Audio(SILENT_WAV);
+      el.volume = 0;
+      await el.play();
+      el.pause();
+    } catch {
+      // Autoplay still blocked — the browser will ask, or the reply simply
+      // falls back to speech synthesis. Nothing else to do here.
+    }
+  }, []);
 
   // ------------------------------------------------------------------
   // Mic level monitoring
@@ -349,31 +393,53 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
 
       void (async () => {
         try {
-          // Primary: Groq TTS (GROQ_API_KEY). Returns null audio when no
-          // server model is available — falls back to the browser voice.
+          // Primary: server TTS (Groq Orpheus → ElevenLabs). Returns null audio
+          // when no provider is available — falls back to the browser voice.
           const { audio } = await speakTts({ text: spoken });
           if (bargeInRef.current || !activeRef.current) {
             finish();
             return;
           }
           if (!audio) throw new Error("no server audio");
-          const ctx = audioCtxRef.current;
-          if (!ctx) throw new Error("audio context closed");
-          const buf = await ctx.decodeAudioData(audio.slice(0));
-          const src = ctx.createBufferSource();
-          src.buffer = buf;
-          src.onended = finish;
-          ttsSourceRef.current = src;
+
+          // Play through an <audio> element rather than a bare
+          // AudioBufferSourceNode: the element decodes WAV and MP3 for us
+          // (the action returns either, depending on the provider), routes to
+          // the phone's media channel — so the ringer/silent switch doesn't
+          // swallow Jarvis — and gives us reliable play() rejection to fall
+          // back on.
+          stopTtsAudio();
+          const url = URL.createObjectURL(
+            new Blob([audio], { type: audioMimeType(audio) }),
+          );
+          ttsUrlRef.current = url;
+          const el = new Audio(url);
+          el.preload = "auto";
+          el.volume = 1;
+          ttsAudioRef.current = el;
+
           speakingRef.current = true;
           setSpeaking(true);
-          src.start();
+
+          await new Promise<void>((resolve, reject) => {
+            const settleOnce = (fn: () => void) => {
+              ttsSettleRef.current = null;
+              fn();
+            };
+            ttsSettleRef.current = () => settleOnce(resolve);
+            el.onended = () => settleOnce(resolve);
+            el.onerror = () => settleOnce(() => reject(new Error("audio playback failed")));
+            void el.play().catch((err) => settleOnce(() => reject(err)));
+          });
+          finish();
         } catch {
           // Fallback: browser speech synthesis
+          stopTtsAudio();
           speakWithBrowser(spoken, finish);
         }
       })();
     },
-    [speakTts, speakWithBrowser],
+    [speakTts, speakWithBrowser, stopTtsAudio],
   );
 
   // ------------------------------------------------------------------
@@ -415,15 +481,20 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-
-      // Set up the analyser for level monitoring + barge-in
+      // Create and resume the AudioContext FIRST, while the user gesture that
+      // started live mode is still live — iOS hands back a suspended context
+      // otherwise, and the getUserMedia await below would break the chain.
       const Ctx =
         window.AudioContext ??
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new Ctx();
       audioCtxRef.current = ctx;
+      await unlockAudio();
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      // Set up the analyser for level monitoring + barge-in
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
@@ -437,7 +508,7 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
     } catch {
       setError("Microphone access denied. Allow mic access and retry.");
     }
-  }, [startLevelMonitor, startRecording]);
+  }, [startLevelMonitor, startRecording, unlockAudio]);
 
   /** Skip the current spoken reply and go straight back to listening. */
   const skipSpeaking = useCallback(() => {
@@ -478,10 +549,11 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
     () => () => {
       activeRef.current = false;
       window.speechSynthesis?.cancel();
+      stopTtsAudio();
       streamRef.current?.getTracks().forEach((t) => t.stop());
       if (levelRafRef.current !== null) cancelAnimationFrame(levelRafRef.current);
     },
-    [],
+    [stopTtsAudio],
   );
 
   return {
