@@ -12,6 +12,7 @@ import {
   CameraOff,
   Check,
   ChevronDown,
+  Code2,
   Download,
   FileText,
   Equal,
@@ -54,6 +55,7 @@ import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud
 import { JarvisOrb } from "@/components/jarvis-orb";
 import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage, looksLikeMathOrMarkdown } from "@/components/markdown-message";
+import { CodePanel } from "@/components/code-panel";
 import { sanitizeForSpeech } from "@/lib/speech";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -535,6 +537,7 @@ export default function Dashboard() {
   // --- Feature panels: memory, export, camera, live translation ---
   const [showMemory, setShowMemory] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [showCode, setShowCode] = useState(false);
   const [streaming, setStreaming] = useState(false);
 
   // Camera vision is opt-in and off until the user asks for it: the hook
@@ -2473,6 +2476,15 @@ export default function Dashboard() {
                       <Check className="ml-auto size-4" />
                     ) : null}
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setShowCode((v) => !v)}
+                  >
+                    <Code2 className="size-4" />
+                    Code runner
+                    {showCode ? (
+                      <Check className="ml-auto size-4" />
+                    ) : null}
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setShowSearch((v) => !v)}>
                     <Search className="size-4" />
@@ -3171,12 +3183,23 @@ export default function Dashboard() {
             {showCalculator && (
               <CalculatorPanel onClose={() => setShowCalculator(false)} />
             )}
-          </AnimatePresence>
+          </AnimatePresence>            {/* ---- Memory panel ---- */}
+            <AnimatePresence>
+              {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
+            </AnimatePresence>
 
-          {/* ---- Memory panel ---- */}
-          <AnimatePresence>
-            {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
-          </AnimatePresence>
+            {/* ---- Code runner panel ---- */}
+            <AnimatePresence>
+              {showCode && (
+                <CodePanel
+                  onClose={() => setShowCode(false)}
+                  onSendToJarvis={(text) => {
+                    setShowCode(false);
+                    void runSendWithText(text);
+                  }}
+                />
+              )}
+            </AnimatePresence>
 
           {/* ---- Export panel ---- */}
           <AnimatePresence>
