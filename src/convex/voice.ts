@@ -346,6 +346,7 @@ async function speakWithSarvam(
   text: string,
   langTag?: string,
   preferredSpeaker?: string,
+  pace?: number,
 ): Promise<{ audio: ArrayBuffer | null; voice: string }> {
   const apiKey = process.env.SARVAM_API_KEY;
   if (!apiKey) return { audio: null, voice: "browser" };
@@ -380,6 +381,8 @@ async function speakWithSarvam(
         speaker,
         output_audio_codec: "wav",
         speech_sample_rate: "24000",
+        // Bulbul v3 accepts 0.5–2.0; out-of-range values are rejected.
+        ...(typeof pace === "number" && pace >= 0.5 && pace <= 2 ? { pace } : {}),
       }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -469,6 +472,8 @@ export const speak = action({
     langTag: v.optional(v.string()),
     /** Sarvam speaker name; defaults to the environment, then to "shubh". */
     speaker: v.optional(v.string()),
+    /** Speaking rate: 0.5–2.0, where 1 is the model's natural pace. */
+    pace: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<{ audio: ArrayBuffer | null; voice: string }> => {
     const userId = await getAuthUserId(ctx);
@@ -479,7 +484,8 @@ export const speak = action({
     const text = sanitizeForSpeech(args.text, 4000);
     if (!text) return { audio: null, voice: "browser" };
 
-    const sarvam = () => speakWithSarvam(text, args.langTag, args.speaker);
+    const sarvam = () =>
+      speakWithSarvam(text, args.langTag, args.speaker, args.pace);
     const groq = () => speakWithGroq(text, args.voice);
     const eleven = () => speakWithElevenLabs(text, args.voice);
 

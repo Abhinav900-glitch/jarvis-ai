@@ -35,6 +35,7 @@ import {
   Trash2,
   User,
   Volume2,
+  AudioLines,
   VolumeX,
   Wand2,
   X,
@@ -69,7 +70,17 @@ import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
 import { stripWakeWord, WAKE_PHRASE } from "@/lib/wake-word";
 import { playAckChime, stopThinkingHum } from "@/lib/audio";
-import { getTranslateLanguage } from "@/lib/languages";
+import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
+import {
+  DEFAULT_VOICE_PREFERENCE,
+  ELEVENLABS_VOICES,
+  SARVAM_SPEAKERS,
+  VOICE_PREVIEW_TEXT,
+  describeVoice,
+  loadVoicePreference,
+  saveVoicePreference,
+  type VoicePreference,
+} from "@/lib/voices";
 import { COUNTRIES, getCountry, AUTHOR } from "@/lib/languages";
 import { generateImageWithPuter } from "@/lib/puter";
 import {
@@ -443,6 +454,14 @@ export default function Dashboard() {
   const [modeAnalyze, setModeAnalyze] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>([]);
   const [showSounds, setShowSounds] = useState(false);
+  const [showVoices, setShowVoices] = useState(false);
+  const [showTranslate, setShowTranslate] = useState(false);
+  // Voice + translation choices, persisted so they survive a reload.
+  const [voicePref, setVoicePref] = useState<VoicePreference>(
+    DEFAULT_VOICE_PREFERENCE,
+  );
+  const [translateTarget, setTranslateTarget] = useState<string>("");
+  const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   // Per-message translations, shown beneath the original reply.
   const [translations, setTranslations] = useState<
     Record<string, { text: string; language: string; engine: string }>
@@ -755,6 +774,67 @@ export default function Dashboard() {
 
   // ---- Live mode: Whisper STT → chat pipeline → spoken reply ----
   const sound = useSoundEffects();
+
+  // Hydrate the saved voice / translation choices after mount, and persist
+  // every change. localStorage isn't available during the first render.
+  useEffect(() => {
+    setVoicePref(loadVoicePreference());
+    try {
+      setTranslateTarget(
+        localStorage.getItem("jarvis-translate-target") ||
+          getTranslateLanguage(getCountry(countryCode).langTag)?.code ||
+          "hi-IN",
+      );
+    } catch {
+      /* ignore */
+    }
+    // Runs once on mount: countryCode is read only to seed a sensible default.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    saveVoicePreference(voicePref);
+  }, [voicePref]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("jarvis-translate-target", translateTarget);
+    } catch {
+      /* ignore */
+    }
+  }, [translateTarget]);
+
+  /** Play a short sample in a candidate voice so the user picks by ear. */
+  const previewVoice = async (
+    key: string,
+    prefs: { speaker?: string; voice?: string; pace?: number },
+  ) => {
+    if (previewingVoice) return;
+    setPreviewingVoice(key);
+    try {
+      const { audio } = await speakAction({
+        text: VOICE_PREVIEW_TEXT,
+        langTag: getCountry(countryCode).langTag,
+        ...prefs,
+      });
+      if (audio) {
+        player.play(`preview-${key}`, audio);
+      } else {
+        // No server voice for this provider — fall back to the browser voice.
+        const synth = window.speechSynthesis;
+        if (synth) {
+          synth.cancel();
+          const utt = new SpeechSynthesisUtterance(VOICE_PREVIEW_TEXT);
+          utt.lang = getCountry(countryCode).langTag;
+          synth.speak(utt);
+        }
+      }
+    } catch {
+      setAssistantError("Could not preview that voice.");
+    } finally {
+      window.setTimeout(() => setPreviewingVoice(null), 400);
+    }
+  };
   // While the wake gate is on, live mode ignores any turn that doesn't start
   // with "Hey Jarvis" — so a passing conversation never becomes a command.
   const [wakeGate, setWakeGate] = useState(() => {
@@ -821,6 +901,7 @@ export default function Dashboard() {
       return text;
     },
     countryCode,
+    voicePref,
   );
   // Speak each new assistant reply when live mode is active
   const spokenReplyRef = useRef<Id<"chatMessages"> | null>(null);
@@ -1809,11 +1890,9 @@ export default function Dashboard() {
       return;
     }
 
-    const target = getTranslateLanguage(getCountry(countryCode).langTag);
+    const target = getTranslateLanguage(translateTarget);
     if (!target) {
-      setAssistantError(
-        `Translation isn't available for ${getCountry(countryCode).name}.`,
-      );
+      setAssistantError("Pick a translation language first.");
       return;
     }
 
@@ -1872,6 +1951,9 @@ export default function Dashboard() {
       const { audio } = await speakAction({
         text: content,
         langTag: getCountry(countryCode).langTag,
+        ...(voicePref.speaker ? { speaker: voicePref.speaker } : {}),
+        ...(voicePref.voice ? { voice: voicePref.voice } : {}),
+        ...(voicePref.pace !== 1 ? { pace: voicePref.pace } : {}),
       });
       if (audio) {
         player.play(id, audio);
@@ -2550,7 +2632,7 @@ export default function Dashboard() {
                             ) : null}
                             <button
                               onClick={() => void handleTranslate(m._id, m.content)}
-                              title={`Translate to ${getCountry(countryCode).languageName.split(" /")[0]}`}
+                              title={`Translate to ${getTranslateLanguage(translateTarget)?.name ?? "…"}`}
                               className="rounded p-0.5 transition-colors hover:text-foreground"
                             >
                               {translatingId === m._id ? (
@@ -3223,7 +3305,41 @@ export default function Dashboard() {
                   />
                 <div className="absolute right-1.5 bottom-1.5 flex items-center gap-0.5">
                   <button
-                    onClick={() => setShowSounds((v) => !v)}
+                    onClick={() => {
+                      setShowVoices((v) => !v);
+                      setShowTranslate(false);
+                      setShowSounds(false);
+                    }}
+                    title={`Voice — ${describeVoice(voicePref)}`}
+                    className={`inline-flex size-7 items-center justify-center rounded-lg transition-colors ${
+                      showVoices
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    }`}
+                  >
+                    <AudioLines className="size-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowTranslate((v) => !v);
+                      setShowVoices(false);
+                      setShowSounds(false);
+                    }}
+                    title="Translate replies into another language"
+                    className={`inline-flex size-7 items-center justify-center rounded-lg transition-colors ${
+                      showTranslate
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    }`}
+                  >
+                    <Languages className="size-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowSounds((v) => !v);
+                      setShowVoices(false);
+                      setShowTranslate(false);
+                    }}
                     title="Sound effects — hear a real animal or object sound"
                     className={`inline-flex size-7 items-center justify-center rounded-lg transition-colors ${
                       showSounds
@@ -3287,6 +3403,164 @@ export default function Dashboard() {
                 </div>
               </div>
               </div>
+              {showVoices && (
+                <div className="mb-2 rounded-lg border bg-muted/30 p-2">
+                  <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    <AudioLines className="size-3" />
+                    Voice
+                    <span className="ml-1 font-normal normal-case tracking-normal">
+                      — tap a name to hear it
+                    </span>
+                    <button
+                      onClick={() => setShowVoices(false)}
+                      className="ml-auto rounded p-0.5 hover:text-foreground"
+                      title="Close"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+
+                  <div className="mb-2 flex items-center gap-2 px-1">
+                    <span className="text-[11px] text-muted-foreground">Pace</span>
+                    <input
+                      type="range"
+                      min={0.7}
+                      max={1.4}
+                      step={0.05}
+                      value={voicePref.pace}
+                      onChange={(e) =>
+                        setVoicePref((p) => ({ ...p, pace: Number(e.target.value) }))
+                      }
+                      className="h-1 flex-1 accent-foreground"
+                    />
+                    <span className="w-9 text-right text-[11px] tabular-nums text-muted-foreground">
+                      {voicePref.pace.toFixed(2)}
+                    </span>
+                  </div>
+                  <p className="mb-1.5 px-1 text-[10px] text-muted-foreground">
+                    Pace applies to Sarvam voices; Groq and ElevenLabs set their
+                    own speed.
+                  </p>
+
+                  <button
+                    onClick={() => setVoicePref((p) => ({ ...p, provider: "auto" }))}
+                    className={`mb-1.5 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                      voicePref.provider === "auto"
+                        ? "border-foreground/30 bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    }`}
+                  >
+                    Automatic — best available voice
+                  </button>
+
+                  <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    Sarvam — {SARVAM_SPEAKERS.length} voices
+                  </p>
+                  <div className="mb-2 flex flex-wrap gap-1">
+                    {SARVAM_SPEAKERS.map((speaker) => {
+                      const active =
+                        voicePref.provider === "sarvam" &&
+                        voicePref.speaker === speaker;
+                      return (
+                        <button
+                          key={speaker}
+                          onClick={() =>
+                            setVoicePref((p) => ({ ...p, provider: "sarvam", speaker }))
+                          }
+                          onDoubleClick={() =>
+                            void previewVoice(`sarvam-${speaker}`, {
+                              speaker,
+                              pace: voicePref.pace,
+                            })
+                          }
+                          title="Click to select · double-click to preview"
+                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] capitalize transition-colors ${
+                            active
+                              ? "border-foreground/30 bg-accent text-foreground"
+                              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                          }`}
+                        >
+                          {previewingVoice === `sarvam-${speaker}` && (
+                            <Loader2 className="size-2.5 animate-spin" />
+                          )}
+                          {speaker}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    ElevenLabs
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {ELEVENLABS_VOICES.map((v) => {
+                      const active =
+                        voicePref.provider === "elevenlabs" &&
+                        voicePref.voice === v.id;
+                      return (
+                        <button
+                          key={v.id}
+                          onClick={() =>
+                            setVoicePref((p) => ({ ...p, provider: "elevenlabs", voice: v.id }))
+                          }
+                          onDoubleClick={() =>
+                            void previewVoice(`el-${v.id}`, {
+                              voice: v.id,
+                              pace: voicePref.pace,
+                            })
+                          }
+                          title={`${v.note} — click to select · double-click to preview`}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] capitalize transition-colors ${
+                            active
+                              ? "border-foreground/30 bg-accent text-foreground"
+                              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                          }`}
+                        >
+                          {previewingVoice === `el-${v.id}` && (
+                            <Loader2 className="size-2.5 animate-spin" />
+                          )}
+                          {v.id}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {showTranslate && (
+                <div className="mb-2 rounded-lg border bg-muted/30 p-2">
+                  <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    <Languages className="size-3" />
+                    Translate replies into
+                    <button
+                      onClick={() => setShowTranslate(false)}
+                      className="ml-auto rounded p-0.5 hover:text-foreground"
+                      title="Close"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {TRANSLATE_LANGUAGES.map((lang) => (
+                      <button
+                        key={lang.code}
+                        onClick={() => setTranslateTarget(lang.code)}
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                          translateTarget === lang.code
+                            ? "border-foreground/30 bg-accent text-foreground"
+                            : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                        }`}
+                      >
+                        <span>{lang.native}</span>
+                        <span className="text-[10px] opacity-60">{lang.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
+                    Then tap the <Languages className="inline size-3" /> button on any
+                    Jarvis reply.
+                  </p>
+                </div>
+              )}
               {showSounds && (
                 <div className="mb-2 rounded-lg border bg-muted/30 p-2">
                   <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">

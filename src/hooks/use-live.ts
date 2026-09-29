@@ -74,7 +74,11 @@ const MAX_TURN_MS = 20_000; // hard cap so a monologue can't record forever
 
 
 
-export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveMode {
+export function useLiveMode(
+  onTurn: LiveTurnHandler,
+  countryCode: string,
+  voicePref?: { speaker?: string; voice?: string; pace?: number },
+): LiveMode {
   const [active, setActive] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -89,6 +93,9 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   onTurnRef.current = onTurn;
   const countryRef = useRef(countryCode);
   countryRef.current = countryCode;
+  // Voice selection lives in the composer; live mode just follows it.
+  const voicePrefRef = useRef(voicePref);
+  voicePrefRef.current = voicePref;
   const speakTts = useAction(api.voice.speak);
 
   // Recording machinery
@@ -447,6 +454,15 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
           let pending: ReturnType<typeof speakTts> = speakTts({
             text: chunks[0],
             langTag,
+            ...(voicePrefRef.current?.speaker
+              ? { speaker: voicePrefRef.current.speaker }
+              : {}),
+            ...(voicePrefRef.current?.voice
+              ? { voice: voicePrefRef.current.voice }
+              : {}),
+            ...(voicePrefRef.current?.pace
+              ? { pace: voicePrefRef.current.pace }
+              : {}),
           });
 
           // Leaving the loop early abandons an in-flight generation; swallow
@@ -459,7 +475,19 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
             const { audio } = await pending;
             // Start the next generation now, during this chunk's playback.
             if (i + 1 < chunks.length) {
-              pending = speakTts({ text: chunks[i + 1], langTag });
+              pending = speakTts({
+                text: chunks[i + 1],
+                langTag,
+                ...(voicePrefRef.current?.speaker
+                  ? { speaker: voicePrefRef.current.speaker }
+                  : {}),
+                ...(voicePrefRef.current?.voice
+                  ? { voice: voicePrefRef.current.voice }
+                  : {}),
+                ...(voicePrefRef.current?.pace
+                  ? { pace: voicePrefRef.current.pace }
+                  : {}),
+              });
             }
             if (bargeInRef.current || !activeRef.current) {
               abandon();
