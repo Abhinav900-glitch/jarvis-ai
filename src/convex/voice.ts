@@ -3,6 +3,7 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { sanitizeForSpeech } from "../lib/speech";
 
 const ASSEMBLYAI_BASE = "https://api.assemblyai.com";
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024; // 20 MB
@@ -282,7 +283,8 @@ async function speakWithElevenLabs(
   if (!apiKey) return { audio: null, voice: "browser" };
 
   const voiceId = resolveElevenLabsVoice(preferredVoice);
-  const clipped = text.trim().slice(0, 2500); // keep latency + cost sane
+  // Speak the message, never the markup: strip markdown/math/links first.
+  const clipped = sanitizeForSpeech(text, 2400); // keep latency + cost sane
   if (!clipped) return { audio: null, voice: "browser" };
 
   try {
@@ -333,8 +335,9 @@ export const speak = action({
       ? (args.voice as string)
       : TTS_FALLBACK_VOICE;
 
-    // TTS models cap input at 10K characters.
-    const text = args.text.trim().slice(0, 10_000);
+    // TTS models cap input at 10K characters — and nothing markup-shaped
+    // should ever be read aloud (headings, tables, LaTeX, code, URLs).
+    const text = sanitizeForSpeech(args.text, 4000);
     if (!text) return { audio: null, voice: "browser" };
 
     // playai-tts was decommissioned by Groq; canopylabs/orpheus-v1-english is

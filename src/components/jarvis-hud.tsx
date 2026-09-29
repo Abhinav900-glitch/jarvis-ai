@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { SkipForward, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MarkdownMessage } from "@/components/markdown-message";
 
 export type HudPhase = "listening" | "processing" | "speaking" | "idle";
 
@@ -92,7 +93,12 @@ function Waveform({ level, phase }: { level: number; phase: HudPhase }) {
   );
 }
 
-/** ChatGPT-call style caption log: you on the right, Jarvis answering below. */
+/**
+ * ChatGPT-call style caption log: you on the right, Jarvis answering below.
+ * The reply is rendered as the same written markdown the chat pane shows —
+ * live mode is a voice *overlay*, not a voice-only mode, so headings, lists
+ * and maths stay readable while Jarvis talks.
+ */
 function ConversationLog({ turns }: { turns: LiveTurn[] }) {
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -109,19 +115,25 @@ function ConversationLog({ turns }: { turns: LiveTurn[] }) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {turns.map((turn, i) => (
-        <div key={i} className="space-y-1.5">
+        <div key={i} className="space-y-2">
           {turn.user && (
             <p className="ml-auto max-w-[85%] rounded-2xl rounded-br-sm border border-cyan-400/20 bg-cyan-400/10 px-3.5 py-2 text-sm leading-6 text-cyan-50/90">
               {turn.user}
             </p>
           )}
           {turn.assistant && (
-            <p className="line-clamp-3 max-w-[92%] text-sm leading-6 text-cyan-100/80">
-              <span className="font-semibold tracking-wide text-cyan-300/90">JARVIS</span>{" "}
-              {turn.assistant}
-            </p>
+            <div className="max-w-[95%] text-sm leading-6 text-cyan-100/85">
+              <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-300/90">
+                Jarvis
+              </span>
+              {/* `dark` scopes the markdown prose tokens to the dark HUD even
+                  when the app itself is in light mode. */}
+              <div className="jarvis-hud-prose dark">
+                <MarkdownMessage content={turn.assistant} />
+              </div>
+            </div>
           )}
         </div>
       ))}
@@ -173,60 +185,65 @@ export function JarvisHud({
         <X className="size-4" />
       </button>
 
-      {/* Center orb */}
-      <div className="relative flex h-full w-full items-center justify-center pb-24 pt-16">
-        <div className="relative flex size-64 items-center justify-center sm:size-72">
-          {/* Glow behind the orb */}
-          <div
-            className="absolute inset-0 rounded-full bg-cyan-500/20 blur-3xl"
-            style={{ transform: `scale(${orbScale})`, transition: "transform 120ms linear" }}
-          />
-          {/* Rotating rings */}
-          <HudRing className="inset-0" spin="cw" />
-          <HudRing className="inset-4 border-cyan-400/40" spin="ccw" />
-          <HudRing className="inset-8" spin="cw" />
-          {/* Tick ring (static) */}
-          <div className="absolute inset-12 rounded-full border border-cyan-300/15" />
+      {/* Layout: orb on top, written conversation below it. A flex column
+          (instead of a centered orb with an overlapping log) means a long
+          reply grows downward and never covers the reactor. */}
+      <div className="flex h-full w-full flex-col items-center px-6 pb-6 pt-16">
+        {/* Center orb */}
+        <div className="relative flex shrink-0 flex-col items-center">
+          <div className="relative flex size-40 items-center justify-center sm:size-48">
+            {/* Glow behind the orb */}
+            <div
+              className="absolute inset-0 rounded-full bg-cyan-500/20 blur-3xl"
+              style={{ transform: `scale(${orbScale})`, transition: "transform 120ms linear" }}
+            />
+            {/* Rotating rings */}
+            <HudRing className="inset-0" spin="cw" />
+            <HudRing className="inset-3 border-cyan-400/40" spin="ccw" />
+            <HudRing className="inset-6" spin="cw" />
+            {/* Tick ring (static) */}
+            <div className="absolute inset-9 rounded-full border border-cyan-300/15" />
 
-          {/* Arc-reactor core */}
-          <div
-            className="absolute inset-20 rounded-full border border-cyan-200/60 bg-gradient-to-b from-cyan-200/30 via-cyan-400/10 to-transparent shadow-[0_0_60px_rgba(34,211,238,0.35)]"
-            style={{ transform: `scale(${orbScale})`, transition: "transform 120ms linear" }}
-          >
-            <div className="absolute inset-2 rounded-full bg-gradient-to-br from-white via-cyan-100 to-cyan-400/80 opacity-90 blur-[1px]" />
-            <div className="absolute inset-6 rounded-full bg-white/80 blur-sm" />
+            {/* Arc-reactor core */}
+            <div
+              className="absolute inset-14 rounded-full border border-cyan-200/60 bg-gradient-to-b from-cyan-200/30 via-cyan-400/10 to-transparent shadow-[0_0_60px_rgba(34,211,238,0.35)]"
+              style={{ transform: `scale(${orbScale})`, transition: "transform 120ms linear" }}
+            >
+              <div className="absolute inset-1.5 rounded-full bg-gradient-to-br from-white via-cyan-100 to-cyan-400/80 opacity-90 blur-[1px]" />
+              <div className="absolute inset-4 rounded-full bg-white/80 blur-sm" />
+            </div>
+          </div>
+
+          {/* Status readout */}
+          <div className="mt-3 flex shrink-0 flex-col items-center gap-2">
+            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.35em] text-cyan-200">
+              <span className="inline-block h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.9)] jarvis-hud-blink" />
+              {STATUS_LABELS[phase]}
+              <span className="inline-block h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.9)] jarvis-hud-blink" />
+            </div>
+            <Waveform level={level} phase={phase} />
           </div>
         </div>
 
-        {/* Status readout */}
-        <div className="absolute bottom-14 left-0 right-0 flex flex-col items-center gap-3">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.35em] text-cyan-200">
-            <span className="inline-block h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.9)] jarvis-hud-blink" />
-            {STATUS_LABELS[phase]}
-            <span className="inline-block h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.9)] jarvis-hud-blink" />
+        {/* Conversation log — the written reply, scrollable. */}
+        <div className="mt-4 flex min-h-0 w-full max-w-2xl flex-1 flex-col">
+          <div className="jarvis-hud-scroll flex min-h-0 flex-1 flex-col justify-end overflow-y-auto pb-1">
+            <ConversationLog turns={transcript} />
           </div>
-          <Waveform level={level} phase={phase} />
-        </div>
-      </div>
 
-      {/* Conversation log — sits below the orb, above the status readout */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-40 top-24 mx-auto max-w-2xl px-6">
-        <div className="flex h-full flex-col justify-end overflow-y-auto pb-2">
-          <ConversationLog turns={transcript} />
+          {/* Bottom controls: skip the spoken reply while Jarvis talks */}
+          <div className="flex h-12 shrink-0 items-center justify-center gap-4">
+            {phase === "speaking" && (
+              <button
+                onClick={onSkip}
+                title="Skip reply"
+                className="inline-flex size-11 items-center justify-center rounded-full border border-cyan-400/40 bg-cyan-500/10 text-cyan-300 transition-colors hover:bg-cyan-500/20"
+              >
+                <SkipForward className="size-4" />
+              </button>
+            )}
+          </div>
         </div>
-      </div>
-
-      {/* Bottom controls: skip the spoken reply while Jarvis talks */}
-      <div className="absolute bottom-6 left-0 right-0 flex items-center justify-center gap-4">
-        {phase === "speaking" && (
-          <button
-            onClick={onSkip}
-            title="Skip reply"
-            className="inline-flex size-11 items-center justify-center rounded-full border border-cyan-400/40 bg-cyan-500/10 text-cyan-300 transition-colors hover:bg-cyan-500/20"
-          >
-            <SkipForward className="size-4" />
-          </button>
-        )}
       </div>
     </motion.div>
   );

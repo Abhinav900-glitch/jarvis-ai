@@ -528,3 +528,49 @@
     animation: none;
   }
 }
+
+/* Conversation log inside the HUD — the written reply, themed for the HUD. */
+.jarvis-hud-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(34, 211, 238, 0.35) transparent;
+}
+
+.jarvis-hud-prose {
+  color: rgba(207, 250, 254, 0.88);
+}
+
+.jarvis-hud-prose .md-body a {
+  color: rgba(103, 232, 249, 0.95);
+}
+
+.jarvis-hud-prose .md-body strong {
+  color: rgba(236, 254, 255, 0.95);
+}
+
+.jarvis-hud-prose .md-body h1,
+.jarvis-hud-prose .md-body h2,
+.jarvis-hud-prose .md-body h3,
+.jarvis-hud-prose .md-body h4 {
+  color: rgba(224, 255, 255, 0.95);
+}
+
+.jarvis-hud-prose .md-body code,
+.jarvis-hud-prose .md-body pre {
+  background: rgba(34, 211, 238, 0.08);
+  border-color: rgba(34, 211, 238, 0.22);
+  color: rgba(224, 255, 255, 0.92);
+}
+
+.jarvis-hud-prose .md-body blockquote {
+  border-color: rgba(34, 211, 238, 0.35);
+  color: rgba(165, 243, 252, 0.7);
+}
+
+.jarvis-hud-prose .md-body th,
+.jarvis-hud-prose .md-body td {
+  border-color: rgba(34, 211, 238, 0.2);
+}
+
+.jarvis-hud-prose .md-body hr {
+  border-color: rgba(34, 211, 238, 0.2);
+}

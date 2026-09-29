@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { getCountry } from "@/lib/languages";
+import { sanitizeForSpeech, speechSentences } from "@/lib/speech";
 
 // ---------------------------------------------------------------------------
 // useLiveMode — hands-free voice conversation (ChatGPT / Gemini Live style)
@@ -290,7 +291,7 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
         onDone();
         return;
       }
-      const sentences = spoken.match(/[^.!?。]+[.!?。]*/g) ?? [spoken];
+      const sentences = speechSentences(spoken);
       const utterances = sentences.map((s) => {
         const u = new SpeechSynthesisUtterance(s.trim());
         const voice = pickVoice();
@@ -323,17 +324,11 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   // Speak a reply: Groq neural TTS (server) first, browser voice as fallback.
   const speakReply = useCallback(
     (text: string, onDone: () => void) => {
-      // Strip markdown/math for clean speech
-      const spoken = text
-        .replace(/\x60\x60\x60[\s\S]*?\x60\x60\x60/g, " (code block) ")
-        .replace(/\$\$[\s\S]*?\$\$/g, " (equation) ")
-        .replace(/\$[^$\n]+\$/g, " (expression) ")
-        .replace(/\[(\d+)\]\([^)]*\)/g, "[$1]")
-        .replace(/[#*_~>|]/g, "")
-        .replace(/\n{2,}/g, ". ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 1200);
+      // Speak the message, never the markup: strip markdown, math, code and
+      // links so Jarvis doesn't read "hash", "pipe" or a raw URL aloud. The
+      // same sanitizer runs again inside the `speak` action, so every server
+      // provider (Groq, ElevenLabs) receives the same clean prose.
+      const spoken = sanitizeForSpeech(text);
       if (!spoken) {
         onDone();
         return;

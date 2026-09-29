@@ -50,6 +50,7 @@ import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud
 import { JarvisOrb } from "@/components/jarvis-orb";
 import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage, looksLikeMathOrMarkdown } from "@/components/markdown-message";
+import { sanitizeForSpeech } from "@/lib/speech";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -1635,11 +1636,13 @@ export default function Dashboard() {
       return;
     }
     synth.cancel();
-    const utt = new SpeechSynthesisUtterance(
-      text
-        .replace(/```[\s\S]*?```/g, " code block ")
-        .replace(/[#*_`~\[\]]/g, ""),
-    );
+    // Speak the message, never the markup (same sanitizer the server TTS uses).
+    const spoken = sanitizeForSpeech(text, 4000);
+    if (!spoken) {
+      player.setLoadingId(null);
+      return;
+    }
+    const utt = new SpeechSynthesisUtterance(spoken);
     // Match the voice to the selected country's language
     const tag = getCountry(countryCode).langTag;
     const langPrefix = tag.split("-")[0];
