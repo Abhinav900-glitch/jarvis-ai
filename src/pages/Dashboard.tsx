@@ -6,7 +6,10 @@ import {
   ArrowDown,
   ArrowUp,
   Box,
+  Brain,
   Calculator,
+  Camera,
+  CameraOff,
   Check,
   ChevronDown,
   Download,
@@ -89,6 +92,10 @@ import {
 } from "@/lib/perchance";
 import { Radio } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
+import { MemoryPanel } from "@/components/memory-panel";
+import { ExportPanel } from "@/components/export-panel";
+import { useCamera } from "@/hooks/use-camera";
+import { useLiveTranslation } from "@/hooks/use-live-translation";
 import { toast } from "sonner";
 
 // ---------------------------------------------------------------------------
@@ -416,6 +423,7 @@ export default function Dashboard() {
   const appendMessage = useMutation(api.chats.appendMessage);
   const deleteSession = useMutation(api.chats.deleteSession);
   const askAction = useAction(api.ai.ask);
+  const askStreamAction = useAction(api.ai.askStream);
   const deepResearchAction = useAction(api.ai.deepResearch);
   const analyzeAction = useAction(api.ai.analyzeText);
   const newsAction = useAction(api.ai.searchNews);
@@ -524,8 +532,24 @@ export default function Dashboard() {
   const [showPrompts, setShowPrompts] = useState(false);
   const [isDark, setIsDark] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
+  // --- Feature panels: memory, export, camera, live translation ---
+  const [showMemory, setShowMemory] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+
+  // Camera vision is opt-in and off until the user asks for it: the hook
+  // never calls getUserMedia on its own.
+  const camera = useCamera();
+  const liveTranslate = useLiveTranslation();
+
+  // Long-term memory runs after each exchange, off the critical path.
+  const extractMemory = useAction(api.memory.extract);
 
   const editMessage = useMutation(api.chats.editMessage);
+  const patchMessageContent = useMutation(api.chats.patchMessageContent);
+  // Streaming is on by default: for a long answer, seeing the first sentence
+  // immediately is worth far more than the handful of ms it costs.
+  const [streamReplies, setStreamReplies] = useState(true);
   const searchSessionsQuery = useQuery(
     api.chats.searchSessions,
     searchQuery.length >= 2 ? { query: searchQuery } : "skip",
@@ -897,21 +921,27 @@ export default function Dashboard() {
 
       // The user finished a statement → caption it immediately, then answer.
       setLiveTranscript((t) => [...t.slice(-5), { user: text, assistant: "" }]);
-      await liveTurnRef.current(text);
+      // "Answer in my language" is appended to the turn itself, so the whole
+      // reply is written in the target language rather than translated after.
+      const directive = liveTranslate.promptDirective(translateTarget);
+      await liveTurnRef.current(directive ? `${text}${directive}` : text);
       return text;
     },
     countryCode,
     voicePref,
+    // Only override the speaking language when the user has asked for the
+    // reply to be spoken in another language.
+    liveTranslate.speakTranslated ? translateTarget : null,
   );
-  // Speak each new assistant reply when live mode is active
+  // Speak each new assistant reply when live mode is active. Streaming means
+  // the row grows in place, so wait for generation to finish before speaking
+  // — otherwise Jarvis would read a half-written sentence.
   const spokenReplyRef = useRef<Id<"chatMessages"> | null>(null);
   useEffect(() => {
-    if (!live.active || !messages || messages.length === 0 || sending) return;
+    if (!live.active || !messages || messages.length === 0 || sending || streaming) return;
     const last = messages[messages.length - 1];
-    if (
-      last.role === "assistant" &&
-      spokenReplyRef.current !== last._id
-    ) {
+    if (!last.content.trim()) return;
+    if (last.role === "assistant" && spokenReplyRef.current !== last._id) {
       spokenReplyRef.current = last._id;
       setLiveTranscript((turns) => {
         const next = turns.slice();
@@ -920,9 +950,14 @@ export default function Dashboard() {
         else next.push({ user: "", assistant: last.content });
         return next.slice(-5);
       });
-      live.deliverReply(last.content);
+      // With speech translation on, the HUD keeps the original text (so you
+      // can read it) while the audio is in the chosen language.
+      void liveTranslate
+        .forSpeech(last.content, translateTarget)
+        .then((spoken) => live.deliverReply(spoken))
+        .catch(() => live.deliverReply(last.content));
     }
-  }, [messages, sending, live]);
+  }, [messages, sending, streaming, live, liveTranslate, translateTarget]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1243,7 +1278,10 @@ export default function Dashboard() {
 
   const runSendWithText = async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
-    if ((!text && pendingImages.length === 0 && !pendingFile) || sending)
+    // A turn is sendable if it has text, an attachment, OR the camera is on
+    // and the user wants Jarvis to look at what's in front of them.
+    const hasCamera = camera.enabled;
+    if ((!text && pendingImages.length === 0 && !pendingFile && !hasCamera) || sending)
       return;
     if (text.length > 8000) {
       setAssistantError("Message too long — keep it under 8,000 characters.");
@@ -1257,11 +1295,14 @@ export default function Dashboard() {
       return;
     }
 
-    // Country persona: Jarvis speaks the user's language & regional context
+    // Country persona: Jarvis speaks the user's language & regional context.
+    // Skipped when there is no text at all (camera-only turn) — appending a
+    // persona to an empty string would just be a stray instruction.
     const countryPersona = getCountry(countryCode).persona;
-    const effectiveText = editingId || deepResearch || pendingImages.length > 0 || pendingFile
-      ? text
-      : `${text}\n\n[System: ${countryPersona}]`;
+    const effectiveText =
+      !text || editingId || deepResearch || pendingImages.length > 0 || pendingFile
+        ? text
+        : `${text}\n\n[System: ${countryPersona}]`;
 
     // Sound effects: "bark", "play a dog sound", "what does a cat say" —
     // answered with the real audio, which is the one thing a text model
@@ -1336,13 +1377,20 @@ export default function Dashboard() {
     setPendingFile(null);
     setInput("");
 
+    // Grab the camera frame once, here, so the streaming and non-streaming
+    // paths see the exact same image and the saved transcript can say
+    // something meaningful even when the user only pointed the camera.
+    const cameraFrame = hasCamera ? camera.capture() : null;
+
     const messageContent =
       text ||
       (hasImages
         ? "[Image]"
         : filePayload
           ? `[File: ${filePayload.fileName}]`
-          : "");
+          : cameraFrame
+            ? "[Camera]"
+            : "");
 
     try {
       let sessionId: Id<"chatSessions">;
@@ -1423,19 +1471,60 @@ export default function Dashboard() {
           sources,
         });
         void indexForRag(sessionId, userMsgId, msgId, messageContent, answerText).catch(() => {});
+        extractMemories(messageContent, answerText);
       } else {
         const visionUrls = imagePayload?.images?.map((i) => i.url);
-        const answer = await runAsk(effectiveText, history, visionUrls && visionUrls.length > 0 ? visionUrls : undefined);
-        answerText = extractFollowUps(answer.text);
-        const msgId = await appendMessage({
-          sessionId,
-          role: "assistant",
-          content: answerText,
-          model: answer.model,
-          usedFallback: answer.usedFallback,
-          usedSearch: false,
-        });
-        void indexForRag(sessionId, userMsgId, msgId, messageContent, answerText).catch(() => {});
+        // With streaming on, the assistant row is created empty and filled in
+        // token by token, so the user starts reading before the model is done.
+        if (streamReplies) {
+          const allVision = cameraFrame
+            ? [...(visionUrls ?? []), cameraFrame]
+            : visionUrls;
+          const answer = await runAskStreamed(
+            sessionId,
+            effectiveText,
+            history,
+            allVision && allVision.length > 0 ? allVision : undefined,
+          );
+          answerText = extractFollowUps(answer.text);
+          // The streamed text still carries the SUGGEST trailer — rewrite the
+          // saved row so the raw line never shows up in the transcript.
+          if (answerText !== answer.text) {
+            await patchMessageContent({
+              messageId: streamedMessageIdRef.current!,
+              content: answerText,
+            }).catch(() => {});
+          }
+          void indexForRag(
+            sessionId,
+            userMsgId,
+            streamedMessageIdRef.current!,
+            messageContent,
+            answerText,
+          ).catch(() => {});
+        } else {
+          // Non-streaming still gets the camera frame, so toggling streaming
+          // off must not silently blind Jarvis.
+          const allVision = cameraFrame
+            ? [...(visionUrls ?? []), cameraFrame]
+            : visionUrls;
+          const answer = await runAsk(
+            effectiveText,
+            history,
+            allVision && allVision.length > 0 ? allVision : undefined,
+          );
+          answerText = extractFollowUps(answer.text);
+          const msgId = await appendMessage({
+            sessionId,
+            role: "assistant",
+            content: answerText,
+            model: answer.model,
+            usedFallback: answer.usedFallback,
+            usedSearch: false,
+          });
+          void indexForRag(sessionId, userMsgId, msgId, messageContent, answerText).catch(() => {});
+        }
+        extractMemories(messageContent, answerText);
       }
     } catch (err) {
       setAssistantError(
@@ -1480,6 +1569,62 @@ export default function Dashboard() {
   const runSend = () => runSendWithText();
   liveTurnRef.current = async (text: string) => {
     await runSendWithText(text);
+  };
+
+  // ---- Streaming replies ------------------------------------------------
+  // The assistant message is created empty, then the action writes each token
+  // batch into it. The live `useQuery(listMessages)` re-renders on every
+  // patch, so the reply types itself in with no client-side buffering.
+  // Returns the result plus the id of the row that was streamed into, so the
+  // caller can patch the SUGGEST trailer out afterwards.
+  const streamedMessageIdRef = useRef<Id<"chatMessages"> | null>(null);
+  const runAskStreamed = async (
+    sessionId: Id<"chatSessions">,
+    prompt: string,
+    history: { role: string; content: string }[],
+    imageUrls?: string[],
+  ) => {
+    const streamMsgId = await appendMessage({
+      sessionId,
+      role: "assistant",
+      content: "",
+    });
+    streamedMessageIdRef.current = streamMsgId;
+    setStreaming(true);
+    try {
+      return await askStreamAction({
+        sessionId,
+        messageId: streamMsgId,
+        prompt,
+        history,
+        ...(imageUrls && imageUrls.length > 0 ? { imageUrls } : {}),
+      });
+    } catch (err) {
+      // The placeholder would otherwise stay blank forever — write the error
+      // into it so the transcript never shows an empty assistant turn.
+      const msg = err instanceof Error ? err.message : "Something went wrong.";
+      await patchMessageContent({ messageId: streamMsgId, content: msg }).catch(
+        () => {},
+      );
+      throw err;
+    } finally {
+      setStreaming(false);
+    }
+  };
+
+  /**
+   * Mine the finished exchange for durable facts. Fire-and-forget: memory is
+   * a bonus, and a failure here must never surface to the user.
+   */
+  const extractMemories = (
+    userText: string,
+    assistantText: string,
+  ) => {
+    if (!userText?.trim() || !assistantText?.trim()) return;
+    void extractMemory({
+      userMessage: userText,
+      assistantMessage: assistantText,
+    }).catch(() => {});
   };
 
   const runAsk = async (
@@ -1812,27 +1957,8 @@ export default function Dashboard() {
   };
 
   // --- Export chat as Markdown ---
-  const handleExportChat = () => {
-    if (!messages || messages.length === 0) return;
-    const lines = messages.map((m) => {
-      const role = m.role === "user" ? "**You**" : "**Jarvis**";
-      const meta = m.model ? ` _(${m.model})_` : "";
-      const imgs = m.images && m.images.length > 0
-        ? m.images.map((i) => `![image](${i.url})`).join("\n")
-        : m.imageUrl
-          ? `![image](${m.imageUrl})`
-          : "";
-      const file = m.fileUrl ? `\n[Attachment: ${m.fileName ?? "file"}](${m.fileUrl})` : "";
-      return `${role}${meta}:\n${imgs ? imgs + "\n" : ""}${m.content}${file}`;
-    });
-    const md = `# Jarvis Chat\n\n${lines.join("\n\n---\n\n")}`;
-    const blob = new Blob([md], { type: "text/markdown" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `jarvis-chat-${new Date().toISOString().slice(0, 10)}.md`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
+  // Export now lives in the ExportPanel (Markdown / text / HTML / JSON, with
+  // copy + download) — see src/lib/export-chat.ts.
 
   // --- Voice output: Groq TTS → browser SpeechSynthesis fallback ---
   const browserSpeakRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -2316,6 +2442,37 @@ export default function Dashboard() {
                       <Check className="ml-auto size-4" />
                     ) : null}
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setStreamReplies((v) => !v)}
+                  >
+                    <Zap className="size-4" />
+                    Streaming replies
+                    {streamReplies ? (
+                      <Check className="ml-auto size-4" />
+                    ) : null}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => void camera.toggle()}
+                  >
+                    {camera.enabled ? (
+                      <Camera className="size-4" />
+                    ) : (
+                      <CameraOff className="size-4" />
+                    )}
+                    {camera.enabled ? "Camera on" : "Camera vision"}
+                    {camera.enabled ? (
+                      <Check className="ml-auto size-4" />
+                    ) : null}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setShowMemory((v) => !v)}
+                  >
+                    <Brain className="size-4" />
+                    Memory
+                    {showMemory ? (
+                      <Check className="ml-auto size-4" />
+                    ) : null}
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setShowSearch((v) => !v)}>
                     <Search className="size-4" />
@@ -2325,7 +2482,10 @@ export default function Dashboard() {
                     <Link2 className="size-4" />
                     Summarize URL
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleExportChat} disabled={!messages || messages.length === 0}>
+                  <DropdownMenuItem
+                    onClick={() => setShowExport((v) => !v)}
+                    disabled={!messages || messages.length === 0}
+                  >
                     <Download className="size-4" />
                     Export chat
                   </DropdownMenuItem>
@@ -2759,6 +2919,12 @@ export default function Dashboard() {
                             content={m.content}
                             sources={m.sources}
                           />
+                          {/* Blinking caret on the row currently being
+                              written, so an in-flight reply reads as live
+                              rather than as a finished short answer. */}
+                          {streaming && m._id === lastMsg?._id ? (
+                            <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-foreground/70 align-text-bottom" />
+                          ) : null}
                           {translations[m._id] && (
                             <div className="mt-3 rounded-lg border border-dashed bg-muted/30 px-3.5 py-2.5">
                               <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
@@ -2784,7 +2950,10 @@ export default function Dashboard() {
                       ) : null}
                     </li>
                   ))}
-                  {sending && (
+                  {/* While streaming, the reply is already on screen growing
+                      token by token — a second "thinking" row underneath it
+                      would just be noise. */}
+                  {sending && !streaming && (
                     <li className="flex items-center gap-2.5 py-1 text-sm text-muted-foreground">
                       <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-foreground">
                         <JarvisOrb size={18} />
@@ -2792,6 +2961,14 @@ export default function Dashboard() {
                       {deepResearch
                         ? "Searching the web, then thinking…"
                         : "Thinking…"}
+                    </li>
+                  )}
+                  {streaming && (
+                    <li className="flex items-center gap-2 py-1 text-[11px] text-muted-foreground">
+                      <span className="ml-9 inline-flex items-center gap-1.5">
+                        <span className="size-1.5 animate-pulse rounded-full bg-foreground/60" />
+                        streaming
+                      </span>
                     </li>
                   )}
                   {!sending && followUps.length > 0 && (
@@ -2993,6 +3170,37 @@ export default function Dashboard() {
           <AnimatePresence>
             {showCalculator && (
               <CalculatorPanel onClose={() => setShowCalculator(false)} />
+            )}
+          </AnimatePresence>
+
+          {/* ---- Memory panel ---- */}
+          <AnimatePresence>
+            {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
+          </AnimatePresence>
+
+          {/* ---- Export panel ---- */}
+          <AnimatePresence>
+            {showExport && messages && messages.length > 0 && (
+              <ExportPanel
+                session={{
+                  title:
+                    sessions?.find((s) => s._id === activeId)?.title ??
+                    "Jarvis chat",
+                  messages: messages.map((m) => ({
+                    role: m.role,
+                    content: m.content,
+                    model: m.model,
+                    createdAt: m.createdAt,
+                    imageUrl: m.imageUrl,
+                    images: m.images,
+                    fileUrl: m.fileUrl,
+                    fileName: m.fileName,
+                    sources: m.sources,
+                  })),
+                }}
+                messageCount={messages.length}
+                onClose={() => setShowExport(false)}
+              />
             )}
           </AnimatePresence>
 
@@ -3391,7 +3599,7 @@ export default function Dashboard() {
                     size="icon-sm"
                     onClick={() => void runModeSend()}
                     data-send-button
-                    disabled={(!input.trim() && pendingImages.length === 0 && !pendingFile && !modeNews && !modeAnalyze) || sending || panelBusy !== null}
+                    disabled={(!input.trim() && pendingImages.length === 0 && !pendingFile && !modeNews && !modeAnalyze && !camera.enabled) || sending || panelBusy !== null}
                     className="size-7 rounded-lg"
                   >
                     {sending ? (
@@ -3556,9 +3764,30 @@ export default function Dashboard() {
                     ))}
                   </div>
                   <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
-                    Then tap the <Languages className="inline size-3" /> button on any
-                    Jarvis reply.
+                    Tap the <Languages className="inline size-3" /> button on any
+                    Jarvis reply to read it here. In a live call, the options
+                    below let you hear and read Jarvis in this language.
                   </p>
+                  <div className="mt-1.5 space-y-1 border-t pt-1.5">
+                    <label className="flex cursor-pointer items-start gap-2 px-1 py-0.5 text-[11px] leading-4 text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={liveTranslate.speakTranslated}
+                        onChange={(e) => liveTranslate.setSpeakTranslated(e.target.checked)}
+                        className="mt-0.5 size-3 accent-foreground"
+                      />
+                      <span>Speak live replies in this language</span>
+                    </label>
+                    <label className="flex cursor-pointer items-start gap-2 px-1 py-0.5 text-[11px] leading-4 text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={liveTranslate.answerTranslated}
+                        onChange={(e) => liveTranslate.setAnswerTranslated(e.target.checked)}
+                        className="mt-0.5 size-3 accent-foreground"
+                      />
+                      <span>Write Jarvis&apos;s replies in this language too</span>
+                    </label>
+                  </div>
                 </div>
               )}
               {showSounds && (
@@ -3592,6 +3821,53 @@ export default function Dashboard() {
                       </button>
                     ))}
                   </div>
+                </div>
+              )}
+              {live.active && (
+                <div className="mb-2 rounded-lg border border-border/60 bg-muted/30 p-2">
+                  <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    <Languages className="size-3" />
+                    Live translation
+                    {liveTranslate.translating && (
+                      <span className="ml-1 inline-flex items-center gap-1 font-normal normal-case tracking-normal">
+                        <Loader2 className="size-3 animate-spin" />
+                        translating
+                      </span>
+                    )}
+                  </div>
+                  <label className="flex cursor-pointer items-start gap-2 px-1 py-1 text-[11px] leading-4 text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={liveTranslate.speakTranslated}
+                      onChange={(e) => liveTranslate.setSpeakTranslated(e.target.checked)}
+                      className="mt-0.5 size-3 accent-foreground"
+                    />
+                    <span>
+                      <span className="text-foreground">Speak replies in {getTranslateLanguage(translateTarget)?.native ?? "another language"}</span>
+                      <span className="block">
+                        The transcript stays in the language Jarvis wrote it in.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex cursor-pointer items-start gap-2 px-1 py-1 text-[11px] leading-4 text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={liveTranslate.answerTranslated}
+                      onChange={(e) => liveTranslate.setAnswerTranslated(e.target.checked)}
+                      className="mt-0.5 size-3 accent-foreground"
+                    />
+                    <span>
+                      <span className="text-foreground">Answer in that language too</span>
+                      <span className="block">
+                        Jarvis writes the whole reply there, not just the audio.
+                      </span>
+                    </span>
+                  </label>
+                  {liveTranslate.error ? (
+                    <p className="px-1 pt-1 text-[11px] text-destructive">
+                      {liveTranslate.error}
+                    </p>
+                  ) : null}
                 </div>
               )}
               {live.active && (
@@ -3632,6 +3908,55 @@ export default function Dashboard() {
               {live.error && (
                 <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                   {live.error}
+                </div>
+              )}
+              {/* ---- Camera preview ----
+                  Only rendered while the user has explicitly turned the camera
+                  on; nothing below this point mounts otherwise. */}
+              {camera.enabled && (
+                <div className="mb-2 flex items-start gap-3 rounded-lg border border-border/60 bg-muted/30 p-2">
+                  <div className="relative shrink-0 overflow-hidden rounded-md border">
+                    <video
+                      ref={camera.videoRef}
+                      muted
+                      playsInline
+                      className="h-20 w-28 object-cover"
+                    />
+                    <span className="absolute bottom-1 left-1 inline-flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white">
+                      <span className="size-1.5 animate-pulse rounded-full bg-red-500" />
+                      Live
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                      Camera vision
+                    </p>
+                    <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                      A single frame is captured each time you send. It is
+                      attached to that message only — nothing is recorded or
+                      uploaded on a timer.
+                    </p>
+                    <div className="mt-1.5 flex gap-1.5">
+                      <button
+                        onClick={() => void camera.enable()}
+                        disabled={camera.starting}
+                        className="rounded-full border px-2.5 py-1 text-[11px] transition-colors hover:bg-accent disabled:opacity-40"
+                      >
+                        {camera.starting ? "Starting…" : "Restart"}
+                      </button>
+                      <button
+                        onClick={camera.disable}
+                        className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        Turn off
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {camera.error && (
+                <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                  {camera.error}
                 </div>
               )}
               <div className="mt-2.5 flex items-center justify-between text-[11px] text-muted-foreground">

@@ -78,6 +78,8 @@ export function useLiveMode(
   onTurn: LiveTurnHandler,
   countryCode: string,
   voicePref?: { speaker?: string; voice?: string; pace?: number },
+  /** BCP-47 tag to synthesise in, when it should override the country default. */
+  speechLangTag?: string | null,
 ): LiveMode {
   const [active, setActive] = useState(false);
   const [listening, setListening] = useState(false);
@@ -96,6 +98,11 @@ export function useLiveMode(
   // Voice selection lives in the composer; live mode just follows it.
   const voicePrefRef = useRef(voicePref);
   voicePrefRef.current = voicePref;
+  // Live translation target. Null (the default) means "speak in the country
+  // language"; a tag means the reply was translated and needs a matching
+  // voice on both the server TTS call and the browser fallback.
+  const speechLangRef = useRef<string | null>(speechLangTag ?? null);
+  speechLangRef.current = speechLangTag ?? null;
   const speakTts = useAction(api.voice.speak);
 
   // Recording machinery
@@ -326,7 +333,11 @@ export function useLiveMode(
     const synth = window.speechSynthesis;
     if (!synth) return null;
     const voices = synth.getVoices();
-    const tag = countryRef.current ? getCountry(countryRef.current).langTag : "en-US";
+    // When live translation is on, the spoken text is in the target language,
+    // so the voice must match that — not the country default.
+    const tag =
+      speechLangRef.current ??
+      (countryRef.current ? getCountry(countryRef.current).langTag : "en-US");
     const langPrefix = tag.split("-")[0];
     return (
       voices.find((v) => v.lang === tag) ??
@@ -352,7 +363,9 @@ export function useLiveMode(
           u.voice = voice;
           u.lang = voice.lang;
         } else {
-          u.lang = countryRef.current ? getCountry(countryRef.current).langTag : "en-US";
+          u.lang =
+            speechLangRef.current ??
+            (countryRef.current ? getCountry(countryRef.current).langTag : "en-US");
         }
         u.rate = 1.05;
         return u;
@@ -408,7 +421,8 @@ export function useLiveMode(
           // immediately and the next one is requested *while the current one
           // plays*, so the speech comes out nearly continuously.
           const chunks = speechChunks(spoken);
-          const langTag = getCountry(countryRef.current).langTag;
+          const langTag =
+            speechLangRef.current ?? getCountry(countryRef.current).langTag;
 
           const playClip = async (audio: ArrayBuffer): Promise<void> => {
             // Play through an <audio> element rather than a bare

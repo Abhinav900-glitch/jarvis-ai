@@ -425,3 +425,77 @@ export const insertEmbedding = internalMutation({
     });
   },
 });
+
+// ---------------------------------------------------------------------------
+// Streaming — grow an assistant message in place as tokens arrive
+// ---------------------------------------------------------------------------
+
+/**
+ * Appends a delta to an assistant message that was created empty by the
+ * streaming action. Called many times per reply, so it stays a single
+ * `db.patch` with no reads.
+ */
+export const appendStreamDelta = internalMutation({
+  args: {
+    messageId: v.id("chatMessages"),
+    delta: v.string(),
+  },
+  handler: async (ctx, args) => {
+    if (!args.delta) return;
+    const row = await ctx.db.get(args.messageId);
+    if (!row) return;
+    await ctx.db.patch(args.messageId, {
+      content: row.content + args.delta,
+    });
+  },
+});
+
+/**
+ * Stamps the final metadata (model / fallback / search) onto a streamed
+ * message once generation finishes. Also guarantees a non-empty body so the
+ * transcript never shows a blank assistant turn.
+ */
+export const finalizeStream = internalMutation({
+  args: {
+    messageId: v.id("chatMessages"),
+    content: v.optional(v.string()),
+    model: v.optional(v.string()),
+    usedFallback: v.optional(v.boolean()),
+    usedSearch: v.optional(v.boolean()),
+    sources: v.optional(
+      v.array(
+        v.object({ title: v.string(), url: v.string(), domain: v.optional(v.string()) }),
+      ),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.messageId);
+    if (!row) return;
+    await ctx.db.patch(args.messageId, {
+      content: args.content ?? row.content,
+      model: args.model,
+      usedFallback: args.usedFallback,
+      usedSearch: args.usedSearch,
+      sources: args.sources,
+    });
+  },
+});
+
+/**
+ * Rewrites an assistant message's body. Used after a streamed reply arrives:
+ * the SUGGEST trailer is stripped from the saved text, so the raw line can
+ * never render as literal content in the transcript.
+ */
+export const patchMessageContent = mutation({
+  args: {
+    messageId: v.id("chatMessages"),
+    content: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+    const row = await ctx.db.get(args.messageId);
+    if (!row || row.userId !== userId) throw new Error("Message not found.");
+    await ctx.db.patch(args.messageId, { content: args.content });
+  },
+});

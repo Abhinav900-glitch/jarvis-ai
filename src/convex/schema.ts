@@ -109,6 +109,22 @@ const schema = defineSchema(
       createdAt: v.number(),
     }).index("by_user", ["userId"]),
 
+    // Long-term memory: durable facts about the user, extracted from chat and
+    // injected into future prompts. Fully user-controlled — every row can be
+    // deleted from the Memory panel.
+    memories: defineTable({
+      userId: v.id("users"),
+      content: v.string(),
+      kind: v.union(
+        v.literal("fact"),
+        v.literal("preference"),
+        v.literal("note"),
+      ),
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_time", ["userId", "createdAt"]),
+
     // Generated sound effects (dog bark, thunder, ...). The prompt hash is the
     // cache key, so a given sound is only ever generated once and is then
     // served straight out of file storage.

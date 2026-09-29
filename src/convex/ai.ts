@@ -3,7 +3,8 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { api } from "./_generated/api";
+import { memoryContextFor } from "./memory";
+import { api, internal } from "./_generated/api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -334,7 +335,20 @@ export const ask = action({
     const effectivePrompt = ragContext
       ? `${args.prompt}\n\n---${ragContext}`
       : args.prompt;
-    const userContent = buildUserContent(effectivePrompt, args.imageUrls);
+
+    // Long-term memory sits above the retrieved context: what the user told
+    // Jarvis about themselves outranks what it can dig up from old messages.
+    let memoryContext = "";
+    try {
+      memoryContext = await memoryContextFor(ctx, userId);
+    } catch {
+      // Memory is best-effort — never block a reply on it.
+    }
+
+    const promptWithMemory = memoryContext
+      ? `${effectivePrompt}\n\n---${memoryContext}`
+      : effectivePrompt;
+    const userContent = buildUserContent(promptWithMemory, args.imageUrls);
 
     const failures: string[] = [];
 
@@ -364,6 +378,231 @@ export const ask = action({
     throw new Error(
       `All models failed automatically. ${failures.join(" · ")}`,
     );
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Streaming replies
+// ---------------------------------------------------------------------------
+
+/** How often streamed text is flushed to the database, in ms. */
+const STREAM_FLUSH_MS = 90;
+
+/**
+ * Parse one SSE `data:` line from Groq and return the incremental text, or
+ * null when the line carries no content (keep-alives, finish reasons, errors).
+ */
+function parseSseDelta(line: string): string | null {
+  if (!line.startsWith("data:")) return null;
+  const payload = line.slice(5).trim();
+  if (!payload || payload === "[DONE]") return null;
+  try {
+    const json = JSON.parse(payload) as {
+      choices?: { delta?: { content?: string } }[];
+    };
+    return json.choices?.[0]?.delta?.content ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ask Groq for a streamed completion, writing each delta straight into an
+ * assistant message the caller has already created. The client's
+ * `useQuery(listMessages)` then renders the reply as it grows — no polling and
+ * no HTTP streaming endpoint needed.
+ *
+ * Falls back to the non-streaming provider chain (`ask`'s helpers) if the
+ * account or model refuses `stream: true`, so streaming is never a hard
+ * dependency.
+ */
+export const askStream = action({
+  args: {
+    sessionId: v.id("chatSessions"),
+    messageId: v.id("chatMessages"),
+    prompt: v.string(),
+    history: v.optional(
+      v.array(v.object({ role: v.string(), content: v.string() })),
+    ),
+    imageUrls: v.optional(v.array(v.string())),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to talk to Jarvis.");
+
+    const history = (args.history ?? [])
+      .slice(-12)
+      .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
+
+    // Same two context layers as `ask`: RAG history first, then long-term
+    // memory on top of it.
+    let ragContext = "";
+    try {
+      const memories = await ctx.runAction(api.rag.retrieveContext, {
+        query: args.prompt,
+        limit: 4,
+      });
+      if (memories.length > 0) {
+        ragContext =
+          "\n\nRelevant context from the user's past conversations (use if helpful, don't mention where it came from):\n" +
+          memories
+            .map(
+              (m: { role: string; content: string }) =>
+                `- ${m.role === "user" ? "User" : "You"}: ${m.content}`,
+            )
+            .join("\n");
+      }
+    } catch {
+      // RAG is best-effort
+    }
+
+    let memoryContext = "";
+    try {
+      memoryContext = await memoryContextFor(ctx, userId);
+    } catch {
+      // Memory is best-effort too
+    }
+
+    let prompt = args.prompt;
+    if (ragContext) prompt = `${prompt}\n\n---${ragContext}`;
+    if (memoryContext) prompt = `${prompt}\n\n---${memoryContext}`;
+
+    const groqKey = process.env.GROQ_API_KEY;
+    const hasImages = (args.imageUrls ?? []).length > 0;
+    const models = hasImages
+      ? [{ id: "qwen/qwen3.8-27b", label: "qwen3.8-27b" }]
+      : [
+          { id: "openai/gpt-oss-120b", label: "gpt-oss-120b" },
+          { id: "qwen/qwen3.8-27b", label: "qwen3.8-27b" },
+          { id: "openai/gpt-oss-20b", label: "gpt-oss-20b" },
+        ];
+
+    const failures: string[] = [];
+
+    for (const m of models) {
+      if (!groqKey) break;
+      let res: Response;
+      try {
+        res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${groqKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: m.id,
+            messages: [
+              { role: "system", content: JARVIS_PROMPT },
+              ...history,
+              { role: "user", content: buildUserContent(prompt, args.imageUrls) },
+            ],
+            temperature: 0.6,
+            max_tokens: 8192,
+            reasoning_effort: "low",
+            stream: true,
+          }),
+        });
+      } catch (err) {
+        failures.push(
+          `${m.label} (${err instanceof Error ? err.message : "network error"})`,
+        );
+        continue;
+      }
+
+      if (!res.ok || !res.body) {
+        failures.push(`${m.label} (${res.status})`);
+        continue;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let full = "";
+      let pending = "";
+      let lastFlush = Date.now();
+
+      const flush = async () => {
+        if (!pending) return;
+        const delta = pending;
+        pending = "";
+        lastFlush = Date.now();
+        try {
+          await ctx.runMutation(internal.chats.appendStreamDelta, {
+            messageId: args.messageId,
+            delta,
+          });
+        } catch {
+          // A dropped flush shouldn't abort generation; the final write below
+          // still lands the complete text.
+        }
+      };
+
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let nl: number;
+          while ((nl = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            const delta = parseSseDelta(line);
+            if (delta) {
+              full += delta;
+              pending += delta;
+            }
+          }
+
+          // Throttle database writes: frequent enough to look live, rare
+          // enough that a 4000-token answer isn't 4000 mutations.
+          if (Date.now() - lastFlush >= STREAM_FLUSH_MS) {
+            await flush();
+          }
+        }
+        await flush();
+      } catch (err) {
+        failures.push(
+          `${m.label} stream (${err instanceof Error ? err.message : "read error"})`,
+        );
+      }
+
+      if (full.trim()) {
+        await ctx.runMutation(internal.chats.finalizeStream, {
+          messageId: args.messageId,
+          content: full,
+          model: `groq/${m.label}`,
+          usedFallback: false,
+        });
+        return { text: full, model: `groq/${m.label}`, usedFallback: false };
+      }
+    }
+
+    // Streaming unavailable or produced nothing — fall back to the plain path
+    // so the user still gets an answer. Guarded so a missing key produces a
+    // readable message instead of a raw provider error.
+    if (!groqKey) {
+      await ctx.runMutation(internal.chats.finalizeStream, {
+        messageId: args.messageId,
+        content: "Groq isn't configured for this deployment.",
+      });
+      return {
+        text: "Groq isn't configured for this deployment.",
+        model: "none",
+        usedFallback: true,
+      };
+    }
+    const result = await callGroq(
+      groqKey,
+      [...history, { role: "user", content: buildUserContent(prompt, args.imageUrls) }],
+    );
+    await ctx.runMutation(internal.chats.finalizeStream, {
+      messageId: args.messageId,
+      content: result.text,
+      model: result.model,
+      usedFallback: result.usedFallback,
+    });
+    return result;
   },
 });
 
