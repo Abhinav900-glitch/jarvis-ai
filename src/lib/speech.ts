@@ -492,3 +492,78 @@ export function speechSentences(text: string): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+/**
+ * Split an over-long sentence at a comma, semicolon or dash.
+ *
+ * Only punctuation is used as a break point, never conjunctions: a split that
+ * discards the connecting words ("and then") would silently drop content from
+ * what the user is meant to hear.
+ */
+function splitLongClause(clause: string, maxWords: number): string[] {
+  if (clause.split(/\s+/).length <= maxWords) return [clause];
+
+  const parts = clause.split(/(?<=[,;:])\s+|\s+[—–-]\s+/);
+  const out: string[] = [];
+  let buffer = "";
+
+  for (const part of parts) {
+    const candidate = buffer ? `${buffer} ${part}` : part;
+    if (candidate.split(/\s+/).length <= maxWords || !buffer) {
+      buffer = candidate;
+    } else {
+      out.push(buffer);
+      buffer = part;
+    }
+  }
+  if (buffer) out.push(buffer);
+  return out.filter(Boolean);
+}
+
+/**
+ * Break a reply into the chunks live mode speaks one at a time.
+ *
+ * Fluency is mostly time-to-first-audio: a synthesiser needs a second or two
+ * per request, so handing it the whole reply means silence until the very end.
+ * Speaking sentence by sentence — while the next one is already generating —
+ * gets sound out fast and sounds far more conversational than one long clip.
+ *
+ * The first chunk is deliberately shorter, because that is the one the user is
+ * waiting on.
+ */
+export function speechChunks(
+  text: string,
+  maxWords = 18,
+  firstMaxWords = 9,
+): string[] {
+  const sentences = speechSentences(text);
+  if (sentences.length === 0) return [];
+
+  const raw: string[] = [];
+  sentences.forEach((sentence, index) => {
+    const limit = index === 0 ? firstMaxWords : maxWords;
+    raw.push(...splitLongClause(sentence, limit));
+  });
+
+  // Merge an undersized chunk into the one after it. A chunk shorter than its
+  // own generation time would leave an audible hole *mid-sentence*; at a
+  // sentence boundary the same gap just sounds like punctuation, which is why
+  // the deliberately short first chunk is left alone.
+  const MIN_WORDS = 10;
+  const merged: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const words = raw[i].split(/\s+/).length;
+    const next = raw[i + 1];
+    if (
+      next !== undefined &&
+      words < MIN_WORDS &&
+      words + next.split(/\s+/).length <= maxWords
+    ) {
+      merged.push(`${raw[i]} ${next}`);
+      i++;
+    } else {
+      merged.push(raw[i]);
+    }
+  }
+  return merged.filter(Boolean);
+}

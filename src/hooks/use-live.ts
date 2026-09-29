@@ -2,8 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { getCountry } from "@/lib/languages";
-import { sanitizeForSpeech, speechSentences } from "@/lib/speech";
-import { audioMimeType, unlockAudioElement } from "@/lib/audio";
+import { sanitizeForSpeech, speechChunks, speechSentences } from "@/lib/speech";
+import {
+  audioMimeType,
+  startThinkingHum,
+  stopThinkingHum,
+  unlockAudioElement,
+} from "@/lib/audio";
 
 // ---------------------------------------------------------------------------
 // useLiveMode — hands-free voice conversation (ChatGPT / Gemini Live style)
@@ -102,6 +107,7 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
   // `ended` event, so an explicit stop (barge-in / Skip) has to settle it —
   // otherwise the turn never finishes and the mic never resumes.
   const ttsSettleRef = useRef<(() => void) | null>(null);
+  const humTimerRef = useRef<number | null>(null);
   // Voice-activity state for turn endpointing
   const speechStartRef = useRef<number | null>(null);
   const lastLoudRef = useRef<number | null>(null);
@@ -260,11 +266,21 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
         }
         processingRef.current = true;
         setProcessing(true);
+        // Don't fill a short gap with hum, only a real pause — a 200ms blip
+        // would just click.
+        humTimerRef.current = window.setTimeout(() => {
+          if (processingRef.current) startThinkingHum();
+        }, 420);
         try {
           await onTurnRef.current(blob, countryRef.current);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Transcription failed.");
         } finally {
+          if (humTimerRef.current !== null) {
+            window.clearTimeout(humTimerRef.current);
+            humTimerRef.current = null;
+          }
+          stopThinkingHum();
           processingRef.current = false;
           setProcessing(false);
           // Resume listening after the turn completes (reply delivery also
@@ -379,53 +395,74 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
 
       void (async () => {
         try {
-          // Primary: server TTS (Groq Orpheus → ElevenLabs). Returns null audio
-          // when no provider is available — falls back to the browser voice.
-          // langTag picks the Sarvam voice for Indic regions; the server
-          // reorders the provider chain around it.
-          const { audio } = await speakTts({
-            text: spoken,
-            langTag: getCountry(countryRef.current).langTag,
+          // Play the reply chunk by chunk. A synthesiser needs a second or
+          // two per request, so sending the whole reply in one call means
+          // silence until the very end. Instead the first chunk is generated
+          // immediately and the next one is requested *while the current one
+          // plays*, so the speech comes out nearly continuously.
+          const chunks = speechChunks(spoken);
+          const langTag = getCountry(countryRef.current).langTag;
+
+          const playClip = async (audio: ArrayBuffer): Promise<void> => {
+            // Play through an <audio> element rather than a bare
+            // AudioBufferSourceNode: the element decodes WAV and MP3 for us
+            // (the action returns either, depending on the provider), routes
+            // to the phone's media channel — so the ringer/silent switch
+            // doesn't swallow Jarvis — and gives us reliable play() rejection
+            // to fall back on.
+            stopTtsAudio();
+            const url = URL.createObjectURL(
+              new Blob([audio], { type: audioMimeType(audio) }),
+            );
+            ttsUrlRef.current = url;
+            const el = new Audio(url);
+            el.preload = "auto";
+            el.volume = 1;
+            ttsAudioRef.current = el;
+
+            speakingRef.current = true;
+            setSpeaking(true);
+
+            await new Promise<void>((resolve, reject) => {
+              const settleOnce = (fn: () => void) => {
+                ttsSettleRef.current = null;
+                fn();
+              };
+              // An explicit stop (barge-in / Skip) has to settle this too:
+              // pause() does not fire `ended`, and a hung turn would never
+              // hand the mic back.
+              ttsSettleRef.current = () => settleOnce(resolve);
+              el.onended = () => settleOnce(resolve);
+              el.onerror = () => settleOnce(() => reject(new Error("playback failed")));
+              void el.play().catch((err) => settleOnce(() => reject(err)));
+            });
+          };
+
+          // Always keep one generation in flight ahead of playback.
+          let pending: ReturnType<typeof speakTts> = speakTts({
+            text: chunks[0],
+            langTag,
           });
-          if (bargeInRef.current || !activeRef.current) {
-            finish();
-            return;
+
+          for (let i = 0; i < chunks.length; i++) {
+            const { audio } = await pending;
+            // Start the next generation now, during this chunk's playback.
+            if (i + 1 < chunks.length) {
+              pending = speakTts({ text: chunks[i + 1], langTag });
+            }
+            if (bargeInRef.current || !activeRef.current) return;
+            if (!audio) {
+              // A provider died mid-reply: let the browser voice finish it.
+              stopTtsAudio();
+              speakWithBrowser(chunks.slice(i).join(" "), finish);
+              return;
+            }
+            await playClip(audio);
+            if (bargeInRef.current || !activeRef.current) return;
           }
-          if (!audio) throw new Error("no server audio");
-
-          // Play through an <audio> element rather than a bare
-          // AudioBufferSourceNode: the element decodes WAV and MP3 for us
-          // (the action returns either, depending on the provider), routes to
-          // the phone's media channel — so the ringer/silent switch doesn't
-          // swallow Jarvis — and gives us reliable play() rejection to fall
-          // back on.
-          stopTtsAudio();
-          const url = URL.createObjectURL(
-            new Blob([audio], { type: audioMimeType(audio) }),
-          );
-          ttsUrlRef.current = url;
-          const el = new Audio(url);
-          el.preload = "auto";
-          el.volume = 1;
-          ttsAudioRef.current = el;
-
-          speakingRef.current = true;
-          setSpeaking(true);
-
-          await new Promise<void>((resolve, reject) => {
-            const settleOnce = (fn: () => void) => {
-              ttsSettleRef.current = null;
-              fn();
-            };
-            ttsSettleRef.current = () => settleOnce(resolve);
-            el.onended = () => settleOnce(resolve);
-            el.onerror = () => settleOnce(() => reject(new Error("audio playback failed")));
-            void el.play().catch((err) => settleOnce(() => reject(err)));
-          });
           finish();
         } catch {
           // Fallback: browser speech synthesis
-          stopTtsAudio();
           speakWithBrowser(spoken, finish);
         }
       })();
@@ -444,6 +481,11 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
     speakingRef.current = false;
     setSpeaking(false);
     stopLevelMonitor();
+    stopThinkingHum();
+    if (humTimerRef.current !== null) {
+      window.clearTimeout(humTimerRef.current);
+      humTimerRef.current = null;
+    }
     window.speechSynthesis?.cancel();
     stopTtsAudio();
     stopRecording();
@@ -541,6 +583,7 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
       activeRef.current = false;
       window.speechSynthesis?.cancel();
       stopTtsAudio();
+      stopThinkingHum();
       streamRef.current?.getTracks().forEach((t) => t.stop());
       if (levelRafRef.current !== null) cancelAnimationFrame(levelRafRef.current);
     },

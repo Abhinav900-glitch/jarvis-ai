@@ -106,3 +106,57 @@ export function playAckChime(volume = 0.12): void {
     osc.stop(now + note.at + note.dur + 0.02);
   }
 }
+
+// ---------------------------------------------------------------------------
+// The thinking hum.
+//
+// Live mode has an unavoidable gap: transcription plus a model round-trip takes
+// a second or two before the first word. Dead air there feels broken, so a very
+// quiet hum stands in for it — the same trick a phone assistant uses to signal
+// "I heard you, I'm working on it".
+// ---------------------------------------------------------------------------
+
+let humNodes: { osc: OscillatorNode[]; gain: GainNode } | null = null;
+
+export function startThinkingHum(volume = 0.035): void {
+  const ctx = getChimeContext();
+  if (!ctx || humNodes) return;
+  void ctx.resume().catch(() => {});
+
+  const now = ctx.currentTime;
+  const gain = ctx.createGain();
+  // Fade in: a hum that starts at full volume is startling.
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(volume, now + 0.18);
+  gain.connect(ctx.destination);
+
+  // Two close, slightly detuned voices beat against each other gently — a
+  // single sine would sound like a test tone.
+  const freqs = [196, 294];
+  const osc: OscillatorNode[] = [];
+  for (const freq of freqs) {
+    const o = ctx.createOscillator();
+    o.type = "sine";
+    o.frequency.value = freq;
+    o.connect(gain);
+    o.start();
+    osc.push(o);
+  }
+  humNodes = { osc, gain };
+}
+
+export function stopThinkingHum(): void {
+  const ctx = getChimeContext();
+  const nodes = humNodes;
+  humNodes = null;
+  if (!ctx || !nodes) return;
+
+  const now = ctx.currentTime;
+  // Fade out rather than cutting, so it never clicks.
+  nodes.gain.gain.cancelScheduledValues(now);
+  nodes.gain.gain.setValueAtTime(Math.max(nodes.gain.gain.value, 0.0001), now);
+  nodes.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+  for (const o of nodes.osc) {
+    o.stop(now + 0.2);
+  }
+}
