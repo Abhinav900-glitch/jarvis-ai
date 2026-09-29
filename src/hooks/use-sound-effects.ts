@@ -58,6 +58,26 @@ export function useSoundEffects(): SoundEffects {
     setCurrentCue(null);
   }, []);
 
+  /**
+   * Release the finished clip's audio without clearing the "playing" flag.
+   * The per-clip `finally` used to call stop(), which made the UI blink off
+   * and on between the sounds in a chain.
+   */
+  const releaseClip = useCallback(() => {
+    const el = audioRef.current;
+    if (el) {
+      el.pause();
+      el.onended = null;
+      el.onerror = null;
+      el.src = "";
+      audioRef.current = null;
+    }
+    if (urlRef.current) {
+      URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+    }
+  }, []);
+
   const playCue = useCallback(
     async (cue: SoundCue): Promise<boolean> => {
       setError(null);
@@ -81,7 +101,7 @@ export function useSoundEffects(): SoundEffects {
           return false;
         }
 
-        stop();
+        releaseClip();
         const url = URL.createObjectURL(
           new Blob([audio], { type: audioMimeType(audio) }),
         );
@@ -103,10 +123,10 @@ export function useSoundEffects(): SoundEffects {
         setError(err instanceof Error ? err.message : "Could not play that sound.");
         return false;
       } finally {
-        stop();
+        releaseClip();
       }
     },
-    [generate, stop],
+    [generate, releaseClip],
   );
 
   /**
@@ -122,6 +142,8 @@ export function useSoundEffects(): SoundEffects {
         if (!ok) break;
         played = true;
       }
+      // Clear the flag once, at the end, so the indicator stays lit for the
+      // whole chain instead of flickering between clips.
       stop();
       return played;
     },

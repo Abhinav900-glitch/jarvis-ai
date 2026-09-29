@@ -43,7 +43,8 @@ export const translate = action({
       return {
         translated: null,
         target: args.target,
-        targetName: args.target,
+        // Show something a human recognises rather than a raw BCP-47 code.
+        targetName: args.target.split("-")[0].toUpperCase(),
         source: null,
         engine: "none",
         error: "That language isn't supported for translation.",

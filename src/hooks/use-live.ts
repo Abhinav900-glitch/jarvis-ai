@@ -438,11 +438,22 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
             });
           };
 
+          if (chunks.length === 0) {
+            finish();
+            return;
+          }
+
           // Always keep one generation in flight ahead of playback.
           let pending: ReturnType<typeof speakTts> = speakTts({
             text: chunks[0],
             langTag,
           });
+
+          // Leaving the loop early abandons an in-flight generation; swallow
+          // its rejection instead of leaking an unhandled promise.
+          const abandon = () => {
+            void pending.catch(() => {});
+          };
 
           for (let i = 0; i < chunks.length; i++) {
             const { audio } = await pending;
@@ -450,7 +461,13 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
             if (i + 1 < chunks.length) {
               pending = speakTts({ text: chunks[i + 1], langTag });
             }
-            if (bargeInRef.current || !activeRef.current) return;
+            if (bargeInRef.current || !activeRef.current) {
+              abandon();
+              // finish() is mandatory here: without it the turn never closes
+              // and the mic is never handed back — live mode would hang.
+              finish();
+              return;
+            }
             if (!audio) {
               // A provider died mid-reply: let the browser voice finish it.
               stopTtsAudio();
@@ -458,11 +475,17 @@ export function useLiveMode(onTurn: LiveTurnHandler, countryCode: string): LiveM
               return;
             }
             await playClip(audio);
-            if (bargeInRef.current || !activeRef.current) return;
+            if (bargeInRef.current || !activeRef.current) {
+              abandon();
+              finish();
+              return;
+            }
           }
           finish();
         } catch {
-          // Fallback: browser speech synthesis
+          // Fallback: browser speech synthesis. Stop whatever is playing
+          // first, or the failed clip and the fallback talk over each other.
+          stopTtsAudio();
           speakWithBrowser(spoken, finish);
         }
       })();

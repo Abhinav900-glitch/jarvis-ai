@@ -68,7 +68,7 @@ import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
 import { stripWakeWord, WAKE_PHRASE } from "@/lib/wake-word";
-import { playAckChime } from "@/lib/audio";
+import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage } from "@/lib/languages";
 import { COUNTRIES, getCountry, AUTHOR } from "@/lib/languages";
 import { generateImageWithPuter } from "@/lib/puter";
@@ -788,9 +788,10 @@ export default function Dashboard() {
         const wake = stripWakeWord(raw);
         if (!wake.woke) return "";
         if (wake.onlyWake) {
-          // "Hey Jarvis" on its own: acknowledge, then keep listening.
+          // "Hey Jarvis" on its own: chime and keep listening. No transcript
+          // row — an empty turn would sit in the log as a blank gap, and the
+          // next reply would attach to it instead of to a real question.
           playAckChime();
-          setLiveTranscript((t) => [...t.slice(-5), { user: "", assistant: "" }]);
           return "";
         }
         text = wake.text;
@@ -803,6 +804,9 @@ export default function Dashboard() {
       // user talking.
       const cues = findSoundCues(text);
       if (cues.length > 0) {
+        // The clip is audio, not thinking: kill the hum or it drones under
+        // the bark.
+        stopThinkingHum();
         setLiveTranscript((t) => [
           ...t.slice(-5),
           { user: text, assistant: cueLine(cues) },
