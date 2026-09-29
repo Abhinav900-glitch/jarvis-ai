@@ -9,6 +9,7 @@ import {
   Code2,
   Copy,
   Eraser,
+  Info,
   Loader2,
   Play,
   Send,
@@ -31,7 +32,11 @@ import {
   DEFAULT_CODE_LANGUAGE,
   getCodeLanguage,
 } from "@/lib/code-languages";
-import { buildRunPrompt, type CodeRunResult } from "@/lib/code-run";
+import {
+  buildRunPrompt,
+  PROVIDER_LABELS,
+  type CodeRunResult,
+} from "@/lib/code-run";
 import {
   searchStarters,
   STARTER_CATEGORIES,
@@ -124,6 +129,8 @@ export function CodePanel({
     } catch (err) {
       setResult({
         ok: false,
+        provider: null,
+        providersTried: [],
         language: language.id,
         languageLabel: language.label,
         versionIndex: version.index,
@@ -135,8 +142,10 @@ export function CodePanel({
         cpuTime: null,
         memory: null,
         elapsedMs: 0,
+        outputTruncated: false,
         requestError:
           err instanceof Error ? err.message : "The run could not be started.",
+        engineNote: null,
       });
     } finally {
       setRunning(false);
@@ -239,6 +248,20 @@ export function CodePanel({
                     ? "failed"
                     : "ran"}
               </span>
+              {result.provider && (
+                <span
+                  className="rounded bg-muted px-1 py-px"
+                  title={
+                    result.providersTried.length > 1
+                      ? `Tried ${result.providersTried
+                          .map((p) => PROVIDER_LABELS[p])
+                          .join(", then ")}`
+                      : "Execution engine"
+                  }
+                >
+                  {PROVIDER_LABELS[result.provider]}
+                </span>
+              )}
               {result.cpuTime && <span>{result.cpuTime}s CPU</span>}
               {result.memory && <span>{formatKb(result.memory)}</span>}
             </span>
@@ -504,6 +527,19 @@ export function CodePanel({
                 <p className="flex gap-1.5 text-amber-600 dark:text-amber-400">
                   <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                   <span>{result.requestError}</span>
+                </p>
+              ) : null}
+
+              {result.engineNote ? (
+                <p className="mb-1.5 flex gap-1.5 text-[11px] leading-snug text-muted-foreground">
+                  <Info className="mt-px size-3 shrink-0" />
+                  <span>{result.engineNote}</span>
+                </p>
+              ) : null}
+
+              {result.outputTruncated ? (
+                <p className="mb-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                  This engine caps output at 999 characters, so it may stop mid-run.
                 </p>
               ) : null}
 

@@ -32,6 +32,14 @@ export interface CodeLanguage {
   stdin: boolean;
   /** Rough grouping, used to keep the language list readable. */
   group: string;
+  /**
+   * The OnlineCompiler.io identifier for this language, when it has one.
+   *
+   * That fallback service runs a much smaller list, and exactly one version of
+   * each — so `versions` above is ignored there and the run happens on whatever
+   * release it ships. Languages without this field simply cannot fall back.
+   */
+  onlineCompiler?: string;
 }
 
 /**
@@ -48,6 +56,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "#",
     group: "Scripting",
     stdin: true,
+    onlineCompiler: "python-3.14",
     versions: [
       { index: 0, label: "3.5.1" },
       { index: 1, label: "3.6.3" },
@@ -87,6 +96,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "JVM",
     stdin: true,
+    onlineCompiler: "openjdk-25",
     versions: [
       { index: 0, label: "JDK 8" },
       { index: 1, label: "JDK 9" },
@@ -106,6 +116,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "Systems",
     stdin: true,
+    onlineCompiler: "gcc-15",
     versions: [
       { index: 0, label: "GCC 5.3" },
       { index: 2, label: "GCC 7.2" },
@@ -125,6 +136,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "Systems",
     stdin: true,
+    onlineCompiler: "g++-15",
     versions: [
       { index: 0, label: "GCC 5.3" },
       { index: 2, label: "GCC 7.2" },
@@ -160,6 +172,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "JVM",
     stdin: true,
+    onlineCompiler: "dotnet-csharp-9",
     versions: [
       { index: 0, label: "Mono 4.2" },
       { index: 3, label: "Mono 6.0" },
@@ -177,6 +190,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "Systems",
     stdin: true,
+    onlineCompiler: "go-1.26",
     versions: [
       { index: 0, label: "1.5.2" },
       { index: 3, label: "1.13.1" },
@@ -194,6 +208,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "Systems",
     stdin: true,
+    onlineCompiler: "rust-1.93",
     versions: [
       { index: 3, label: "1.38.0" },
       { index: 4, label: "1.56.1" },
@@ -210,6 +225,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "Web",
     stdin: true,
+    onlineCompiler: "typescript-deno",
     versions: [
       { index: 0, label: "5.2.2" },
       { index: 1, label: "5.9.3" },
@@ -279,6 +295,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "#",
     group: "Scripting",
     stdin: true,
+    onlineCompiler: "ruby-4.0",
     versions: [
       { index: 2, label: "2.5.1" },
       { index: 3, label: "2.6.5" },
@@ -296,6 +313,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "Web",
     stdin: true,
+    onlineCompiler: "php-8.5",
     versions: [
       { index: 1, label: "7.1.11" },
       { index: 3, label: "7.3.10" },
@@ -409,6 +427,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "--",
     group: "Functional",
     stdin: true,
+    onlineCompiler: "haskell-9.12",
     versions: [
       { index: 1, label: "GHC 8.2.1" },
       { index: 3, label: "GHC 8.6.5" },
@@ -517,6 +536,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
     comment: "//",
     group: "Functional",
     stdin: true,
+    onlineCompiler: "dotnet-fsharp-9",
     versions: [
       { index: 0, label: "4.1" },
       { index: 1, label: "4.5.0" },
@@ -552,6 +572,14 @@ export function getCodeLanguage(id: string): CodeLanguage | undefined {
 
 /** The language the runner opens on, and the one starter snippets default to. */
 export const DEFAULT_CODE_LANGUAGE = "python3";
+
+/**
+ * The fallback engine can only run these. A language missing from the list has
+ * nowhere to fall back to, which the runner reports rather than guessing.
+ */
+export function onlineCompilerId(language: CodeLanguage): string | null {
+  return language.onlineCompiler ?? null;
+}
 
 /**
  * Resolve the version to send, preferring what the user picked and falling back

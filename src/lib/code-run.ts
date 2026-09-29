@@ -7,9 +7,21 @@
 // it without pulling in anything server-side.
 // ---------------------------------------------------------------------------
 
+/** The execution engines available, in the order they are tried. */
+export type CodeProvider = "jdoodle" | "onlinecompiler";
+
+export const PROVIDER_LABELS: Record<CodeProvider, string> = {
+  jdoodle: "JDoodle",
+  onlinecompiler: "OnlineCompiler.io",
+};
+
 export interface CodeRunResult {
   /** False only when the run could not be completed at all. */
   ok: boolean;
+  /** Which engine actually ran the program. Null when none did. */
+  provider: CodeProvider | null;
+  /** Every engine that was contacted, in order, whether or not it worked. */
+  providersTried: CodeProvider[];
   language: string;
   languageLabel: string;
   versionIndex: number;
@@ -26,6 +38,8 @@ export interface CodeRunResult {
   memory: string | null;
   /** Wall-clock time for the whole request, measured on the server. */
   elapsedMs: number;
+  /** True when the engine cuts output off at a fixed length. */
+  outputTruncated: boolean;
   /**
    * A service-level problem (missing credentials, 401, 429) that the user
    * cannot fix by editing their code. Shown as-is, and deliberately kept
@@ -33,6 +47,11 @@ export interface CodeRunResult {
    * compiler complaint.
    */
   requestError: string | null;
+  /**
+   * Something the user should know about how the run went, which is not an
+   * error: which engine was used, and what changed about the environment.
+   */
+  engineNote: string | null;
 }
 
 // The composed message has to stay under the 8,000 character limit the chat
@@ -73,7 +92,7 @@ export function buildRunPrompt(input: RunPromptInput): string {
     `I ran a program in the code runner and it ${result.failed ? "failed" : "finished"}. ` +
       `Please interpret the result and tell me what it means.`,
     "",
-    `**Language:** ${languageLabel} ${versionLabel}`,
+    `**Language:** ${languageLabel} ${result.provider ? result.versionLabel : versionLabel}`,
   ];
 
   if (stdin?.trim()) {
@@ -101,6 +120,15 @@ export function buildRunPrompt(input: RunPromptInput): string {
     parts.push("", `**${label}:**`, fenceBlock(result.error, "text", MAX_OUTPUT));
   }
 
+  if (result.outputTruncated) {
+    parts.push(
+      "",
+      "**Note:** this engine truncates long output, so what is shown above may be " +
+        "only the beginning of what the program printed. Do not claim the run ended " +
+        "there, and do not count lines as if the output were complete.",
+    );
+  }
+
   if (result.cpuTime || result.memory) {
     const stats = [
       result.cpuTime ? `CPU ${result.cpuTime}s` : null,
@@ -109,6 +137,12 @@ export function buildRunPrompt(input: RunPromptInput): string {
       .filter(Boolean)
       .join(", ");
     parts.push("", `_${stats}_`);
+  }
+
+  if (result.engineNote) {
+    // The model should know the environment differed, or it will explain a
+    // version-specific failure as though it were a bug in the program.
+    parts.push("", `**About this run:** ${result.engineNote}`);
   }
 
   parts.push(
