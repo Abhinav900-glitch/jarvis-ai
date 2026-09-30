@@ -12,12 +12,18 @@ import {
 import type { CodeProvider, CodeRunResult } from "../lib/code-run";
 
 // ---------------------------------------------------------------------------
-// Code execution, with a fallback engine.
+// Code execution, with fallback engines.
 //
-// Two services stand behind this action, tried in order:
+// Three services stand behind this action, tried in order:
 //
-//   1. JDoodle            POST api.jdoodle.com/v1/execute
-//   2. OnlineCompiler.io  POST api.onlinecompiler.io/api/run-code-sync/
+//   1. JDoodle            POST api.jdoodle.com/v1/execute        (needs a key)
+//   2. Wandbox            POST wandbox.org/api/compile.json      (no key at all)
+//   3. OnlineCompiler.io  POST api.onlinecompiler.io/api/run-code-sync/  (needs a key)
+//
+// Wandbox is a free public playground, so it needs no credentials and is what
+// makes the code runner work before anyone has signed up for anything. It is
+// placed after JDoodle because JDoodle honours the version the user picked and
+// can install packages, which Wandbox can do neither of.
 //
 // The fallback fires for exactly one class of problem: the ENGINE failed. That
 // means no credentials, a refused connection, a 401, exhausted credits, a
@@ -30,11 +36,13 @@ import type { CodeProvider, CodeRunResult } from "../lib/code-run";
 // only works on one of them". So a 200 from an engine ends the chain, whatever
 // it says.
 //
-// Both engines run untrusted code, and both keep the secret server-side. The
-// browser never holds a key: anything in a web page can be read.
+// All engines run untrusted code, and the ones that need a key keep it
+// server-side. The browser never holds a key: anything in a web page can be
+// read.
 // ---------------------------------------------------------------------------
 
 const JDOODLE_URL = "https://api.jdoodle.com/v1/execute";
+const WANDBOX_URL = "https://wandbox.org/api/compile.json";
 const ONLINECOMPILER_URL = "https://api.onlinecompiler.io/api/run-code-sync/";
 
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -44,6 +52,12 @@ const MAX_OUTPUT_CHARS = 60_000;
 
 /** OnlineCompiler.io documents output and error as capped at 999 characters. */
 const OC_OUTPUT_CAP = 999;
+
+/**
+ * Wandbox truncates a program's output at this many characters and gives no
+ * indication that it did, so the length itself is the only available signal.
+ */
+const WANDBOX_OUTPUT_CAP = 131_072;
 
 function readEnv(...names: string[]): string | null {
   for (const name of names) {
@@ -283,7 +297,152 @@ async function runWithJdoodle(
 }
 
 // ---------------------------------------------------------------------------
-// Engine 2: OnlineCompiler.io
+// Engine 2: Wandbox
+// ---------------------------------------------------------------------------
+
+interface WandboxResponse {
+  /** Exit status as a string. "0" means the program ran to completion. */
+  status?: string | number;
+  signal?: string;
+  program_output?: string;
+  program_error?: string;
+  compiler_output?: string;
+  compiler_error?: string;
+  compiler_message?: string;
+  program_message?: string;
+}
+
+/**
+ * Wandbox writes the program to `prog.<ext>` before compiling, which means
+ * javac rejects any `public` top-level class because the file name does not
+ * match it. Dropping the modifier is harmless — a top-level class is already
+ * package-private — and it is what makes an ordinary `public class Main` run.
+ */
+function prepareWandboxSource(ctx: AttemptContext): string {
+  if (ctx.language.id !== "java") return ctx.source;
+  return ctx.source.replace(
+    /^(public\s+)(final\s+|abstract\s+)?(class|interface|enum|record)\b/gm,
+    (_match, _public, modifier = "", keyword) => `${modifier ?? ""}${keyword}`,
+  );
+}
+
+async function runWithWandbox(
+  ctx: AttemptContext,
+  startedAt: number,
+  providersTried: CodeProvider[],
+): Promise<Attempt> {
+  const provider: CodeProvider = "wandbox";
+  const compiler = ctx.language.wandbox;
+  if (!compiler) {
+    const result = baseResult(ctx, provider, "", startedAt, providersTried);
+    result.requestError = `Wandbox does not run ${ctx.language.label}.`;
+    // Not worth retrying: no other engine will know this language either.
+    return { result, retryable: false };
+  }
+
+  const fail = (requestError: string): Attempt => {
+    const result = baseResult(ctx, provider, compiler, startedAt, providersTried);
+    result.requestError = requestError;
+    return { result, retryable: true };
+  };
+
+  // One fixed build per language and no package installer, so both the chosen
+  // version and any requested libraries are unavailable here. Both are said
+  // plainly rather than silently ignored, because otherwise the model will
+  // explain a missing NumPy as though it were a bug in the program.
+  const notes: string[] = [];
+  if (ctx.libs.length) {
+    notes.push(
+      `Wandbox cannot install packages, so ${ctx.libs.join(", ")} was not available to the program.`,
+    );
+  }
+
+  const payload: Record<string, unknown> = {
+    compiler,
+    code: prepareWandboxSource(ctx),
+  };
+  if (ctx.stdin) payload.stdin = ctx.stdin;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(WANDBOX_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === "AbortError";
+    return fail(
+      aborted
+        ? "Wandbox did not answer in time."
+        : "Could not reach Wandbox. Check the connection and try again.",
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const rawText = await response.text().catch(() => "");
+  let body: WandboxResponse = {};
+  try {
+    body = JSON.parse(rawText) as WandboxResponse;
+  } catch {
+    // Wandbox answers an unknown compiler with a bare "Error: Unknown compiler"
+    // and no JSON at all, which is an engine failure worth falling back from.
+  }
+
+  if (!response.ok) {
+    if (response.status === 429) {
+      return fail("Wandbox is rate-limiting requests. Try again in a moment.");
+    }
+    const detail = rawText.trim().slice(0, 200);
+    return fail(
+      `Wandbox refused the run (HTTP ${response.status})${detail ? `: ${detail}` : "."}`,
+    );
+  }
+
+  const result = baseResult(ctx, provider, compiler, startedAt, providersTried);
+
+  // Both a rejected compilation and a runtime traceback arrive in
+  // `program_error`, with `compiler_error` left empty, so the two cannot be
+  // told apart from the response and must be read together.
+  const rawOutput = body.program_output ?? "";
+  const compileError = body.compiler_error ?? "";
+  const runError = body.program_error ?? "";
+  const error = [compileError, runError].filter(Boolean).join("\n").trim();
+
+  const status = String(body.status ?? "");
+  // 137 is how the sandbox reports a killed process, which here means the
+  // runtime limit ran out rather than a memory ceiling.
+  const timedOut = status === "137";
+  const failed = timedOut || status !== "0" || error.length > 0;
+
+  result.ok = true;
+  result.output = clamp(rawOutput, MAX_OUTPUT_CHARS);
+  result.error = clamp(error, MAX_OUTPUT_CHARS);
+  result.failed = failed;
+  result.timedOut = timedOut;
+  result.outputTruncated = rawOutput.length >= WANDBOX_OUTPUT_CAP;
+  result.cpuTime = null;
+  result.memory = null;
+
+  notes.push(
+    `This ran on the free Wandbox playground, which pins one fixed build per ` +
+      `language (${compiler}), so the behaviour may differ from the version selected.`,
+  );
+  if (result.outputTruncated) {
+    notes.push("Wandbox cuts output off after 128 KB.");
+  }
+  result.engineNote = notes.join(" ");
+
+  return { result, retryable: false };
+}
+
+// ---------------------------------------------------------------------------
+// Engine 3: OnlineCompiler.io
 // ---------------------------------------------------------------------------
 
 interface OnlineCompilerResponse {
@@ -477,7 +636,8 @@ export const runCode = action({
     };
 
     // Build the chain from what is actually configured, so a missing key is a
-    // silent skip rather than an error.
+    // silent skip rather than an error. Wandbox is the exception: it needs no
+    // key, so it is always available for any language it actually supports.
     const chain: Array<() => Promise<Attempt>> = [];
     if (jdoodle) {
       chain.push(() => {
@@ -486,9 +646,16 @@ export const runCode = action({
         return runWithJdoodle(runCtx, jdoodle as JdoodleCredentials, startedAt, providersTried);
       });
     }
-    if (onlineCompiler && language.onlineCompiler) {
+    if (language.wandbox) {
       chain.push(() => {
         runCtx.isFallback = jdoodle !== null;
+        providersTried.push("wandbox");
+        return runWithWandbox(runCtx, startedAt, providersTried);
+      });
+    }
+    if (onlineCompiler && language.onlineCompiler) {
+      chain.push(() => {
+        runCtx.isFallback = jdoodle !== null || language.wandbox !== undefined;
         providersTried.push("onlinecompiler");
         return runWithOnlineCompiler(runCtx, onlineCompiler, startedAt, providersTried);
       });
@@ -498,13 +665,12 @@ export const runCode = action({
       const result = baseResult(runCtx, null, version.label, startedAt, providersTried);
       if (!jdoodle && !onlineCompiler) {
         result.requestError =
-          "Code execution is not configured yet. Add JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET from jdoodle.com/compiler-api, or ONLINECOMPILER_API_KEY from api.onlinecompiler.io, in the API keys tab.";
+          `No execution engine runs ${language.label}. Wandbox is the keyless engine and has no working compiler for it — add JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET from jdoodle.com/compiler-api in the API keys tab to run it anyway.`;
       } else if (!onlineCompiler) {
         result.requestError =
-          "The primary engine is not configured. Add JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET in the API keys tab.";
+          `No configured engine runs ${language.label}. Add JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET in the API keys tab.`;
       } else {
-        result.requestError =
-          `The fallback engine does not run ${language.label}, and the primary engine is not configured.`;
+        result.requestError = `Neither fallback engine runs ${language.label}, and the primary engine is not configured.`;
       }
       return result;
     }
@@ -521,7 +687,7 @@ export const runCode = action({
     failure.providersTried = providersTried;
     if (providersTried.length > 1) {
       failure.requestError =
-        `Both execution engines failed. Last error: ${failure.requestError ?? "unknown error"}`;
+        `All ${providersTried.length} execution engines failed. Last error: ${failure.requestError ?? "unknown error"}`;
     }
     return failure;
   },

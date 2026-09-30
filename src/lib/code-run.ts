@@ -8,10 +8,11 @@
 // ---------------------------------------------------------------------------
 
 /** The execution engines available, in the order they are tried. */
-export type CodeProvider = "jdoodle" | "onlinecompiler";
+export type CodeProvider = "jdoodle" | "wandbox" | "onlinecompiler";
 
 export const PROVIDER_LABELS: Record<CodeProvider, string> = {
   jdoodle: "JDoodle",
+  wandbox: "Wandbox",
   onlinecompiler: "OnlineCompiler.io",
 };
 

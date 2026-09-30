@@ -40,6 +40,16 @@ export interface CodeLanguage {
    * release it ships. Languages without this field simply cannot fall back.
    */
   onlineCompiler?: string;
+  /**
+   * The Wandbox compiler id for this language, when Wandbox runs it.
+   *
+   * Wandbox is a free public playground, so it needs no credentials and is the
+   * engine that works out of the box. It pins one build per language and cannot
+   * install packages, so `versions` is ignored there too. A language missing
+   * this field cannot run on it — either Wandbox has no such compiler, or the
+   * only build it ships is broken.
+   */
+  wandbox?: string;
 }
 
 /**
@@ -50,6 +60,7 @@ export interface CodeLanguage {
 export const CODE_LANGUAGES: CodeLanguage[] = [
   {
     id: "python3",
+    wandbox: "cpython-3.12.7",
     label: "Python 3",
     ext: "py",
     fence: "python",
@@ -70,6 +81,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "nodejs",
+    wandbox: "nodejs-20.17.0",
     label: "Node.js",
     ext: "js",
     fence: "javascript",
@@ -90,6 +102,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "java",
+    wandbox: "openjdk-jdk-21+35",
     label: "Java",
     ext: "java",
     fence: "java",
@@ -110,6 +123,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "c",
+    wandbox: "gcc-13.2.0-c",
     label: "C",
     ext: "c",
     fence: "c",
@@ -130,6 +144,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "cpp",
+    wandbox: "gcc-13.2.0",
     label: "C++",
     ext: "cpp",
     fence: "cpp",
@@ -150,6 +165,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "cpp17",
+    wandbox: "gcc-13.2.0",
     label: "C++17",
     ext: "cpp",
     fence: "cpp",
@@ -166,6 +182,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "csharp",
+    wandbox: "dotnetcore-6.0.425",
     label: "C#",
     ext: "cs",
     fence: "csharp",
@@ -184,6 +201,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "go",
+    wandbox: "go-1.23.2",
     label: "Go",
     ext: "go",
     fence: "go",
@@ -202,6 +220,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "rust",
+    wandbox: "rust-1.82.0",
     label: "Rust",
     ext: "rs",
     fence: "rust",
@@ -219,6 +238,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "typescript",
+    wandbox: "typescript-5.6.2",
     label: "TypeScript",
     ext: "ts",
     fence: "ts",
@@ -256,6 +276,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "sql",
+    wandbox: "sqlite-3.46.1",
     label: "SQL (SQLite)",
     ext: "sql",
     fence: "sql",
@@ -272,6 +293,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "bash",
+    wandbox: "bash",
     label: "Bash",
     ext: "sh",
     fence: "bash",
@@ -289,6 +311,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "ruby",
+    wandbox: "ruby-3.4.9",
     label: "Ruby",
     ext: "rb",
     fence: "ruby",
@@ -307,6 +330,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "php",
+    wandbox: "php-8.3.12",
     label: "PHP",
     ext: "php",
     fence: "php",
@@ -358,6 +382,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "scala",
+    wandbox: "scala-2.13.15",
     label: "Scala",
     ext: "scala",
     fence: "scala",
@@ -374,6 +399,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "r",
+    wandbox: "r-4.4.1",
     label: "R",
     ext: "r",
     fence: "r",
@@ -390,6 +416,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "lua",
+    wandbox: "lua-5.4.7",
     label: "Lua",
     ext: "lua",
     fence: "lua",
@@ -405,6 +432,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "perl",
+    wandbox: "perl-5.44.0",
     label: "Perl",
     ext: "pl",
     fence: "perl",
@@ -421,6 +449,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "haskell",
+    wandbox: "ghc-9.10.1",
     label: "Haskell",
     ext: "hs",
     fence: "haskell",
@@ -470,6 +499,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "julia",
+    wandbox: "julia-1.10.5",
     label: "Julia",
     ext: "jl",
     fence: "julia",
@@ -547,6 +577,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "groovy",
+    wandbox: "groovy-4.0.23",
     label: "Groovy",
     ext: "groovy",
     fence: "groovy",
@@ -579,6 +610,11 @@ export const DEFAULT_CODE_LANGUAGE = "python3";
  */
 export function onlineCompilerId(language: CodeLanguage): string | null {
   return language.onlineCompiler ?? null;
+}
+
+/** Whether the keyless engine can run this language at all. */
+export function wandboxId(language: CodeLanguage): string | null {
+  return language.wandbox ?? null;
 }
 
 /**

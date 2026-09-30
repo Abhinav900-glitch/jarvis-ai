@@ -539,7 +539,8 @@ export function CodePanel({
 
               {result.outputTruncated ? (
                 <p className="mb-1.5 text-[11px] text-amber-600 dark:text-amber-400">
-                  This engine caps output at 999 characters, so it may stop mid-run.
+                  This engine cuts long output off, so the run may look like it
+                  stopped early.
                 </p>
               ) : null}
 
