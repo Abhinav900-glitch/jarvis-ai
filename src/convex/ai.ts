@@ -272,10 +272,18 @@ async function callGroq(
  *     Groq use. Sending the object shape to Mistral returns a 400, so the
  *     parts are rewritten on the way out rather than trusted to be compatible.
  *
- *  2. Model availability differs per account. The free Experiment tier does not
- *     necessarily serve the same models as a paid one, so a chain is tried and
- *     each rejection is recorded — a single hard-coded id would fail for
- *     everyone not on the top plan.
+ *  2. Model availability is per account, and the free Experiment tier is much
+ *     narrower than the paid one. Verified against this deployment's own key:
+ *     `mistral-large-latest` returns 403 "not available in your subscription
+ *     tier", `pixtral-large-latest` is not offered at all (400 invalid model),
+ *     and `mistral-medium` / `mistral-small` answer 429 rate-limited every
+ *     time. What actually answers is the Ministral family, and `ministral-3b`
+ *     additionally takes an image — it correctly named a landmark from a photo.
+ *
+ *     So the usable models lead, and the richer ones follow for anyone who later
+ *     upgrades. Leading with the model most likely to fail would burn a request
+ *     per turn for nothing, and with vision that would break image analysis
+ *     entirely rather than merely slow it down.
  */
 async function callMistral(
   key: string,
@@ -285,15 +293,16 @@ async function callMistral(
   const hasImages = turns.some((t) => Array.isArray(t.content));
   const models = hasImages
     ? [
+        { id: "ministral-3b-latest", label: "ministral-3b" },
         { id: "mistral-small-latest", label: "mistral-small" },
         { id: "mistral-medium-latest", label: "mistral-medium" },
-        { id: "pixtral-large-latest", label: "pixtral-large" },
       ]
     : [
-        { id: "mistral-large-latest", label: "mistral-large" },
+        { id: "ministral-14b-latest", label: "ministral-14b" },
+        { id: "ministral-8b-latest", label: "ministral-8b" },
+        { id: "ministral-3b-latest", label: "ministral-3b" },
         { id: "mistral-medium-latest", label: "mistral-medium" },
         { id: "mistral-small-latest", label: "mistral-small" },
-        { id: "ministral-3b-latest", label: "ministral-3b" },
       ];
 
   // Rewrite the OpenAI-shaped image parts into Mistral's shape.
