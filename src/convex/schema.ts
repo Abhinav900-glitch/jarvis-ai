@@ -153,6 +153,14 @@ const schema = defineSchema(
       model: v.optional(v.string()),
       usedFallback: v.optional(v.boolean()),
       usedSearch: v.optional(v.boolean()),
+      /**
+       * Set by the user pressing Stop. Read by the streaming loop on every
+       * flush, which is where the check costs nothing — the flush was already
+       * a database write happening ~11 times a second.
+       */
+      cancelRequested: v.optional(v.boolean()),
+      /** True when the reply stopped early because it was cancelled. */
+      truncated: v.optional(v.boolean()),
       sources: v.optional(
         v.array(
           v.object({

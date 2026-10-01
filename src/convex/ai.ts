@@ -833,6 +833,12 @@ export const askStream = action({
 
     const failures: string[] = [];
 
+    // Hoisted out of the model loop: the user pressing Stop has to end the
+    // whole attempt, not just the current model's stream, and the decision is
+    // acted on after the loop as well as inside it.
+    let cancelled = false;
+    let cancelledText = "";
+
     for (const m of models) {
       if (!groqKey) break;
       let res: Response;
@@ -875,20 +881,25 @@ export const askStream = action({
       let pending = "";
       let lastFlush = Date.now();
 
-      const flush = async () => {
-        if (!pending) return;
+      const flush = async (): Promise<boolean> => {
+        lastFlush = Date.now();
+        if (!pending) return false;
         const delta = pending;
         pending = "";
-        lastFlush = Date.now();
         try {
-          await ctx.runMutation(internal.chats.appendStreamDelta, {
+          const res = await ctx.runMutation(internal.chats.appendStreamDelta, {
             messageId: args.messageId,
             delta,
           });
+          if (res.cancelled) {
+            cancelled = true;
+            return true;
+          }
         } catch {
           // A dropped flush shouldn't abort generation; the final write below
           // still lands the complete text.
         }
+        return false;
       };
 
       try {
@@ -911,8 +922,9 @@ export const askStream = action({
           // Throttle database writes: frequent enough to look live, rare
           // enough that a 4000-token answer isn't 4000 mutations.
           if (Date.now() - lastFlush >= STREAM_FLUSH_MS) {
-            await flush();
+            if (await flush()) break;
           }
+          if (cancelled) break;
         }
         await flush();
       } catch (err) {
@@ -927,8 +939,23 @@ export const askStream = action({
           content: full,
           model: `groq/${m.label}`,
           usedFallback: false,
+          truncated: cancelled || undefined,
         });
-        return { text: full, model: `groq/${m.label}`, usedFallback: false };
+        return {
+          text: full,
+          model: `groq/${m.label}`,
+          usedFallback: false,
+          truncated: cancelled,
+        };
+      }
+
+      // Stopped before a single token landed. Returning here matters: without
+      // it the loop would try the next model and finally the non-streaming
+      // chain, so pressing Stop could produce a complete answer instead — the
+      // exact opposite of what was asked for.
+      if (cancelled) {
+        cancelledText = full;
+        break;
       }
     }
 
@@ -938,6 +965,17 @@ export const askStream = action({
     // the SAME system prompt the stream would have used, so the persona,
     // identity rules and tone survive the fallback instead of being silently
     // replaced by the bare default.
+    //
+    // Skipped when the user pressed Stop: falling back after a deliberate stop
+    // would hand them a full answer they just cancelled.
+    if (cancelled) {
+      return {
+        text: cancelledText,
+        model: "none",
+        usedFallback: false,
+        truncated: true,
+      };
+    }
     try {
       const result = await runProviderChain(
         [
@@ -964,6 +1002,84 @@ export const askStream = action({
       });
       return { text: message, model: "none", usedFallback: true };
     }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Continuing a reply that stopped early
+// ---------------------------------------------------------------------------
+
+/**
+ * Carry on from a reply that was cut short.
+ *
+ * Two cases reach here: the user pressed Stop part-way through, and a model
+ * simply ran out of room before finishing a thought. Both leave text the user
+ * can see and wants more of.
+ *
+ * The continuation is appended to the SAME message rather than added as a new
+ * turn. A visible “continue” user bubble would be noise — the user typed
+ * nothing, and it would then sit in the history the model reads next time as
+ * though they had.
+ *
+ * Takes the finished text as an argument rather than re-reading it, so the
+ * prompt is exactly what the user is looking at and cannot race a concurrent
+ * edit.
+ */
+export const continueReply = action({
+  args: {
+    messageId: v.id("chatMessages"),
+    /** The text to continue from, as currently displayed. */
+    existing: v.string(),
+    history: v.optional(
+      v.array(v.object({ role: v.string(), content: v.string() })),
+    ),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ text: string; model: string; usedFallback: boolean }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to continue a reply.");
+
+    const existing = args.existing.trim();
+    if (!existing) throw new Error("Nothing to continue.");
+
+    const history = (args.history ?? [])
+      .slice(-12)
+      .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
+
+    const result = await runProviderChain(
+      [
+        ...history,
+        {
+          role: "user",
+          content:
+            "Continue the following answer from exactly where it stops. " +
+            "Do not repeat anything already written, do not restate the question, " +
+            "and do not add a preamble — continue mid-thought and stop when you " +
+            `reach a natural ending.\n\n--- ANSWER SO FAR ---\n${existing}`,
+        },
+      ],
+      await systemPromptFor(ctx, userId),
+    );
+
+    // A blank line at the seam, so two runs of prose do not run together.
+    await ctx.runMutation(internal.chats.appendStreamDelta, {
+      messageId: args.messageId,
+      delta: `\n\n${result.text}`,
+    });
+    await ctx.runMutation(internal.chats.finalizeStream, {
+      messageId: args.messageId,
+      model: result.model,
+      usedFallback: result.usedFallback,
+      truncated: false,
+    });
+
+    return {
+      text: result.text,
+      model: result.model,
+      usedFallback: result.usedFallback,
+    };
   },
 });
 

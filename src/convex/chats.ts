@@ -303,6 +303,51 @@ export const deleteMessage = mutation({
   },
 });
 
+/**
+ * Delete a message and everything that came after it on the same branch.
+ *
+ * Removing a single message would leave the conversation incoherent: deleting
+ * the question leaves its answer answering nothing, and deleting a reply out
+ * from under a follow-up leaves that follow-up orphaned. Taking the tail is
+ * what every other assistant does, and it is what makes "delete" mean
+ * something a user can predict.
+ *
+ * Only the given branch is touched. A fork created earlier is a separate
+ * branch with its own history and is left alone — deleting here must not
+ * silently reach into a path the user is not looking at.
+ *
+ * Returns the number of messages removed so the UI can say what happened.
+ */
+export const deleteMessageAndTail = mutation({
+  args: { messageId: v.id("chatMessages") },
+  handler: async (ctx, args): Promise<{ deleted: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const target = await ctx.db.get(args.messageId);
+    if (!target || target.userId !== userId) {
+      throw new Error("Message not found.");
+    }
+
+    const siblings = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_session", (q) => q.eq("sessionId", target.sessionId))
+      .collect();
+
+    // Same branch: an absent branchId is the main line, so compare both.
+    const sameBranch = siblings
+      .filter((m) => (m.branchId ?? null) === (target.branchId ?? null))
+      .sort((a, b) => a._creationTime - b._creationTime);
+
+    const index = sameBranch.findIndex((m) => m._id === target._id);
+    if (index === -1) return { deleted: 0 };
+
+    const doomed = sameBranch.slice(index);
+    for (const m of doomed) await ctx.db.delete(m._id);
+    return { deleted: doomed.length };
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Search sessions and messages
 // ---------------------------------------------------------------------------
@@ -457,13 +502,42 @@ export const appendStreamDelta = internalMutation({
     messageId: v.id("chatMessages"),
     delta: v.string(),
   },
-  handler: async (ctx, args) => {
-    if (!args.delta) return;
+  /** Reports whether the user has asked to stop, so the loop can break. */
+  handler: async (ctx, args): Promise<{ cancelled: boolean }> => {
     const row = await ctx.db.get(args.messageId);
-    if (!row) return;
-    await ctx.db.patch(args.messageId, {
-      content: row.content + args.delta,
-    });
+    if (!row) return { cancelled: true };
+    if (row.cancelRequested) return { cancelled: true };
+
+    if (args.delta) {
+      await ctx.db.patch(args.messageId, {
+        content: row.content + args.delta,
+      });
+    }
+    return { cancelled: false };
+  },
+});
+
+/**
+ * Ask an in-flight streamed reply to stop.
+ *
+ * A Convex action cannot be cancelled from the browser, so the flag is the
+ * cancellation channel. The streaming loop already writes a delta roughly
+ * eleven times a second, and reading the flag on that same write is what makes
+ * stopping free — there is no polling loop and no extra round trip to add one.
+ *
+ * The partial text is kept rather than discarded: half an answer the user was
+ * shown before changing their mind is still worth having, and it is marked
+ * truncated so the UI never claims it finished.
+ */
+export const requestStop = mutation({
+  args: { messageId: v.id("chatMessages") },
+  handler: async (ctx, args): Promise<void> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return;
+
+    const row = await ctx.db.get(args.messageId);
+    if (!row || row.userId !== userId) return;
+    await ctx.db.patch(args.messageId, { cancelRequested: true });
   },
 });
 
@@ -479,6 +553,7 @@ export const finalizeStream = internalMutation({
     model: v.optional(v.string()),
     usedFallback: v.optional(v.boolean()),
     usedSearch: v.optional(v.boolean()),
+    truncated: v.optional(v.boolean()),
     sources: v.optional(
       v.array(
         v.object({ title: v.string(), url: v.string(), domain: v.optional(v.string()) }),
@@ -494,6 +569,10 @@ export const finalizeStream = internalMutation({
       usedFallback: args.usedFallback,
       usedSearch: args.usedSearch,
       sources: args.sources,
+      truncated: args.truncated,
+      // Clear the flag so the same message can be continued later without the
+      // next attempt stopping immediately.
+      cancelRequested: false,
     });
   },
 });

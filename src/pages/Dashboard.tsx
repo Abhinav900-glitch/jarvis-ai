@@ -30,6 +30,8 @@ import {
   Paperclip,
   Plus,
   RotateCcw,
+  CornerDownRight,
+  Keyboard,
   Search,
   Settings,
   Shapes,
@@ -54,6 +56,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { JarvisIcon } from "@/components/jarvis-icon";
 import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud";
+import { ShortcutsDialog } from "@/components/shortcuts-dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import type { GestureAction } from "@/lib/gesture-actions";
 import { JarvisOrb } from "@/components/jarvis-orb";
 import { Lightbox } from "@/components/lightbox";
@@ -636,6 +649,18 @@ export default function Dashboard() {
   const [showExport, setShowExport] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  // True while a "continue" call is in flight, so the button cannot be
+  // double-pressed into two continuations of the same reply.
+  const [continuing, setContinuing] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  // Which message is about to be deleted, for the confirm step.
+  const [confirmDelete, setConfirmDelete] = useState<Id<"chatMessages"> | null>(null);
+  // Latest-value refs for the key handler, which is registered once and must
+  // not close over the first render's callbacks. Synced in an effect rather
+  // than during render — writing a ref while rendering is what the
+  // react-hooks/refs rule forbids.
+  const streamingRef = useRef(false);
+  const stopRef = useRef<() => Promise<void>>(async () => {});
 
   // Camera vision is opt-in and off until the user asks for it: the hook
   // never calls getUserMedia on its own.
@@ -650,6 +675,9 @@ export default function Dashboard() {
   const forkBranch = useMutation(api.branches.forkBranch);
   const createSessionMutation = useMutation(api.chats.createSession);
   const patchMessageContent = useMutation(api.chats.patchMessageContent);
+  const requestStop = useMutation(api.chats.requestStop);
+  const deleteMessageAndTail = useMutation(api.chats.deleteMessageAndTail);
+  const continueReplyAction = useAction(api.ai.continueReply);
   // Streaming is on by default: for a long answer, seeing the first sentence
   // immediately is worth far more than the handful of ms it costs.
   const [streamReplies, setStreamReplies] = useState(true);
@@ -1175,8 +1203,18 @@ export default function Dashboard() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Keyboard shortcuts: Ctrl/Cmd+K opens the command palette, "/" focuses the
-  // input (when not already typing).
+  // input (when not already typing), "?" lists every shortcut, and Esc stops a
+  // reply mid-stream.
   useEffect(() => {
+    const typing = () => {
+      const el = document.activeElement;
+      return (
+        el?.tagName === "TEXTAREA" ||
+        el?.tagName === "INPUT" ||
+        (el as HTMLElement | null)?.isContentEditable === true
+      );
+    };
+
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -1184,11 +1222,29 @@ export default function Dashboard() {
         setSidebarOpen(false);
         return;
       }
+
+      // Escape stops generation — but only before anything else has claimed
+      // it. Closing an open dialog should close the dialog, not kill the reply
+      // behind it, so this is deliberately last and checked against live mode,
+      // which installs its own Escape handler and owns the key while it is up.
+      if (e.key === "Escape") {
+        if (!live.active && streamingRef.current) {
+          e.preventDefault();
+          void stopRef.current();
+        }
+        return;
+      }
+
+      if (typing()) return;
+
+      if (e.key === "?" && !(e.ctrlKey || e.metaKey || e.altKey)) {
+        e.preventDefault();
+        setShowShortcuts(true);
+        return;
+      }
       if (
         e.key === "/" &&
-        !(e.ctrlKey || e.metaKey || e.altKey) &&
-        document.activeElement?.tagName !== "TEXTAREA" &&
-        document.activeElement?.tagName !== "INPUT"
+        !(e.ctrlKey || e.metaKey || e.altKey)
       ) {
         e.preventDefault();
         inputRef.current?.focus();
@@ -1196,7 +1252,7 @@ export default function Dashboard() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [live.active]);
 
   // Refresh displayed time every second
   useEffect(() => {
@@ -2001,6 +2057,76 @@ export default function Dashboard() {
       setStreaming(false);
     }
   };
+
+  /**
+   * Stop a reply that is still being written.
+   *
+   * A Convex action cannot be cancelled from the browser, so this raises a flag
+   * on the message row instead; the streaming loop reads it on the delta write
+   * it was making anyway and stops there. The partial text is kept — the user
+   * read it before changing their mind, and it is marked truncated so nothing
+   * pretends it finished.
+   */
+  const handleStop = useCallback(async () => {
+    const id = streamedMessageIdRef.current;
+    if (!id || !streaming) return;
+    await requestStop({ messageId: id }).catch(() => {});
+  }, [streaming, requestStop]);
+
+  // Keep the Escape handler pointed at the current stop function.
+  useEffect(() => {
+    streamingRef.current = streaming;
+    stopRef.current = handleStop;
+  });
+
+  /**
+   * Carry on from a reply that stopped short, appending to the same message.
+   */
+  const handleContinue = useCallback(
+    async (messageId: Id<"chatMessages">, existing: string) => {
+      if (continuing) return;
+      setContinuing(true);
+      try {
+        const history = (messages ?? [])
+          .slice(0, Math.max(0, (messages ?? []).findIndex((m) => m._id === messageId)))
+          .map((m) => ({ role: m.role, content: m.content }));
+        await continueReplyAction({ messageId, existing, history });
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not continue that reply.",
+        );
+      } finally {
+        setContinuing(false);
+      }
+    },
+    [continuing, messages, continueReplyAction],
+  );
+
+  /**
+   * Delete a message and everything after it on this branch.
+   *
+   * Takes the tail rather than the single message because a conversation with
+   * a hole in it is worse than a shorter one: the reply that answered the
+   * deleted question is still on screen answering nothing. Earlier forks are
+   * separate branches and are untouched.
+   */
+  const handleDeleteMessage = useCallback(
+    async (messageId: Id<"chatMessages">) => {
+      try {
+        const { deleted } = await deleteMessageAndTail({ messageId });
+        toast.success(
+          deleted > 1
+            ? `Deleted ${deleted} messages.`
+            : "Message deleted.",
+        );
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not delete that message.",
+        );
+      }
+    },
+    [deleteMessageAndTail],
+  );
 
   /**
    * Mine the finished exchange for durable facts. Fire-and-forget: memory is
@@ -2881,6 +3007,17 @@ export default function Dashboard() {
                 <Search className="size-4" />
               </Button>
 
+              {/* Keyboard shortcuts. A key that only works if you already know
+                  it exists is not a shortcut; this makes it findable. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Keyboard shortcuts (?)"
+                onClick={() => setShowShortcuts(true)}
+              >
+                <Keyboard className="size-4" />
+              </Button>
+
               {/* Tools menu */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -3241,6 +3378,13 @@ export default function Dashboard() {
                         <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
                           {m.role === "user" ? "You" : "Jarvis"}
                         </span>
+                        {/* Only when the reply genuinely stopped short, so the
+                            marker means something when it appears. */}
+                        {m.role === "assistant" && m.truncated && (
+                          <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-amber-500/90">
+                            stopped early
+                          </span>
+                        )}
                         <button
                           onClick={() => {
                             if (!navigator.clipboard) return;
@@ -3276,9 +3420,33 @@ export default function Dashboard() {
                             <RotateCcw className="size-3" />
                           </button>
                         )}
+                        {m.role === "assistant" &&
+                          m._id === lastMsg?._id &&
+                          !sending &&
+                          (m.truncated || m.content.length > 0) && (
+                            <button
+                              onClick={() => void handleContinue(m._id, m.content)}
+                              disabled={continuing}
+                              title={
+                                m.truncated
+                                  ? "This reply stopped early — continue from where it left off"
+                                  : "Add more to this reply"
+                              }
+                              className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+                            >
+                              <CornerDownRight className="size-3" />
+                            </button>
+                          )}
                         {m.role === "user" && activeId ? (
                           <BranchMenu sessionId={activeId} messageId={m._id} />
                         ) : null}
+                        <button
+                          onClick={() => setConfirmDelete(m._id)}
+                          title="Delete this message and everything after it"
+                          className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <Trash2 className="size-3" />
+                        </button>
                         {m.role === "assistant" && (
                           <span className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
                             {m.usedSearch || m.usedFallback ? (
@@ -4143,9 +4311,30 @@ export default function Dashboard() {
                   </button>
                   <Button
                     size="icon-sm"
-                    onClick={() => void runModeSend()}
+                    onClick={() => {
+                      // While a reply is streaming the send button becomes Stop.
+                      // One control, always in the same place, rather than a
+                      // second button that appears and moves things around.
+                      if (streaming) {
+                        void handleStop();
+                        return;
+                      }
+                      void runModeSend();
+                    }}
                     data-send-button
-                    disabled={(!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0 && !modeNews && !modeAnalyze && !camera.enabled) || sending || panelBusy !== null}
+                    title={streaming ? "Stop generating (Esc)" : undefined}
+                    disabled={
+                      streaming
+                        ? false
+                        : (!input.trim() &&
+                              pendingImages.length === 0 &&
+                              pendingFiles.length === 0 &&
+                              !modeNews &&
+                              !modeAnalyze &&
+                              !camera.enabled) ||
+                          sending ||
+                          panelBusy !== null
+                    }
                     className="size-7 rounded-lg"
                   >
                     {sending ? (
@@ -4662,6 +4851,37 @@ export default function Dashboard() {
         commands={paletteCommands}
       />
       <PersonaPanel open={showPersona} onOpenChange={setShowPersona} />
+      <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
+
+      <AlertDialog
+        open={confirmDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this message?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Everything after it on this branch is deleted too, since the rest
+              of the conversation no longer makes sense without it. Earlier
+              forks are kept.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const id = confirmDelete;
+                setConfirmDelete(null);
+                if (id) void handleDeleteMessage(id);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <TasksPanel
         open={showTasks}
         onOpenChange={setShowTasks}
