@@ -372,35 +372,34 @@ async function callMistral(
  *
  * Their v3 endpoint is OpenAI-compatible down to the `image_url` object shape,
  * so the turns are forwarded untouched — no translation needed, unlike Mistral.
- * The model string is `provider/model`.
  *
- * A 402 is treated specially rather than as a generic failure. It means the
- * account has no credit, which does not change between attempts, so it is
- * surfaced as an actionable message instead of "try the next provider" — a
- * chain that quietly skips a provider because it is unfunded is impossible to
- * debug from the outside.
+ * Only the two Gemma 4 models are used, because only those are free. This was
+ * verified rather than assumed: this deployment's account reports
+ * `balance: null`, so any model that answers here is free by definition, and
+ * both Gemma models returned 200 with `cost: 0`. Every other candidate —
+ * Gemini Flash, GPT, Claude, and Mistral-small — came back 402 "insufficient
+ * credit". Restricting the list to the free pair means an unfunded account
+ * still gets a working fallback instead of a silent skip.
+ *
+ * Both Gemma models are multimodal, so the same pair serves image turns; each
+ * correctly named a landmark from a photo, again at zero cost.
+ *
+ * A 402 is handled explicitly rather than as a generic failure: it means the
+ * account has no credit, which does not change between attempts, so trying the
+ * remaining models would only repeat the same rejection.
  */
+const EDEN_FREE_MODELS: Array<{ id: string; label: string }> = [
+  { id: "google/gemma-4-31b-it", label: "gemma-4-31b" },
+  { id: "google/gemma-4-26b-a4b-it", label: "gemma-4-26b" },
+];
+
 async function callEden(
   key: string,
   turns: ChatTurn[],
   systemPrompt: string = JARVIS_PROMPT,
 ): Promise<LlmResult> {
-  const hasImages = turns.some((t) => Array.isArray(t.content));
-  const models = hasImages
-    ? [
-        { id: "vertex/gemini-flash-latest", label: "gemini-flash" },
-        { id: "openai/gpt-latest", label: "gpt-latest" },
-        { id: "anthropic/claude-sonnet-latest", label: "claude-sonnet" },
-      ]
-    : [
-        { id: "vertex/gemini-flash-latest", label: "gemini-flash" },
-        { id: "openai/gpt-latest", label: "gpt-latest" },
-        { id: "anthropic/claude-sonnet-latest", label: "claude-sonnet" },
-        { id: "mistral/mistral-large-latest", label: "mistral-large" },
-      ];
-
   const failures: string[] = [];
-  for (const m of models) {
+  for (const m of EDEN_FREE_MODELS) {
     const res = await fetch("https://api.edenai.run/v3/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -423,8 +422,6 @@ async function callEden(
         /* keep the plain message */
       }
       failures.push(message);
-      // Unfunded is a property of the account, not of this model, so trying the
-      // rest would only repeat the same rejection.
       break;
     }
 
@@ -434,9 +431,15 @@ async function callEden(
     }
 
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: {
+        message?: { content?: string | null; reasoning_content?: string | null };
+      }[];
     };
-    const text = data.choices?.[0]?.message?.content?.trim() || "";
+    const message = data.choices?.[0]?.message;
+    // Gemma 4 is a reasoning model: with a tight token budget it can spend the
+    // whole allowance thinking and return `content: null`. Falling back to the
+    // reasoning text keeps the turn answerable instead of silently empty.
+    const text = (message?.content ?? message?.reasoning_content ?? "").trim();
     if (!text) {
       failures.push(`${m.label} (empty response)`);
       continue;
@@ -631,24 +634,17 @@ export const ask = action({
 
     const failures: string[] = [];
 
-    if (groqKey) {
-      try {
-        return await callGroq(
-          groqKey,
-          [...history, { role: "user", content: userContent }],
-          systemPrompt,
-        );
-      } catch (err) {
-        failures.push(`groq: ${err instanceof Error ? err.message : "unknown error"}`);
-      }
-    } else {
-      failures.push("groq: GROQ_API_KEY not configured");
-    }
+    // Order: Mistral, Groq, Eden AI, HuggingFace.
+    //
+    // Mistral leads because its free Experiment tier answers reliably here and
+    // is the only provider verified to handle both text and images on a free
+    // key. Groq follows as the stronger text model. Eden AI is third because it
+    // is the last provider that still answers on a completely free key — it
+    // routes to models that cost this account nothing — so an outage at either
+    // of the first two still leaves a working, unfunded-independent path.
+    // HuggingFace is last: it is text-only, so by that point an image turn is
+    // already a lost cause and a text answer is the best that is left.
 
-    // Mistral sits between the two. It is vision-capable like Groq, so a turn
-    // with images is not silently downgraded to a text-only model when Groq is
-    // unavailable — and it is a different operator, so a Mistral outage is not
-    // also a Groq one.
     if (mistralKey) {
       try {
         return await callMistral(
@@ -663,9 +659,20 @@ export const ask = action({
       failures.push("mistral: MISTRAL_API_KEY not configured");
     }
 
-    // Eden AI routes to other people's models, so it is a genuinely independent
-    // last resort before the plain text-only HuggingFace fallback: an outage at
-    // one upstream vendor does not take this one down.
+    if (groqKey) {
+      try {
+        return await callGroq(
+          groqKey,
+          [...history, { role: "user", content: userContent }],
+          systemPrompt,
+        );
+      } catch (err) {
+        failures.push(`groq: ${err instanceof Error ? err.message : "unknown error"}`);
+      }
+    } else {
+      failures.push("groq: GROQ_API_KEY not configured");
+    }
+
     if (edenKey) {
       try {
         return await callEden(
