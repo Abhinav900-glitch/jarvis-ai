@@ -269,6 +269,60 @@ export async function instructionBlockFor(
 }
 
 /**
+ * The user's own instructions and active persona, for live mode.
+ *
+ * Same sources as {@link instructionBlockFor}, minus the default house style.
+ * That omission is the whole point of this query: live mode speaks its replies
+ * through a speech synthesiser, and the house style asks for `**bold**`, bullet
+ * lists and fenced code, all of which get read out loud as punctuation. Sending
+ * it would make the assistant less like itself, not more.
+ *
+ * So the user's written instructions DO travel — those are the part where chat
+ * and voice should agree — but silence falls back to identity plus manners
+ * rather than to a text-formatting style that does not survive speech.
+ *
+ * Authenticated, like every other settings read: this is one user's private
+ * standing instructions, and live mode is only usable while signed in.
+ */
+export const livePersona = query({
+  args: {
+    /** Overrides the user's active persona, for a session that pinned one. */
+    personaId: v.optional(v.null()),
+  },
+  handler: async (ctx, args): Promise<string> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return "";
+
+    const settings = await ctx.db
+      .query("userSettings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first()
+      .catch(() => null);
+
+    const parts: string[] = [];
+    const custom = settings?.customInstructions?.trim();
+    if (custom) {
+      parts.push(
+        `STANDING INSTRUCTIONS FROM THE USER — these apply to every reply and outrank your usual habits:\n${custom}`,
+      );
+    }
+
+    const personaId = args.personaId ?? settings?.activePersonaId ?? null;
+    if (personaId) {
+      const persona = await ctx.db.get(personaId).catch(() => null);
+      if (persona) {
+        parts.push(
+          `ACTIVE PERSONA: you are currently operating as "${persona.name}". Follow these instructions:\n${persona.instructions}`,
+        );
+      }
+    }
+
+    if (parts.length === 0) return "";
+    return `\n\n---\n${parts.join("\n\n")}`;
+  },
+});
+
+/**
  * Server-to-server entry point for {@link instructionBlockFor}. The AI actions
  * run on the node runtime and have no database reader of their own, so they
  * resolve the block through this internal query.

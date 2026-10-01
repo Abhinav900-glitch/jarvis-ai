@@ -10,9 +10,10 @@
  * mid-sentence rather than finishing.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { IDENTITY_INSTRUCTIONS } from "@/lib/identity";
-import { MANNERS_RULES } from "@/lib/emotional-intelligence";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { buildLiveInstructions } from "@/lib/live-persona";
 import { MicCapture } from "./audio";
 import { TtsPlayback } from "./playback";
 import { LiveTransport, type ConnectionStatus } from "./transport";
@@ -32,11 +33,13 @@ export interface LiveSessionOptions {
   /** ISO-639-1 language hint, e.g. "en". Omit for auto-detect. */
   language?: string;
   /**
-   * Extra system instructions for the local model, sent once at session start.
+   * Replaces the composed instruction block entirely, for callers that want to
+   * drive the local model themselves.
    *
-   * The local pipeline has no idea who built this application, so without this
-   * it will name whichever lab trained it when asked. Defaults to the shared
-   * identity block so the usual case needs no configuration.
+   * Left unset — the normal case — the block is composed from the shared
+   * identity rules, the manners rules, the spoken-output rules and whatever
+   * the user has written in Settings, so live mode answers as the same
+   * assistant chat does.
    */
   instructions?: string | null;
   /** Send camera frames to the model. */
@@ -69,14 +72,23 @@ export function useLiveSession(options: LiveSessionOptions = {}) {
     visionFps = 1.5,
   } = options;
 
-  // Defaulted rather than left undefined: the whole point of sending these is
-  // that the local model otherwise has no idea who built this application, so
-  // the default is the case worth having.
-  // The manners rules travel with the identity block by default. Live mode talks
-  // through a local model with its own system prompt, so without them it has no
-  // idea how it is expected to speak — and "no manners rules" reads as curt.
-  const instructions =
-    options.instructions ?? `${IDENTITY_INSTRUCTIONS}\n\n${MANNERS_RULES}`;
+  // The user's own standing instructions and active persona, so live mode
+  // answers as the same assistant chat does instead of running on defaults the
+  // user has already replaced.
+  //
+  // Null until the query resolves, and "" when signed out or when they have
+  // written nothing — both compose to the identity + manners + voice block, so
+  // a slow or failed query never costs the identity rules.
+  const userBlock = useQuery(api.workspace.livePersona, {});
+  const instructionsOverride = options.instructions;
+  const instructions = useMemo(
+    () =>
+      buildLiveInstructions({
+        userBlock: userBlock ?? null,
+        override: instructionsOverride,
+      }),
+    [userBlock, instructionsOverride],
+  );
 
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [state, setState] = useState<SessionState>("idle");

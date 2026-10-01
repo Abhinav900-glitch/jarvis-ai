@@ -106,6 +106,9 @@ live-server/                     Python / FastAPI pipeline
 │   ├── audio.py                 PCM, resampling, ring buffer
 │   └── __init__.py
 ├── scripts/download_voices.sh   fetch Piper voices
+├── patches/
+│   ├── persona.py               ← copy into app/ to enable the identity rules
+│   └── test_persona.py          model-free tests for it (27/27)
 ├── tests/
 │   ├── test_pipeline.py         model-free unit tests
 │   ├── crosscheck_protocol.py   protocol digest (Python side)
@@ -232,6 +235,17 @@ One binary frame per WebSocket message:
 | `0x03` | `IMAGE` | C → S | JPEG/WebP/PNG; `flags` = codec |
 | `0x10` | `CONTROL` | both | UTF-8 JSON |
 
+`session.start` additionally carries an optional `instructions` string — the
+identity and manners rules the web app wants the local model to follow. It is
+**omitted entirely when unset**, so a browser that predates the field sends a
+byte-identical payload and an older pipeline keeps working. See
+[Persona](#persona--making-live-mode-answer-as-the-same-assistant) below.
+
+```json
+{"type":"session.start","sampleRate":16000,"visionContext":1,
+ "instructions":"You are Jarvis, a calm, precise AI assistant. …"}
+```
+
 `flags` bit `0x01` on an audio frame marks the last chunk of an utterance.
 
 Control messages (`type` field):
@@ -313,4 +327,146 @@ the same cores.
 **WebSocket fails in the browser** — add your dev origin to
 `LIVE_CORS_ORIGINS`, and note the pipeline must be reachable from the machine
 running the browser. If you are on a remote host, tunnel it
+(`ssh -L 8787:127.0.0.1:8787 …`) and use `ws://localhost:8787/ws/live`.
+
+---
+
+## Persona — making live mode answer as the same assistant
+
+Chat and live mode run **two different models on two different stacks**. Chat
+goes to Groq/HuggingFace, which the web app can configure with a system prompt
+it controls. Live mode runs a model on your own machine, which has never heard
+of this application — ask it *"who made you?"* and it answers **OpenAI**, or
+Google, or Meta, because from its point of view that is true. It is answering
+correctly about itself and wrong about who built the thing it is running inside.
+
+The fix is `persona.py`. It has no dependencies and no imports beyond `typing`,
+so it cannot conflict with anything already in `app/`.
+
+### 1. Copy the module in
+
+```bash
+cp live-server/patches/persona.py live-server/app/persona.py
+```
+
+Verify it landed before touching anything else:
+
+```bash
+python3 live-server/patches/test_persona.py     # expect 27/27 passed
+```
+
+### 2. Edit `app/session.py` — two edits
+
+**a. Add the import and a holder** near the top, beside the existing `LiveSession`
+class:
+
+```python
+from .persona import LivePersona, read_instructions   # if app/ is a package
+```
+
+```python
+class LiveSession:
+    def __init__(self, ...):
+        ...
+        self.persona = LivePersona()          # ← add
+```
+
+**b. Read the field in the `session.start` handler.** Wherever that message is
+decoded today, add one line right after the payload is available:
+
+```python
+if msg.get("type") == "session.start":
+    self.persona.load_from(msg)              # ← add
+    ...
+```
+
+`load_from` is safe on an old payload: a missing key stores `""` and changes
+nothing.
+
+**c. Clear it on `session.stop`** so the next browser session cannot inherit
+the previous one's identity:
+
+```python
+if msg.get("type") == "session.stop":
+    self.persona.clear()                     # ← add
+```
+
+### 3. Edit `app/llm.py` — one edit
+
+Find where the system prompt is assembled each turn (whatever your variable is
+called — `system_prompt`, `base_prompt`, a messages list built in
+`LiveSession`), and route it through the session's persona:
+
+```python
+# before
+system_prompt = self.base_prompt
+
+# after
+system_prompt = self.persona.apply(self.base_prompt)
+```
+
+If the prompt is built somewhere with no reference to the session, pass it in
+instead: `llm.stream(persona=self.persona, …)`.
+
+**Appending is the whole mechanism.** The pipeline's own preamble usually opens
+*"You are a helpful assistant."* Instructions placed *before* it get diluted;
+placed *after* it, they are the most recent thing the model read and therefore
+the ones it follows. `compose_prompt()` owns that ordering so there is exactly
+one place to look when the identity rules stop being followed.
+
+### 4. Confirm it works
+
+Add the persona's summary to `/health` — it reports lengths only, never the
+text, which contains the user's standing instructions:
+
+```python
+"persona": session.persona.status(),
+```
+
+Start live mode, then:
+
+```bash
+curl -s localhost:8787/health | python3 -m json.tool
+```
+
+```json
+"persona": { "instructions_received": true, "instructions_chars": 3122 }
+```
+
+`instructions_received: true` with a plausible character count means the field
+arrived and was accepted. Then just ask it **"who made you?"** out loud.
+
+### What is sent, and what is deliberately not
+
+| Sent | Not sent |
+|------|----------|
+| Identity — who built Jarvis, and the GitHub handle | The default house style (`**bold**`, bullet lists, tables, code fences) |
+| Manners — never curt, no disclaimer openers, let venting finish | Its formatting rules, because TTS reads punctuation aloud |
+| Spoken-output rules — plain prose, spell out `(` as "open parenthesis" | |
+| Your own standing instructions and active persona from Settings | |
+
+That last row is the point of the whole thing: **what you have written in
+Settings is honoured in voice mode too.** Chat and live mode stop disagreeing
+about who Jarvis is.
+
+The default house style is excluded on purpose. It is written for a screen, and
+a voice engine asked to produce `**bold**` produces "asterisk asterisk bold
+asterisk asterisk". `VOICE_FORMAT_RULES` in `src/lib/live-persona.ts` carries the
+rules that survive speech, and claims to override formatting instructions —
+including your own, which is the one case that genuinely cannot be honoured
+when the reply is going to be read out loud.
+
+### Already applied on the browser side
+
+Nothing to do in `src/` — this was wired for you:
+
+- `src/lib/live-persona.ts` — composes the block (identity → manners →
+  spoken-output → your instructions).
+- `src/convex/workspace.ts` — `workspace.livePersona` query returns your
+  written instructions and active persona, without the house style.
+- `src/live/use-live-session.ts` — fetches it and sends it on `session.start`,
+  set before `connect()` so it lands in the first frame.
+
+Passing `instructions` to `useLiveSession({ instructions: "…" })` overrides all
+of it, if you would rather drive the local model yourself.
 (`ssh -L 8787:127.0.0.1:8787 …`) and use `ws://localhost:8787/ws/live`.
