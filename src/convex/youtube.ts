@@ -4,10 +4,15 @@ import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import {
+  buildComparisonContext,
   buildVideoContext,
   formatTranscript,
+  MAX_VIDEOS_PER_TURN,
   parseYouTubeUrl,
+  perVideoBudget,
+  TOTAL_TRANSCRIPT_BUDGET,
   type TranscriptSegment,
+  type VideoContextInput,
   type YouTubeRef,
 } from "../lib/youtube";
 
@@ -277,3 +282,135 @@ async function fetchTranscript(ref: YouTubeRef): Promise<TranscriptOutcome> {
 
   return { segments, language: body.lang ?? null, note: null };
 }
+/** One video's result within a batch. */
+type VideoResult = Omit<VideoContextInput, "index"> & {
+  index: number;
+  transcriptUnavailable: boolean;
+  transcriptNote: string | null;
+};
+
+interface BatchResult {
+  videos: VideoResult[];
+  /** Videos whose transcript could actually be read. */
+  readableCount: number;
+  /** Videos dropped to respect the per-turn cap, if any. */
+  skipped: number;
+  /** Links that were not YouTube videos at all. */
+  rejected: string[];
+  context: string;
+  configured: boolean;
+  ms: number;
+}
+
+/**
+ * Read several videos at once, for comparing them.
+ *
+ * Each video is fetched independently and independently reported on, because
+ * the whole point is to compare them: if one link is private, deleted, or has
+ * no captions, the other videos are still worth reading, and a batch that
+ * failed as a unit would throw away four good transcripts over one bad link.
+ *
+ * Fetches run in parallel. They are capped rather than unbounded so a message
+ * with a dozen links cannot turn into a dozen simultaneous paid requests.
+ */
+export const getVideos = action({
+  args: {
+    urls: v.array(v.string()),
+    /** Cap on total transcript characters across every video. */
+    maxTotalChars: v.optional(v.number()),
+  },
+  handler: async (ctx, args): Promise<BatchResult> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to read YouTube videos.");
+
+    const startedAt = Date.now();
+
+    // Parse first and drop anything that is not a video link, so the cap is
+    // applied to real videos rather than to whatever was pasted.
+    const parsed: YouTubeRef[] = [];
+    const rejected: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of args.urls) {
+      const ref = parseYouTubeUrl(raw);
+      if (!ref) {
+        rejected.push(raw.trim().slice(0, 120));
+        continue;
+      }
+      // The same video pasted twice is one video, not two.
+      if (seen.has(ref.videoId)) continue;
+      seen.add(ref.videoId);
+      parsed.push(ref);
+    }
+
+    if (parsed.length === 0) {
+      throw new Error(
+        "None of those links looked like YouTube videos. Paste links such as https://www.youtube.com/watch?v=…",
+      );
+    }
+
+    const overflow = parsed.length - MAX_VIDEOS_PER_TURN;
+    const limited = parsed.slice(0, MAX_VIDEOS_PER_TURN);
+
+    const budget = Math.min(
+      args.maxTotalChars ?? TOTAL_TRANSCRIPT_BUDGET,
+      TOTAL_TRANSCRIPT_BUDGET,
+    );
+    const perVideo = perVideoBudget(limited.length, budget);
+
+    const videos = await Promise.all(
+      limited.map(async (ref, i): Promise<VideoResult> => {
+        try {
+          const [metadata, transcript] = await Promise.all([
+            fetchMetadata(ref),
+            fetchTranscript(ref),
+          ]);
+          const formatted = formatTranscript(transcript.segments, {
+            maxChars: perVideo,
+          });
+          return {
+            index: i + 1,
+            videoId: ref.videoId,
+            url: ref.url,
+            title: metadata.title,
+            channel: metadata.channel,
+            transcript: formatted.text,
+            segmentCount: formatted.segmentCount,
+            truncated: formatted.truncated,
+            transcriptUnavailable: formatted.segmentCount === 0,
+            transcriptNote: formatted.segmentCount === 0 ? transcript.note : null,
+          };
+        } catch (err) {
+          // One unreachable video must not fail the batch.
+          return {
+            index: i + 1,
+            videoId: ref.videoId,
+            url: ref.url,
+            title: null,
+            channel: null,
+            transcript: "",
+            segmentCount: 0,
+            truncated: false,
+            transcriptUnavailable: true,
+            transcriptNote:
+              err instanceof Error ? err.message : "This video could not be read.",
+          };
+        }
+      }),
+    );
+
+    const readable = videos.filter((x) => !x.transcriptUnavailable);
+
+    return {
+      videos,
+      /** Videos whose transcript could actually be read. */
+      readableCount: readable.length,
+      /** Videos dropped to respect the per-turn cap, if any. */
+      skipped: overflow > 0 ? overflow : 0,
+      /** Links that were not YouTube videos at all. */
+      rejected,
+      context: buildComparisonContext(videos),
+      configured: supadataKey() !== null,
+      ms: Date.now() - startedAt,
+    };
+  },
+});

@@ -76,7 +76,7 @@ import { useVoicePlayer, useVoiceRecorder } from "@/hooks/use-voice";
 import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
-import { findYouTubeLinks } from "@/lib/youtube";
+import { findYouTubeLinks, MAX_VIDEOS_PER_TURN } from "@/lib/youtube";
 import { stripWakeWord } from "@/lib/wake-word";
 import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
@@ -516,7 +516,7 @@ export default function Dashboard() {
   const getWorldTimeAction = useAction(api.ai.getWorldTime);
   const getCurrencyRateAction = useAction(api.ai.getCurrencyRate);
   const getWeatherAction = useAction(api.ai.getWeather);
-  const getVideoAction = useAction(api.youtube.getVideo);
+  const getVideosAction = useAction(api.youtube.getVideos);
   const detectWeatherAction = useAction(api.ai.detectWeatherQuery);
   const indexMessagesAction = useAction(api.rag.indexMessages);
   const getCountryInfoAction = useAction(api.ai.getCountryInfo);
@@ -1306,7 +1306,7 @@ export default function Dashboard() {
    * asked to say what it does and does not know, which is the only safe
    * response when the content itself is unavailable.
    */
-  const runYouTubeReply = async (url: string, originalText: string) => {
+  const runYouTubeReply = async (urls: string[], originalText: string) => {
     setSending(true);
     setAssistantError(null);
     setPanelNlp(null);
@@ -1331,20 +1331,57 @@ export default function Dashboard() {
         }));
       }
 
-      const video = await getVideoAction({ url });
+      const batch = await getVideosAction({ urls });
+      // With several videos the user is almost always after the comparison,
+      // so that is what gets asked for. A single link still reads naturally.
+      const multi = batch.videos.length > 1;
 
-      const instruction = video.transcriptUnavailable
-        ? `The user shared this YouTube video. You could not read its transcript, so ` +
-          `you have only the title and channel below. Tell them what you can: the video's ` +
-          `subject from its title, and that you could not read or watch it. Be brief and ` +
-          `honest about the limit. Do not guess at the content, and do not summarise ` +
-          `something you have not seen.\n\n${video.context}`
-        : `The user shared this YouTube video. Read the transcript and respond to what they ` +
-          `actually asked, drawing on what was said in the video. If they asked a specific ` +
-          `question, answer it from the transcript. Otherwise react to the content the way ` +
-          `a person who just watched it would — comment on the substance, not on the fact ` +
-          `that you were given a transcript. Cite a timestamp when you refer to a specific ` +
-          `moment. If the transcript was cut off, do not claim to know how the video ends.\n\n${video.context}`;
+      // Only the videos that were actually read are worth asking about, and the
+      // model is told which ones are missing so it cannot paper over the gap.
+      const readable = batch.videos.filter((v) => !v.transcriptUnavailable);
+      const unreadable = batch.videos.filter((v) => v.transcriptUnavailable);
+
+      // Say plainly what could not be read, rather than leaving a hole the
+      // model quietly fills with an assumption.
+      const gapNote =
+        unreadable.length > 0
+          ? `\n\nNote: Jarvis could not obtain a transcript for Video ${
+              unreadable.map((v) => v.index).join(", Video ")
+            }. Do not describe the contents of those videos, and do not guess to fill the ` +
+            `gap — say which ones you could not read.`
+          : "";
+      const skippedNote =
+        batch.skipped > 0
+          ? `\n\n${batch.skipped} further link${batch.skipped === 1 ? " was" : "s were"} ` +
+            `ignored because only the first ${MAX_VIDEOS_PER_TURN} videos in a message are read.`
+          : "";
+
+      const instruction =
+        batch.readableCount === 0
+          ? `The user shared ${multi ? `${batch.videos.length} YouTube videos` : "a YouTube video"}, ` +
+            `but no transcript could be obtained for any of them. You have only titles and ` +
+            `channels below. Tell the user what you can from those — the likely subject of each ` +
+            `video and its channel — and be brief and honest that you could not read or watch ` +
+            `them. Do not summarise content you have not seen.\n\n${batch.context}`
+          : multi
+            ? `The user shared ${readable.length} YouTube video${readable.length === 1 ? "" : "s"} ` +
+              `and wants them compared. Read every transcript below, then answer what they asked. ` +
+              `\n\nStructure it as: (1) a one-line take on each video, naming which Video number ` +
+              `it is, (2) where they agree, (3) where they genuinely differ or contradict each ` +
+              `other, and (4) the most useful takeaway.\n\nRules that matter: attribute every ` +
+              `claim to the video it came from, using the Video numbers above — a claim attached ` +
+              `to the wrong video is worse than no claim. If they do not actually disagree, say ` +
+              `so plainly rather than inventing a difference. Distinguish a real disagreement ` +
+              `from two videos covering different topics. If a transcript was cut off, do not ` +
+              `claim to know how that video ends. Keep it readable — short paragraphs or bullets, ` +
+              `not an essay.${gapNote}${skippedNote}\n\n${batch.context}`
+            : `The user shared a YouTube video. Respond to what they actually asked, drawing on ` +
+              `what was said in it. If they asked a specific question, answer it from the ` +
+              `transcript. Otherwise react to the content the way a person who just watched it ` +
+              `would — comment on the substance, not on the fact that you were given a ` +
+              `transcript. Cite a timestamp when you refer to a specific moment. If the ` +
+              `transcript was cut off, do not claim to know how the video ends.${gapNote}${skippedNote}` +
+              `\n\n${batch.context}`;
 
       const narration = await askAction({
         prompt: `The user said: "${originalText}"\n\n${instruction}`,
@@ -1617,7 +1654,12 @@ export default function Dashboard() {
     if (!editingId && text && pendingImages.length === 0 && pendingFiles.length === 0 && !deepResearch) {
       const videoLinks = findYouTubeLinks(text);
       if (videoLinks.length > 0) {
-        await runYouTubeReply(videoLinks[0].url, text);
+        // Every link is passed along, so several can be compared; the action
+        // applies the cap and reports what it dropped.
+        await runYouTubeReply(
+          videoLinks.map((r) => r.url),
+          text,
+        );
         return;
       }
     }
