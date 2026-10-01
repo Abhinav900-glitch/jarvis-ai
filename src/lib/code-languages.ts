@@ -41,6 +41,14 @@ export interface CodeLanguage {
    */
   onlineCompiler?: string;
   /**
+   * False when the entry is something you can edit and send to a browser but
+   * that no execution engine can run. HTML and a JSX component are documents,
+   * not programs: there is no process to start and no exit code to read, so
+   * asking an engine to run one produces a confusing failure. The runner says
+   * so plainly instead.
+   */
+  executable?: false;
+  /**
    * The Wandbox compiler id for this language, when Wandbox runs it.
    *
    * Wandbox is a free public playground, so it needs no credentials and is the
@@ -254,6 +262,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "html",
+    executable: false,
     label: "HTML / CSS / JS",
     ext: "html",
     fence: "html",
@@ -265,6 +274,7 @@ export const CODE_LANGUAGES: CodeLanguage[] = [
   },
   {
     id: "reactjs",
+    executable: false,
     label: "React",
     ext: "jsx",
     fence: "jsx",

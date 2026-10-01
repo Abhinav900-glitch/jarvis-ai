@@ -204,13 +204,24 @@ function splitJdoodleOutput(raw: string): {
 } {
   const text = raw ?? "";
   const markers = [
-    /^\s*\d+\.\s*error:/im, // javac / gcc
+    // `main.c:1:7: error: expected declaration` — gcc, clang, kotlin, scala.
+    // The filename sits in front of `error`, so a marker anchored on `error`
+    // alone would never see these.
+    /^[^\s][^\n]*:\d+:\d+:\s*(fatal\s+)?error:/im,
+    // `JDoodle.scala:1: error: expected class` — the same without a column.
+    /^[^\s][^\n]*:\d+:\s*(fatal\s+)?error:/im,
+    // `jdoodle.ts(1,7): error TS2554: ...` — typescript.
+    /^[^\s][^\n]*\(\d+,\d+\):\s*error\s/im,
+    /^\s*\d+\.\s*error:/im, // javac
     /^\s*(Traceback \(most recent call last\))/im, // python
     /^\s*error: /im, // rust, go
     /^\s*(Exception|Error) in thread/im, // jvm runtime
     /^\s*panic: /im, // rust panic
     /^\s*runtime error: /im, // go runtime
+    /^\s*can't load package:/im, // go, which fails before any diagnostic
     /^\s*\w*Error: /im, // python exception summary
+    // `No "public class" found to execute` — java needs a class to launch.
+    /^\s*No "public class" found/im,
   ];
   let cut = -1;
   for (const marker of markers) {
@@ -219,8 +230,11 @@ function splitJdoodleOutput(raw: string): {
   }
   if (cut === -1) return { output: text, error: "", failed: false };
   return {
-    output: text.slice(0, cut).trimEnd(),
-    error: text.slice(cut).trimEnd(),
+    // Both halves are trimmed at the front too: JDoodle prefixes its output
+    // with a blank line, and a diagnostic that opens with one reads as though
+    // something is missing above it.
+    output: text.slice(0, cut).trim(),
+    error: text.slice(cut).trim(),
     failed: true,
   };
 }
@@ -229,16 +243,41 @@ function looksLikeTimeout(text: string): boolean {
   return /\b(timed out|timeout|time limit|execution time limit)\b/i.test(text);
 }
 
+/**
+ * Whether Wandbox failed to start the sandbox rather than failing the program.
+ *
+ * Wandbox returns HTTP 200 for this, with an OCI or runtime complaint in
+ * `compiler_error` and a non-zero status. Taken at face value that reads as
+ * "your code did not compile", which is a lie: the code was never run. The
+ * chain must move on instead of stopping here, and the user should be told the
+ * playground is broken rather than shown an error they cannot act on.
+ */
+function isWandboxInfraFailure(status: string, error: string): boolean {
+  return (
+    /OCI runtime|crun:|resource temporarily unavailable|failed to (create|start)|no such file or directory|signal killed|docker/i.test(
+      error,
+    ) || status === "126"
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Engine 1: JDoodle
 // ---------------------------------------------------------------------------
 
 interface JdoodleResponse {
   output?: string;
-  error?: string;
+  /** null on a clean run, a string when the engine itself refused the work. */
+  error?: string | null;
   statusCode?: number | string;
   memory?: string;
   cpuTime?: string;
+  /**
+   * JDoodle's own verdict, which is far more reliable than reading the output
+   * and guessing. `isCompiled: false` means the program never ran at all, so
+   * whatever came back is a compiler diagnostic rather than program output.
+   */
+  isCompiled?: boolean;
+  isExecutionSuccess?: boolean;
 }
 
 async function runWithJdoodle(
@@ -302,7 +341,13 @@ async function runWithJdoodle(
       result.requestError =
         "JDoodle rejected the credentials. Check JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET.";
     } else if (response.status === 429) {
-      result.requestError = "JDoodle's daily run credits are used up.";
+      // Confirmed against the live API: this arrives as "Daily limit reached",
+      // and it is a per-account daily cap rather than a burst limit, so
+      // retrying in a moment would not help. Worth saying so, because the
+      // fallback chain is what keeps the runner usable once the cap is hit.
+      result.requestError = `JDoodle's daily run limit is reached${
+        body.error ? ` (${body.error})` : ""
+      }. The quota resets daily, and a fallback engine handles runs in the meantime.`;
     } else {
       result.requestError = `JDoodle refused the run (HTTP ${response.status})${
         body.error ? `: ${body.error}` : "."
@@ -322,12 +367,27 @@ async function runWithJdoodle(
   const timedOut = looksLikeTimeout(raw);
   const split = splitJdoodleOutput(raw);
 
+  // The engine's own verdict, preferred over inference. A failed compilation
+  // produced no program output, so anything that did not get claimed as stdout
+  // by the splitter is a diagnostic rather than something the program printed.
+  const didNotCompile = body.isCompiled === false;
+  let output = split.output;
+  let error = split.error;
+  if (didNotCompile && !error && output) {
+    error = output;
+    output = "";
+  }
+
   result.ok = true;
-  result.output = clamp(split.output, MAX_OUTPUT_CHARS);
-  result.error = split.error;
+  result.output = clamp(output, MAX_OUTPUT_CHARS);
+  result.error = clamp(error, MAX_OUTPUT_CHARS);
   // A timeout is the program's failure, not the engine's, so `ok` stays true
   // and the user still gets whatever it printed before it was killed.
-  result.failed = split.failed || timedOut;
+  result.failed =
+    split.failed ||
+    timedOut ||
+    didNotCompile ||
+    body.isExecutionSuccess === false;
   result.timedOut = timedOut;
   result.cpuTime = body.cpuTime ?? null;
   result.memory = body.memory ?? null;
@@ -453,6 +513,15 @@ async function runWithWandbox(
   const error = [compileError, runError].filter(Boolean).join("\n").trim();
 
   const status = String(body.status ?? "");
+
+  // A 200 is not proof the program ran: this playground answers 200 with an
+  // infrastructure complaint when its own sandbox will not start.
+  if (isWandboxInfraFailure(status, error)) {
+    return fail(
+      `Wandbox could not start a sandbox for this run (HTTP ${response.status}, status ${status}). The playground is having trouble, not your code.`,
+    );
+  }
+
   // 137 is how the sandbox reports a killed process, which here means the
   // runtime limit ran out rather than a memory ceiling.
   const timedOut = status === "137";
@@ -571,7 +640,22 @@ async function runWithOnlineCompiler(
         true,
       );
     }
-    return fail(`The fallback engine refused the run (HTTP ${response.status}).`, true);
+    // An inactive or mistyped key comes back as 404 with a plain sentence, not
+    // as 401, so the status code alone would describe this as an opaque
+    // refusal and send the user looking for a code problem that is not there.
+    const detail = (body.error ?? "").trim();
+    if (/invalid|inactive|api key/i.test(detail)) {
+      return fail(
+        `OnlineCompiler.io rejected the API key (${detail}). Keys from the API Keys page work with the REST API; a key from the Widgets page only covers WebSocket and embeds. Check ONLINECOMPILER_API_KEY in the API keys tab.`,
+        false,
+      );
+    }
+    return fail(
+      `OnlineCompiler.io refused the run (HTTP ${response.status})${
+        detail ? `: ${detail}` : "."
+      }`,
+      true,
+    );
   }
 
   const result = baseResult(ctx, provider, compiler, startedAt, providersTried);
@@ -654,6 +738,11 @@ export const runCode = action({
       isFallback: false,
     };
 
+    if (language.executable === false) {
+      const result = baseResult(attemptCtx, null, version.label, startedAt, providersTried);
+      result.requestError = `${language.label} is a document rather than a program, so there is nothing to execute. Open the preview to see it rendered.`;
+      return result;
+    }
     if (!source.trim()) {
       const result = baseResult(attemptCtx, null, version.label, startedAt, providersTried);
       result.requestError = "There is no code to run yet.";
@@ -807,9 +896,9 @@ export const runnerStatus = action({
         configured: true,
         envNames: [],
         // The one real limit here is coverage, not credentials.
-        unsupported: CODE_LANGUAGES.filter((l) => l.wandbox === undefined).map(
-          (l) => l.label,
-        ),
+        unsupported: CODE_LANGUAGES.filter(
+          (l) => l.wandbox === undefined || l.executable === false,
+        ).map((l) => l.label),
         problem: null,
       },
       {
@@ -819,9 +908,9 @@ export const runnerStatus = action({
         envNames: [ONLINECOMPILER_KEY_NAMES[0]],
         unsupported: onlineCompilerReady
           ? []
-          : CODE_LANGUAGES.filter((l) => l.onlineCompiler === undefined).map(
-              (l) => l.label,
-            ),
+          : CODE_LANGUAGES.filter(
+              (l) => l.onlineCompiler === undefined || l.executable === false,
+            ).map((l) => l.label),
         problem: onlineCompilerReady
           ? null
           : "No API key found. Add ONLINECOMPILER_API_KEY from the API Keys page at onlinecompiler.io in the API keys tab.",
