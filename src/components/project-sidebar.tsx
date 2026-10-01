@@ -108,7 +108,9 @@ export function ProjectSidebar({
   onNewChat: () => void;
 }) {
   const projectsQuery = useQuery(api.projects.listProjects);
-  const sessions = useQuery(api.chats.listSessions) ?? [];
+  const sessionsQuery = useQuery(api.chats.listSessions);
+  // Stable while loading, so the grouping memo does not rebuild every render.
+  const sessions = useMemo(() => sessionsQuery ?? [], [sessionsQuery]);
   const createProject = useMutation(api.projects.createProject);
   const updateProject = useMutation(api.projects.updateProject);
   const deleteProject = useMutation(api.projects.deleteProject);
@@ -124,7 +126,7 @@ export function ProjectSidebar({
   const projects: Project[] = projectsQuery?.projects ?? [];
 
   const grouped = useMemo(() => {
-    const byProject = new Map<Id<"chatSessions">[], Id<"chatSessions">[]>();
+    const byProject = new Map<Id<"projects">, Id<"chatSessions">[]>();
     const unfiled: Id<"chatSessions">[] = [];
     for (const session of sessions) {
       if (session.projectId && byProject.has(session.projectId)) {

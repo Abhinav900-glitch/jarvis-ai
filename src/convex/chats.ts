@@ -72,6 +72,34 @@ export const renameSession = mutation({
   },
 });
 
+/**
+ * Pins (or unpins) a persona to one chat, overriding the user's default for
+ * every reply in it. Null clears the pin and the chat falls back to whatever
+ * is active globally.
+ */
+export const setSessionPersona = mutation({
+  args: {
+    sessionId: v.id("chatSessions"),
+    personaId: v.union(v.id("personas"), v.null()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== userId) throw new Error("Chat not found.");
+
+    if (args.personaId) {
+      const persona = await ctx.db.get(args.personaId);
+      if (!persona || persona.userId !== userId) {
+        throw new Error("That persona no longer exists.");
+      }
+    }
+
+    await ctx.db.patch(args.sessionId, { personaId: args.personaId ?? undefined });
+  },
+});
+
 export const deleteSession = mutation({
   args: { sessionId: v.id("chatSessions") },
   handler: async (ctx, args) => {
@@ -258,61 +286,9 @@ export const startWithMessage = mutation({
 
 // ---------------------------------------------------------------------------
 // Edit / delete messages
-// ---------------------------------------------------------------------------
-
-export const editMessage = mutation({
-  args: {
-    messageId: v.id("chatMessages"),
-    content: v.string(),
-    imageUrl: v.optional(v.string()),
-    imagePublicId: v.optional(v.string()),
-    images: v.optional(
-      v.array(
-        v.object({
-          url: v.string(),
-          publicId: v.optional(v.string()),
-        }),
-      ),
-    ),
-    fileUrl: v.optional(v.string()),
-    fileName: v.optional(v.string()),
-    fileType: v.optional(v.string()),
-    fileSize: v.optional(v.number()),
-  },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Not signed in.");
-
-    const msg = await ctx.db.get(args.messageId);
-    if (!msg || msg.userId !== userId) throw new Error("Message not found.");
-    if (msg.role !== "user") throw new Error("Can only edit user messages.");
-
-    // Delete all messages after this one (the assistant reply + any follow-ups)
-    const laterMessages = await ctx.db
-      .query("chatMessages")
-      .withIndex("by_session", (q) => q.eq("sessionId", msg.sessionId))
-      .filter((q) => q.gt(q.field("createdAt"), msg.createdAt))
-      .collect();
-    for (const m of laterMessages) {
-      await ctx.db.delete(m._id);
-    }
-
-    // Update the user message content
-    await ctx.db.patch(args.messageId, {
-      content: args.content,
-      imageUrl: args.imageUrl,
-      imagePublicId: args.imagePublicId,
-      images: args.images,
-      fileUrl: args.fileUrl,
-      fileName: args.fileName,
-      fileType: args.fileType,
-      fileSize: args.fileSize,
-    });
-
-    await ctx.db.patch(msg.sessionId, { updatedAt: Date.now() });
-    return { sessionId: msg.sessionId };
-  },
-});
+// ---------------------------------------------------------------------------// Editing a message forks the conversation instead of rewriting it (see
+// `branches.forkBranch`), so there is deliberately no destructive
+// `editMessage` here: an edit can never destroy answers the user has read.
 
 export const deleteMessage = mutation({
   args: { messageId: v.id("chatMessages") },

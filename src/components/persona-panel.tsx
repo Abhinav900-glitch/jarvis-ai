@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "convex/react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { toast } from "sonner";
@@ -38,6 +38,69 @@ import { Separator } from "@/components/ui/separator";
 const MAX_INSTRUCTIONS = 4000;
 const MAX_PERSONA_INSTRUCTIONS = 2000;
 
+/**
+ * The instructions editor.
+ *
+ * Its own component so the textarea's draft is created when the dialog opens
+ * and thrown away when it closes — which is what "unsaved edits disappear" has
+ * always meant in every other app, without an effect writing state back.
+ */
+function InstructionsEditor({
+  value,
+  saveSettings,
+  activePersonaId,
+}: {
+  value: string;
+  saveSettings: ReturnType<typeof useMutation<typeof api.workspace.saveSettings>>;
+  activePersonaId: Id<"personas"> | null;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveSettings({
+        customInstructions: draft.slice(0, MAX_INSTRUCTIONS),
+        activePersonaId,
+      });
+      toast.success("Instructions saved — they apply from your next message.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <Label htmlFor="jarvis-instructions" className="text-sm font-medium">
+        Standing instructions
+      </Label>
+      <Textarea
+        id="jarvis-instructions"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={9}
+        maxLength={MAX_INSTRUCTIONS}
+        placeholder={
+          "Examples:\n• Reply in Hinglish, keeping technical terms in English.\n• Never use bullet points — write in paragraphs.\n• When you write code, always show a runnable example first.\n• Cite the source for every factual claim."
+        }
+        className="resize-y text-sm"
+      />
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>
+          {draft.length} / {MAX_INSTRUCTIONS}
+        </span>
+        <span>Applies to new messages in every chat.</span>
+      </div>
+      <Button onClick={() => void save()} disabled={draft === value || saving}>
+        {saving ? "Saving…" : "Save instructions"}
+      </Button>
+    </div>
+  );
+}
+
 interface Persona {
   _id: Id<"personas">;
   name: string;
@@ -64,8 +127,6 @@ export function PersonaPanel({
   const savePersona = useMutation(api.workspace.savePersona);
   const deletePersona = useMutation(api.workspace.deletePersona);
 
-  const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<Id<"personas"> | null>(null);
   const [personaName, setPersonaName] = useState("");
   const [personaEmoji, setPersonaEmoji] = useState("");
@@ -73,30 +134,6 @@ export function PersonaPanel({
 
   const personas: Persona[] = list?.personas ?? [];
   const starters: Starter[] = list?.starters ?? [];
-
-  // Seed the textarea from the server once, then leave the user's typing alone.
-  // Re-seeding on every render would fight the cursor.
-  useEffect(() => {
-    if (open && settings) setDraft(settings.customInstructions);
-  }, [open, settings]);
-
-  const dirty = (settings?.customInstructions ?? "") !== draft;
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await saveSettings({
-        customInstructions: draft.slice(0, MAX_INSTRUCTIONS),
-        activePersonaId: settings?.activePersonaId ?? null,
-      });
-      toast.success("Instructions saved — they apply from your next message.");
-      if (dirty) setDraft(draft.slice(0, MAX_INSTRUCTIONS));
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not save.");
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const setActive = async (personaId: Id<"personas"> | null) => {
     try {
@@ -176,30 +213,12 @@ export function PersonaPanel({
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="instructions" className="space-y-3 pt-4">
-            <Label htmlFor="jarvis-instructions" className="text-sm font-medium">
-              Standing instructions
-            </Label>
-            <Textarea
-              id="jarvis-instructions"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              rows={9}
-              maxLength={MAX_INSTRUCTIONS}
-              placeholder={
-                "Examples:\n• Reply in Hinglish, keeping technical terms in English.\n• Never use bullet points — write in paragraphs.\n• When you write code, always show a runnable example first.\n• Cite the source for every factual claim."
-              }
-              className="resize-y text-sm"
+          <TabsContent value="instructions" className="pt-4">
+            <InstructionsEditor
+              value={settings?.customInstructions ?? ""}
+              saveSettings={saveSettings}
+              activePersonaId={settings?.activePersonaId ?? null}
             />
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>
-                {draft.length} / {MAX_INSTRUCTIONS}
-              </span>
-              <span>Applies to new messages in every chat.</span>
-            </div>
-            <Button onClick={() => void save()} disabled={!dirty || saving}>
-              {saving ? "Saving…" : "Save instructions"}
-            </Button>
           </TabsContent>
 
           <TabsContent value="personas" className="space-y-4 pt-4">

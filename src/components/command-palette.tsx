@@ -57,7 +57,6 @@ export function CommandPalette({
       onOpenChange={onOpenChange}
       title="Command palette"
       description="Search commands, chats and projects"
-      shouldFilter
       className="sm:max-w-xl"
     >
       <CommandInput placeholder={placeholder} />

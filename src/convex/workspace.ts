@@ -1,8 +1,8 @@
 import { v } from "convex/values";
 import { internalQuery, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import type { Doc } from "./_generated/dataModel";
-import type { Id } from "./_generated/dataModel";
+import type { GenericDatabaseReader } from "convex/server";
+import type { DataModel, Doc, Id } from "./_generated/dataModel";
 
 // ---------------------------------------------------------------------------
 // Personas and standing instructions.
@@ -192,7 +192,7 @@ export const saveSettings = mutation({
     const raw = args.customInstructions?.trim();
     const customInstructions = raw ? raw.slice(0, MAX_INSTRUCTIONS) : undefined;
 
-    let activePersonaId = args.activePersonaId ?? undefined;
+    const activePersonaId = args.activePersonaId ?? undefined;
     if (activePersonaId) {
       const persona = await ctx.db.get(activePersonaId);
       if (!persona || persona.userId !== userId) {
@@ -222,24 +222,14 @@ export const saveSettings = mutation({
  * fail because a persona was deleted a second ago.
  */
 export async function instructionBlockFor(
-  db: {
-    query: (table: "userSettings") => {
-      withIndex: (
-        index: "by_user",
-        fn: (q: any) => any,
-      ) => { first: () => Promise<Doc<"userSettings"> | null> };
-    };
-    get: (id: Id<"personas">) => Promise<Doc<"personas"> | null>;
-  },
+  db: GenericDatabaseReader<DataModel>,
   userId: Id<"users">,
   /** Overrides the user's active persona, for a session that pinned one. */
   sessionPersonaId?: Id<"personas"> | null,
 ): Promise<string> {
   const settings = await db
     .query("userSettings")
-    .withIndex("by_user", (q: { eq: (field: string, value: unknown) => unknown }) =>
-      q.eq("userId", userId),
-    )
+    .withIndex("by_user", (q) => q.eq("userId", userId))
     .first()
     .catch(() => null);
   if (!settings) return "";

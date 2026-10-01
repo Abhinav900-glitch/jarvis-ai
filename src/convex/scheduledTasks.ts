@@ -2,7 +2,6 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, internalAction, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import type { Id } from "./_generated/dataModel";
 import { nextRunAt } from "../lib/schedule-time";
 
 // ---------------------------------------------------------------------------

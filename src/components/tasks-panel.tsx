@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "convex/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { toast } from "sonner";
@@ -80,11 +80,9 @@ function parseTime(value: string): number | undefined {
   return hours * 60 + minutes;
 }
 
-function formatMinuteOfDay(minutes: number): string {
-  const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
-  const mm = String(minutes % 60).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
+
+
+
 
 /** ISO value for <input type="datetime-local">, in the browser's own timezone. */
 function toLocalInputValue(at: number): string {
@@ -131,6 +129,14 @@ export function TasksPanel({
   const [busy, setBusy] = useState(false);
   const [runningId, setRunningId] = useState<string | null>(null);
 
+  // A single clock, ticked once a minute, so the countdowns stay honest
+  // without reading the wall clock during render.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const minuteOfDay = parseTime(time) ?? 9 * 60;
 
   // The same arithmetic the server uses to decide whether a task is due, so
@@ -144,10 +150,10 @@ export function TasksPanel({
         dayOfWeek: kind === "weekly" ? Number(day) : undefined,
         timezone,
       },
-      Date.now(),
+      now,
     );
     return Number.isFinite(next) ? next : null;
-  }, [kind, onceAt, minuteOfDay, day, timezone]);
+  }, [kind, onceAt, minuteOfDay, day, timezone, now]);
 
   const submit = async () => {
     setBusy(true);
@@ -172,7 +178,7 @@ export function TasksPanel({
     }
   };
 
-  const runNow = async (taskId: Id<"scheduledTasks">>) => {
+  const runNow = async (taskId: Id<"scheduledTasks">) => {
     setRunningId(taskId);
     try {
       const target = await runTaskNow({ taskId });
@@ -198,7 +204,7 @@ export function TasksPanel({
           </DialogTitle>
           <DialogDescription>
             Jarvis runs these on its own and files the answer into a chat. Times
-            are your local time ({timezoneLabel(timezone)}).
+            are your local time ({timezoneLabel(timezone, now)}).
           </DialogDescription>
         </DialogHeader>
 
@@ -237,7 +243,7 @@ export function TasksPanel({
                           {next ? (
                             <span className="text-primary/80">
                               {" · "}
-                              {describeCountdown(next)}
+                              {describeCountdown(next, now)}
                             </span>
                           ) : (
                             <span>{" · paused"}</span>
@@ -396,7 +402,7 @@ export function TasksPanel({
                     dayOfWeek: kind === "weekly" ? Number(day) : undefined,
                     timezone,
                   })}{" "}
-                  · next {describeCountdown(preview)}
+                  · next {describeCountdown(preview, now)}
                 </>
               ) : (
                 "Pick a valid time"

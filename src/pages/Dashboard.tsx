@@ -105,6 +105,7 @@ import {
   type PaletteCommand,
 } from "@/components/command-palette";
 import { PersonaPanel } from "@/components/persona-panel";
+import { PersonaPicker } from "@/components/persona-picker";
 import { TasksPanel } from "@/components/tasks-panel";
 import { ProjectSidebar } from "@/components/project-sidebar";
 import { BranchBar, BranchMenu } from "@/components/branch-bar";
@@ -115,6 +116,46 @@ interface PendingFile {
   name: string;
   type: string;
   size: number;
+  /**
+   * Extracted text for files the model should *read* rather than merely see
+   * (source files, CSV, JSON, plain text). Binary documents keep this unset.
+   */
+  text?: string;
+}
+
+/** How much of each text attachment is worth paying tokens for. */
+const MAX_ATTACHMENT_TEXT = 20_000;
+const MAX_TOTAL_ATTACHMENT_TEXT = 60_000;
+
+/**
+ * Whether a file can be read as text in the browser.
+ *
+ * Deliberately conservative: an `.md` or `.py` is worth inlining, and a
+ * spreadsheet or archive is not — mis-reading one as UTF-8 would put a wall of
+ * replacement characters into the prompt.
+ */
+function isTextLike(file: File): boolean {
+  if (/^(text\/|application\/(json|xml|javascript|typescript|x-yaml|yaml|toml))/.test(file.type))
+    return true;
+  return /\.(txt|md|markdown|csv|tsv|json|ya?ml|toml|log|sql|[a-z]?[jt]sx?|py|java|kt|go|rs|rb|php|c|h|cpp|hpp|cs|swift|sh|bash|zsh|html|css|vue|svelte)$/i.test(
+    file.name,
+  );
+}
+
+/**
+ * Inline the readable attachments into the prompt as a fenced block.
+ *
+ * A bare link is useless to a text model — it cannot open the file. Inlining
+ * the text (already budget-capped at upload time) is what actually lets Jarvis
+ * read a pasted file, while the transcript keeps the original link.
+ */
+function attachmentPrompt(files: PendingFile[]): string {
+  const readable = files.filter((f) => f.text);
+  if (readable.length === 0) return "";
+  const body = readable
+    .map((f) => `<file name="${f.name}">\n${f.text}\n</file>`)
+    .join("\n\n");
+  return `The user attached ${readable.length} file${readable.length > 1 ? "s" : ""}. Their contents are below.\n\n${body}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +474,10 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
-  const sessions = useQuery(api.chats.listSessions) ?? [];
+  const sessionsQuery = useQuery(api.chats.listSessions);
+  // A stable empty array, so memoised values that read `sessions` do not
+  // rebuild on every render while the query is still loading.
+  const sessions = useMemo(() => sessionsQuery ?? [], [sessionsQuery]);
   const [activeId, setActiveId] = useState<Id<"chatSessions"> | null>(null);
   // Which line of the conversation is on screen. Null is the main line, and
   // the only line for every chat that has never been edited or regenerated.
@@ -455,7 +499,6 @@ export default function Dashboard() {
 
   const startWithMessage = useMutation(api.chats.startWithMessage);
   const appendMessage = useMutation(api.chats.appendMessage);
-  const deleteSession = useMutation(api.chats.deleteSession);
   const askAction = useAction(api.ai.ask);
   const askStreamAction = useAction(api.ai.askStream);
   const deepResearchAction = useAction(api.ai.deepResearch);
@@ -598,7 +641,6 @@ export default function Dashboard() {
   // Long-term memory runs after each exchange, off the critical path.
   const extractMemory = useAction(api.memory.extract);
 
-  const editMessage = useMutation(api.chats.editMessage);
   // Editing and regenerating fork rather than delete; the original line of the
   // conversation stays reachable from the branch bar.
   const forkBranch = useMutation(api.branches.forkBranch);
@@ -702,6 +744,23 @@ export default function Dashboard() {
         setPendingImages((prev) => [...prev, ...images]);
       }
       if (documents.length > 0) {
+        // Text-like files are read locally and inlined into the prompt, so
+        // "what does this do?" works on a .ts file instead of only on a PDF.
+        let budget = MAX_TOTAL_ATTACHMENT_TEXT;
+        for (const document of documents) {
+          const source = acceptable.find((f) => f.name === document.name);
+          if (!source || !isTextLike(source) || budget <= 0) continue;
+          try {
+            const text = (await source.text()).slice(
+              0,
+              Math.min(MAX_ATTACHMENT_TEXT, budget),
+            );
+            document.text = text;
+            budget -= text.length;
+          } catch {
+            // Unreadable file: it stays a link, which is still useful.
+          }
+        }
         setPendingFiles((prev) => [...prev, ...documents]);
       }
     } finally {
@@ -1407,10 +1466,17 @@ export default function Dashboard() {
     // Skipped when there is no text at all (camera-only turn) — appending a
     // persona to an empty string would just be a stray instruction.
     const countryPersona = getCountry(countryCode).persona;
-    const effectiveText =
+    let effectiveText =
       !text || editingId || deepResearch || pendingImages.length > 0 || pendingFiles.length > 0
         ? text
         : `${text}\n\n[System: ${countryPersona}]`;
+
+    // Files the model can actually read get inlined, so "what does this do?"
+    // works on a .ts file and not just on a PDF.
+    const fileContext = attachmentPrompt(pendingFiles);
+    if (fileContext) {
+      effectiveText = [effectiveText, fileContext].filter(Boolean).join("\n\n");
+    }
 
     // Sound effects: "bark", "play a dog sound", "what does a cat say" —
     // answered with the real audio, which is the one thing a text model
@@ -1478,6 +1544,7 @@ export default function Dashboard() {
       name: f.name,
       type: f.type,
       size: f.size,
+      text: f.text,
     }));
     // The legacy single-file fields still describe the first document, so rows
     // written by older builds (and every export) keep rendering.
@@ -1548,6 +1615,8 @@ export default function Dashboard() {
           content: messageContent,
           ...imagePayload,
           ...filePayload,
+          attachments,
+          personaId: activePersonaId ?? undefined,
         });
         sessionId = sid;
         userMsgId = uid;
@@ -2340,6 +2409,138 @@ export default function Dashboard() {
     ? sessions.find((s) => s._id === activeId)?.title ?? "Chat"
     : "New chat";
 
+  // ---- Command palette contents -------------------------------------------
+  // Built here rather than in the palette itself so every shortcut the app
+  // already has becomes reachable by name, and nothing is listed twice.
+  // Deliberately not memoised: twenty small objects per render is cheaper than
+  // the dependency bookkeeping a memo over this many closures would need.
+  const paletteCommands: PaletteCommand[] = [
+      {
+        id: "new-chat",
+        label: "New chat",
+        group: "Chat",
+        icon: <Plus className="size-4" />,
+        shortcut: "⌘K",
+        run: () => setActiveId(null),
+      },
+      {
+        id: "search",
+        label: "Search conversations",
+        group: "Chat",
+        icon: <Search className="size-4" />,
+        run: () => setShowSearch(true),
+      },
+      {
+        id: "export",
+        label: "Export this chat",
+        group: "Chat",
+        icon: <Download className="size-4" />,
+        disabled: !messages || messages.length === 0,
+        run: () => setShowExport(true),
+      },
+      {
+        id: "branch",
+        label: "Branch from my last message",
+        group: "Chat",
+        keywords: "fork alternate version",
+        icon: <GitBranch className="size-4" />,
+        disabled: !activeId || !(messages ?? []).some((m) => m.role === "user"),
+        run: () => void handleForkLatest(),
+      },
+      {
+        id: "regenerate",
+        label: "Regenerate the last reply",
+        group: "Chat",
+        keywords: "retry again",
+        icon: <RotateCcw className="size-4" />,
+        disabled: !lastMsg || lastMsg.role !== "assistant" || sending,
+        run: () => {
+          if (lastMsg?.role === "assistant") void handleRegenerate(lastMsg._id);
+        },
+      },
+      {
+        id: "instructions",
+        label: "How Jarvis works (instructions & personas)",
+        group: "Configure",
+        keywords: "custom prompt system behaviour rules persona mode",
+        icon: <Sparkles className="size-4" />,
+        run: () => setShowPersona(true),
+      },
+      {
+        id: "tasks",
+        label: "Scheduled tasks & reminders",
+        group: "Configure",
+        keywords: "cron schedule recurring reminder automation",
+        icon: <AlarmClock className="size-4" />,
+        run: () => setShowTasks(true),
+      },
+      {
+        id: "deep-research",
+        label: "Toggle Deep Research",
+        group: "Configure",
+        icon: <Globe className="size-4" />,
+        run: () => setDeepResearch((v) => !v),
+      },
+      {
+        id: "memory",
+        label: "Memory",
+        group: "Configure",
+        icon: <Brain className="size-4" />,
+        run: () => setShowMemory(true),
+      },
+      {
+        id: "code",
+        label: "Code runner",
+        group: "Configure",
+        icon: <Code2 className="size-4" />,
+        run: () => setShowCode(true),
+      },
+      {
+        id: "calculator",
+        label: "Calculator",
+        group: "Configure",
+        icon: <Equal className="size-4" />,
+        run: () => setShowCalculator((v) => !v),
+      },
+      {
+        id: "prompts",
+        label: "Prompt library",
+        group: "Configure",
+        icon: <Bookmark className="size-4" />,
+        run: () => setShowPrompts(true),
+      },
+      {
+        id: "live",
+        label: live.active ? "Stop live voice mode" : "Start live voice mode",
+        group: "Configure",
+        keywords: "hands free hud wake",
+        icon: <Radio className="size-4" />,
+        run: () => (live.active ? live.stop() : void live.start()),
+      },
+      {
+        id: "camera",
+        label: camera.enabled ? "Turn camera vision off" : "Turn camera vision on",
+        group: "Configure",
+        icon: <Camera className="size-4" />,
+        run: () => void camera.toggle(),
+      },
+      {
+        id: "theme",
+        label: isDark ? "Switch to light mode" : "Switch to dark mode",
+        group: "Configure",
+        icon: isDark ? <Sun className="size-4" /> : <Moon className="size-4" />,
+        run: toggleTheme,
+      },
+      ...sessions.slice(0, 8).map((session) => ({
+        id: `session-${session._id}`,
+        label: session.title,
+        group: "Recent chats",
+        keywords: session.projectId ? "project folder" : "",
+        icon: <JarvisIcon className="size-4" />,
+        run: () => setActiveId(session._id),
+      })),
+  ];
+
   return (
     <TooltipProvider>
       <div className="flex h-screen bg-background text-foreground">
@@ -2472,6 +2673,12 @@ export default function Dashboard() {
               <span className="max-w-[180px] truncate text-sm text-muted-foreground sm:max-w-none">
                 {sessionTitle}
               </span>
+              {activeId ? (
+                <PersonaPicker
+                  sessionId={activeId}
+                  personaId={activePersonaId}
+                />
+              ) : null}
             </div>
 
             {/* Right: menu bar actions */}
@@ -4248,6 +4455,23 @@ export default function Dashboard() {
           setLiveTranscript([]);
         }}
         onSkip={() => live.skipSpeaking()}
+      />
+
+      {/* ---- New surfaces: palette, instructions, schedules ---- */}
+      <CommandPalette
+        open={showPalette}
+        onOpenChange={setShowPalette}
+        commands={paletteCommands}
+      />
+      <PersonaPanel open={showPersona} onOpenChange={setShowPersona} />
+      <TasksPanel
+        open={showTasks}
+        onOpenChange={setShowTasks}
+        sessionId={activeId}
+        onOpenSession={(sessionId) => {
+          setActiveId(sessionId);
+          setActiveBranchId(null);
+        }}
       />
     </TooltipProvider>
   );
