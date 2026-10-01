@@ -38,6 +38,7 @@ import {
   PROVIDER_LABELS,
   type CodeRunResult,
   type EngineStatus,
+  type EngineProbe,
 } from "@/lib/code-run";
 import {
   searchStarters,
@@ -46,6 +47,52 @@ import {
 } from "@/lib/starter-code";
 
 const INDENT = "  ";
+
+/**
+ * How each probe verdict is worded and coloured.
+ *
+ * "Unconfigured" is grey rather than red on purpose: it is not a fault, just a
+ * choice not to add a key, and colouring it as an error makes a working setup
+ * look broken.
+ */
+const PROBE_LABELS: Record<EngineProbe["state"], string> = {
+  ok: "working",
+  rejected: "key rejected",
+  limited: "quota or rate limit",
+  down: "not working",
+  unsupported: "cannot run this language",
+  unconfigured: "no key saved",
+};
+
+const PROBE_STYLES: Record<
+  EngineProbe["state"],
+  { icon: React.ReactNode; text: string }
+> = {
+  ok: {
+    icon: <Check className="size-3 shrink-0 text-emerald-500" />,
+    text: "text-emerald-600 dark:text-emerald-400",
+  },
+  rejected: {
+    icon: <AlertTriangle className="size-3 shrink-0 text-rose-500" />,
+    text: "text-rose-600 dark:text-rose-400",
+  },
+  limited: {
+    icon: <AlertTriangle className="size-3 shrink-0 text-amber-500" />,
+    text: "text-amber-600 dark:text-amber-400",
+  },
+  down: {
+    icon: <X className="size-3 shrink-0 text-rose-500" />,
+    text: "text-rose-600 dark:text-rose-400",
+  },
+  unsupported: {
+    icon: <Info className="size-3 shrink-0 text-muted-foreground" />,
+    text: "text-muted-foreground",
+  },
+  unconfigured: {
+    icon: <Info className="size-3 shrink-0 text-muted-foreground" />,
+    text: "text-muted-foreground",
+  },
+};
 
 function formatKb(raw: string | null): string {
   const bytes = Number(raw);
@@ -64,6 +111,7 @@ export function CodePanel({
 }) {
   const runCode = useAction(api.codeRunner.runCode);
   const getRunnerStatus = useAction(api.codeRunner.runnerStatus);
+  const probeEngines = useAction(api.codeRunner.probeEngines);
 
   // Which engines have their credentials, and why one might be missing. Fetched
   // on demand rather than on mount: a key is often pasted while the panel is
@@ -71,6 +119,12 @@ export function CodePanel({
   const [engines, setEngines] = useState<EngineStatus[] | null>(null);
   const [showEngines, setShowEngines] = useState(false);
   const [checkingEngines, setCheckingEngines] = useState(false);
+
+  // The result of actually running a program through each engine, which is the
+  // only way to tell a working key from a saved one that no longer is.
+  const [probes, setProbes] = useState<EngineProbe[] | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeError, setProbeError] = useState<string | null>(null);
 
   const refreshEngines = async () => {
     if (checkingEngines) return;
@@ -82,6 +136,34 @@ export function CodePanel({
       setEngines(null);
     } finally {
       setCheckingEngines(false);
+    }
+  };
+
+  /**
+   * Run a known-good program through every configured engine.
+   *
+   * This costs a real run from each provider's quota, so it is a deliberate
+   * button rather than something that happens on open.
+   */
+  const runSelfTest = async () => {
+    if (probing) return;
+    setProbing(true);
+    setProbeError(null);
+    try {
+      // Probed against the language currently selected, because an engine being
+      // healthy does not mean it can run whatever is in the editor. Read from
+      // state rather than the derived `language` object, so this callback does
+      // not capture it.
+      const report = await probeEngines({ language: languageId });
+      setProbes(report.engines);
+      // The configured/not-configured view can now be stale in either direction.
+      setEngines(null);
+    } catch (err) {
+      setProbeError(
+        err instanceof Error ? err.message : "The self-test could not be started.",
+      );
+    } finally {
+      setProbing(false);
     }
   };
 
@@ -498,6 +580,57 @@ export function CodePanel({
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            <div className="mt-2 border-t pt-2">
+              <Button
+                onClick={() => void runSelfTest()}
+                disabled={probing}
+                size="sm"
+                variant="outline"
+                className="h-6 w-full text-[11px]"
+              >
+                {probing ? (
+                  <Loader2 className="mr-1.5 size-3 animate-spin" />
+                ) : (
+                  <Play className="mr-1.5 size-3" />
+                )}
+                {probing ? "Testing engines…" : "Test all engines"}
+              </Button>
+              <p className="mt-1 text-[10px] leading-snug text-muted-foreground/70">
+                Runs a known-good program through each engine so a saved but
+                broken key is distinguishable from a working one. Uses one run
+                from each provider's quota.
+              </p>
+            </div>
+
+            {probeError && (
+              <p className="mt-2 flex gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                <span>{probeError}</span>
+              </p>
+            )}
+
+            {probes && (
+              <div className="mt-2 space-y-1 border-t pt-2">
+                {probes.map((probe) => (
+                  <div key={probe.provider} className="text-[11px] leading-snug">
+                    <div className="flex items-center gap-1.5">
+                      {PROBE_STYLES[probe.state].icon}
+                      <span className="font-medium">{probe.label}</span>
+                      <span className={PROBE_STYLES[probe.state].text}>
+                        {PROBE_LABELS[probe.state]}
+                      </span>
+                      {probe.ms !== null && (
+                        <span className="tabular-nums text-muted-foreground/60">
+                          {(probe.ms / 1000).toFixed(1)}s
+                        </span>
+                      )}
+                    </div>
+                    <p className="ml-5 text-muted-foreground">{probe.detail}</p>
+                  </div>
+                ))}
               </div>
             )}
 

@@ -837,6 +837,108 @@ export const runCode = action({
 // Diagnostics
 // ---------------------------------------------------------------------------
 
+/**
+ * The program each engine is asked to run as a self-test.
+ *
+ * It has to print something recognisable and exit cleanly, because "the engine
+ * answered" is not the same as "the engine works" — a playground can return 200
+ * with a sandbox error in the body, which is exactly the case worth catching.
+ */
+const PROBE_SOURCE = "print(6*7)";
+
+/** What a working engine must print, so a health check is not just a ping. */
+const PROBE_EXPECTED = "42";
+
+type ProbeVerdict = {
+  state: "ok" | "rejected" | "limited" | "down";
+  detail: string;
+};
+
+/** A verdict plus the timing measured around the call. */
+type ProbeOutcome = ProbeVerdict & { ms: number };
+
+/**
+ * Run one engine and judge whether it actually works.
+ *
+ * This deliberately calls the engine helpers directly instead of going through
+ * the fallback chain. The chain stops at the first engine that answers, which is
+ * right for running a user's program and useless here: a self-test that used it
+ * would report one working engine and say nothing about the other two.
+ */
+async function probeEngine(
+  run: () => Promise<Attempt>,
+  interpret: (result: CodeRunResult, raw: string) => ProbeVerdict,
+): Promise<ProbeOutcome> {
+  const startedAt = Date.now();
+  let raw = "";
+  try {
+    const attempt = await run();
+    const result = attempt.result;
+    // A probe that produced no provider means the engine refused to run at all.
+    if (!result.provider) {
+      return {
+        state: "down",
+        detail: result.requestError ?? "The engine did not run.",
+        ms: Date.now() - startedAt,
+      };
+    }
+    raw = `${result.output}\n${result.error}`;
+    if (result.requestError) {
+      // The engine-level complaint is the most informative thing on the result.
+      return {
+        ...interpret(result, raw),
+        ms: Date.now() - startedAt,
+      };
+    }
+    // No complaint from the engine, so the answer has to actually be right.
+    if (result.failed) {
+      // A probe killed for running too long still proves the engine is alive and
+      // accepting work, which is a different thing from being broken, and it
+      // changes what the user should do: wait, rather than replace a key.
+      if (result.timedOut) {
+        return {
+          state: "limited",
+          detail: `Answered, but killed the test program for running too long (${result.error.split("\n")[0] || "time limit"}).`,
+          ms: Date.now() - startedAt,
+        };
+      }
+      return {
+        state: "down",
+        detail: result.error.split("\n")[0] || "The probe program did not run.",
+        ms: Date.now() - startedAt,
+      };
+    }
+    if (!result.output.includes(PROBE_EXPECTED)) {
+      return {
+        state: "down",
+        detail: `Ran, but printed ${JSON.stringify(
+          result.output.trim().slice(0, 60),
+        )} instead of ${PROBE_EXPECTED}.`,
+        ms: Date.now() - startedAt,
+      };
+    }
+    return { state: "ok", detail: "Ran the test program successfully.", ms: Date.now() - startedAt };
+  } catch (err) {
+    return {
+      state: "down",
+      detail: err instanceof Error ? `${err.name}: ${err.message}` : "Unexpected failure.",
+      ms: Date.now() - startedAt,
+    };
+  }
+}
+
+/** Read an engine-level complaint as a verdict on the engine's health. */
+function interpretFailure(result: CodeRunResult): ProbeVerdict["state"] {
+  const text = `${result.requestError ?? ""} ${result.error}`.toLowerCase();
+  if (/credential|api key|unauthorized|rejected|invalid|inactive|401|403/.test(text)) {
+    return "rejected";
+  }
+  if (/limit|rate|quota|credit|429|too many/.test(text)) {
+    return "limited";
+  }
+  return "down";
+}
+
 export interface EngineStatus {
   provider: CodeProvider;
   label: string;
@@ -920,6 +1022,138 @@ export const runnerStatus = action({
     return {
       engines,
       ready: engines.filter((e) => e.configured).map((e) => e.provider),
+    };
+  },
+});
+
+/**
+ * Probe every configured engine and report which ones are genuinely working.
+ *
+ * Credentials being present only proves a value was saved, not that the service
+ * accepts it: an expired key, a widget key used against the REST API, or a
+ * playground that is simply down all look identical from the outside. This
+ * runs a known program through each engine in turn so the answer is observed
+ * rather than inferred.
+ *
+ * Engines are probed in parallel, because they are independent, and the whole
+ * thing is bounded by one deadline so a hung engine cannot hang the panel.
+ */
+export const probeEngines = action({
+  args: {
+    /** Language to probe with. Defaults to the panel's current selection. */
+    language: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    engines: import("../lib/code-run").EngineProbe[];
+    working: import("../lib/code-run").CodeProvider[];
+    languageLabel: string;
+    ms: number;
+  }> => {
+    await getAuthUserId(ctx);
+    const startedAt = Date.now();
+
+    const language = getCodeLanguage(args.language ?? "python3");
+    if (!language) {
+      throw new Error(`Jarvis does not run "${args.language}".`);
+    }
+    const version = resolveVersion(language, undefined);
+
+    const jdoodle = getJdoodleCredentials();
+    const onlineCompiler = getOnlineCompilerKey();
+
+    const base: AttemptContext = {
+      language,
+      version,
+      source: PROBE_SOURCE,
+      stdin: "",
+      libs: [],
+      isFallback: false,
+    };
+
+    // Each engine gets its own tried-list, since one engine's attempts say
+    // nothing about another's.
+    const probe = async (
+      provider: CodeProvider,
+      label: string,
+      configured: boolean,
+      supported: boolean,
+      unconfiguredDetail: string,
+      run: () => Promise<Attempt>,
+    ): Promise<import("../lib/code-run").EngineProbe> => {
+      if (!supported) {
+        return {
+          provider,
+          label,
+          state: "unsupported",
+          detail: `Does not run ${language.label}.`,
+          ms: null,
+        };
+      }
+      if (!configured) {
+        return {
+          provider,
+          label,
+          state: "unconfigured",
+          detail: unconfiguredDetail,
+          ms: null,
+        };
+      }
+      const outcome = await probeEngine(run, (result): ProbeVerdict => ({
+        state: interpretFailure(result),
+        detail: result.requestError ?? "The engine refused the run.",
+      }));
+      return { provider, label, state: outcome.state, detail: outcome.detail, ms: outcome.ms };
+    };
+
+    const probes = await Promise.all([
+      probe(
+        "jdoodle",
+        "JDoodle",
+        jdoodle !== null,
+        true,
+        "Add JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET in the API keys tab.",
+        () =>
+          runWithJdoodle(
+            base,
+            jdoodle as JdoodleCredentials,
+            Date.now(),
+            ["jdoodle"],
+          ),
+      ),
+      // Wandbox needs no key, so it is always contacted when it supports the
+      // language. It is the one engine whose health can change on its own.
+      probe(
+        "wandbox",
+        "Wandbox",
+        true,
+        language.wandbox !== undefined,
+        "",
+        () => runWithWandbox(base, Date.now(), ["wandbox"]),
+      ),
+      probe(
+        "onlinecompiler",
+        "OnlineCompiler.io",
+        onlineCompiler !== null,
+        language.onlineCompiler !== undefined,
+        "Add ONLINECOMPILER_API_KEY in the API keys tab.",
+        () =>
+          runWithOnlineCompiler(
+            base,
+            onlineCompiler as string,
+            Date.now(),
+            ["onlinecompiler"],
+          ),
+      ),
+    ]);
+
+    return {
+      engines: probes,
+      working: probes.filter((p) => p.state === "ok").map((p) => p.provider),
+      languageLabel: language.label,
+      ms: Date.now() - startedAt,
     };
   },
 });

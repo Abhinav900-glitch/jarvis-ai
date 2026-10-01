@@ -33,6 +33,44 @@ export interface EngineStatus {
   problem: string | null;
 }
 
+/**
+ * The outcome of probing one engine, which is not the same question as "did
+ * the program work". An engine can be perfectly healthy and still be unable to
+ * run the selected language, so these are kept separate.
+ */
+export type EngineProbeState =
+  /** Ran the probe program and got the expected answer back. */
+  | "ok"
+  /** Has credentials, but they were refused. */
+  | "rejected"
+  /** Configured and reachable, but refused for quota or rate reasons. */
+  | "limited"
+  /** Could not be reached at all, or answered with a server-side fault. */
+  | "down"
+  /** Reached and healthy, but cannot run this language. */
+  | "unsupported"
+  /** No credentials saved, so it was not contacted. */
+  | "unconfigured";
+
+export interface EngineProbe {
+  provider: CodeProvider;
+  label: string;
+  state: EngineProbeState;
+  /** One line saying what happened, written for someone who cannot fix it here. */
+  detail: string;
+  /** Round trip for the probe, or null when the engine was not contacted. */
+  ms: number | null;
+}
+
+export interface EngineProbeReport {
+  engines: EngineProbe[];
+  /** Engines that answered correctly, in the order the runner prefers them. */
+  working: CodeProvider[];
+  /** The language the probe was run against. */
+  languageLabel: string;
+  ms: number;
+}
+
 export interface CodeRunResult {
   /** False only when the run could not be completed at all. */
   ok: boolean;
