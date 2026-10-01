@@ -852,16 +852,65 @@ export const runCode = action({
 // ---------------------------------------------------------------------------
 
 /**
- * The program each engine is asked to run as a self-test.
- *
- * It has to print something recognisable and exit cleanly, because "the engine
- * answered" is not the same as "the engine works" — a playground can return 200
- * with a sandbox error in the body, which is exactly the case worth catching.
+ * What a working engine must print, so a health check is not just a ping.
  */
-const PROBE_SOURCE = "print(6*7)";
-
-/** What a working engine must print, so a health check is not just a ping. */
 const PROBE_EXPECTED = "42";
+
+/**
+ * The program each engine is asked to run as a self-test, per language.
+ *
+ * Every entry has to be written in that language, print 42, and exit cleanly.
+ * That last part matters more than it looks: the probe is run against whichever
+ * language is selected in the editor, so a single shared snippet written in
+ * Python reports every non-Python engine as broken. That is not a cosmetic
+ * problem — it tells the user their working engine is down.
+ *
+ * Languages absent here fall back to the Python program, so adding a language
+ * without a snippet is a visible gap rather than a silent wrong answer.
+ */
+const PROBE_SOURCES: Record<string, string> = {
+  python3: "print(6*7)",
+  nodejs: "console.log(6*7)",
+  typescript: "console.log(6*7)",
+  bash: "echo $((6*7))",
+  lua: "print(6*7)",
+  perl: "print 6*7, chr(10)",
+  r: "print(6*7)",
+  ruby: "puts 6*7",
+  julia: "println(6*7)",
+  sql: "SELECT 6*7;",
+  java: "public class Main { public static void main(String[] a) { System.out.println(6*7); } }",
+  csharp: "class P { static void Main() { System.Console.WriteLine(6*7); } }",
+  kotlin: "fun main() { println(6*7) }",
+  scala: "object P extends App { println(6*7) }",
+  groovy: "println 6*7",
+  swift: "print(6*7)",
+  dart: "void main() { print(6*7); }",
+  c: '#include <stdio.h>\nint main(){ printf("%d\\n", 6*7); return 0; }',
+  cpp: '#include <iostream>\nint main(){ std::cout << 6*7 << std::endl; }',
+  cpp17: '#include <iostream>\nint main(){ std::cout << 6*7 << std::endl; }',
+  go: 'package main\nimport "fmt"\nfunc main(){ fmt.Println(6*7) }',
+  rust: "fn main(){ println!(\"{}\", 6*7); }",
+  php: "<?php echo 6*7, PHP_EOL;",
+  haskell: 'main = print (6*7)',
+  elixir: "IO.puts 6*7",
+  clojure: "(println (* 6 7))",
+  erlang: 'io:format("~p~n", [6*7]).',
+  ocaml: 'print_int (6*7); print_newline ();',
+  fsharp: 'printfn "%d" (6*7)',
+};
+
+/**
+ * The probe program for a language, or a clear reason there is not one.
+ *
+ * An empty program would exit cleanly and print nothing, which reads as a
+ * broken engine, so a language with no snippet is reported as unsupported
+ * rather than guessed at.
+ */
+function probeSourceFor(language: CodeLanguage): string | null {
+  if (language.executable === false) return null;
+  return PROBE_SOURCES[language.id] ?? null;
+}
 
 type ProbeVerdict = {
   state: "ok" | "rejected" | "limited" | "down";
@@ -1078,10 +1127,17 @@ export const probeEngines = action({
     const jdoodle = getJdoodleCredentials();
     const onlineCompiler = getOnlineCompilerKey();
 
+    const probeSource = probeSourceFor(language);
+    if (probeSource === null) {
+      throw new Error(
+        `There is no self-test program for ${language.label}, so its engines cannot be probed.`,
+      );
+    }
+
     const base: AttemptContext = {
       language,
       version,
-      source: PROBE_SOURCE,
+      source: probeSource,
       stdin: "",
       libs: [],
       isFallback: false,
