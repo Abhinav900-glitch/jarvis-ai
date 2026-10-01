@@ -517,10 +517,16 @@ async function speakWithGroq(
 // is untouched for anyone without a Hume key.
 // ---------------------------------------------------------------------------
 
-/** Languages Octave speaks. Anything outside this is a guaranteed miss. */
-const HUME_LANGUAGES = new Set([
+/** Octave 2 languages — the full set, but each one requires a named voice. */
+const HUME_LANGUAGES_V2 = new Set([
   "en", "es", "ja", "ko", "fr", "pt", "it", "de", "ru", "hi", "ar",
 ]);
+
+/**
+ * Octave 1 speaks only English and Spanish, and it is the only mode that can
+ * design a voice on the fly (no voice name required).
+ */
+const HUME_LANGUAGES_DYNAMIC = new Set(["en", "es"]);
 
 /**
  * What Jarvis is feeling while he says it.
@@ -558,7 +564,30 @@ async function speakWithHume(
   if (!apiKey) return { audio: null, voice: "browser" };
 
   const language = (langTag ?? "en").split("-")[0].toLowerCase();
-  if (!HUME_LANGUAGES.has(language)) return { audio: null, voice: "browser" };
+  const description = octaveDescription(mood);
+
+  /**
+   * Which Octave to ask for.
+   *
+   * These two requirements genuinely conflict, and picking wrong silently costs
+   * the feature:
+   *
+   *  • `description` (acting direction, i.e. the emotional delivery) is
+   *    documented as Octave 1 ONLY. On Octave 2 it is ignored.
+   *  • Octave 2 is the only version that speaks the nine non-Latin languages,
+   *    and it is rejected outright without a named voice.
+   *
+   * So a detected mood routes to Octave 1 and gets real emotional delivery in
+   * English and Spanish; anything else routes to Octave 2 and gets correct
+   * language but no mood-driven acting. Losing the mood is better than speaking
+   * the wrong language, and the alternative — always taking Octave 1 — would
+   * return accented nonsense for Hindi.
+   */
+  const useEmotion = Boolean(description);
+  const useOctave2 = Boolean(voice) && !useEmotion;
+
+  const supported = useOctave2 ? HUME_LANGUAGES_V2 : HUME_LANGUAGES_DYNAMIC;
+  if (!supported.has(language)) return { audio: null, voice: "browser" };
 
   // The client already chunks replies for playback, so this is a safety net
   // rather than the normal path.
@@ -568,13 +597,16 @@ async function speakWithHume(
   const utterance: Record<string, unknown> = { text: clipped };
 
   // A named voice is required for instant mode (the low-latency path live mode
-  // depends on). Without one, Octave designs a voice from the acting direction.
+  // depends on) and for Octave 2. `provider` is what identifies a Voice Library
+  // entry by name, so it travels with the name.
   if (voice) {
-    utterance.voice = { name: voice };
-  } else {
-    const description = octaveDescription(mood);
-    if (description) utterance.description = description;
+    utterance.voice = { name: voice, provider: "HUME_AI" };
   }
+
+  // With no voice this doubles as the voice prompt, which is how the mood still
+  // shapes the delivery on the dynamic-voice path.
+  if (description) utterance.description = description;
+
   // Outside this range the model can go unstable.
   if (typeof pace === "number" && pace >= 0.75 && pace <= 1.5) {
     utterance.speed = pace;
@@ -591,6 +623,10 @@ async function speakWithHume(
         utterances: [utterance],
         format: { type: "mp3" },
         num_generations: 1,
+        // Pinned only when acting direction is NOT in play: Octave 2 ignores
+        // `description`, and left to auto-routing a non-English request can be
+        // sent to Octave 1, which only speaks English and Spanish.
+        ...(useOctave2 ? { version: 2 } : {}),
       }),
       signal: AbortSignal.timeout(30_000),
     });
