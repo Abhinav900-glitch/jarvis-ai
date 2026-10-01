@@ -337,8 +337,8 @@ export function buildVideoContext(input: {
   segmentCount: number;
 }): string {
   const header = [
-    `Title: ${input.title ?? "unknown"}`,
-    `Channel: ${input.channel ?? "unknown"}`,
+    `Title: ${input.title ?? "not available"}`,
+    `Channel: ${input.channel ?? "not available"}`,
     `URL: ${input.url}`,
   ].join("\n");
 

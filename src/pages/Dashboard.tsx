@@ -1362,7 +1362,10 @@ export default function Dashboard() {
             `but no transcript could be obtained for any of them. You have only titles and ` +
             `channels below. Tell the user what you can from those — the likely subject of each ` +
             `video and its channel — and be brief and honest that you could not read or watch ` +
-            `them. Do not summarise content you have not seen.\n\n${batch.context}`
+            `them. Do not summarise content you have not seen.` +
+            `\n\nA question about WHO or WHICH CHANNEL the video is from is answered directly ` +
+            `by the Title and Channel fields below — answer it from those even without a ` +
+            `transcript. Likewise for "what is this video called".\n\n${batch.context}`
           : multi
             ? `The user shared ${readable.length} YouTube video${readable.length === 1 ? "" : "s"} ` +
               `and wants them compared. Read every transcript below, then answer what they asked. ` +
@@ -1373,14 +1376,18 @@ export default function Dashboard() {
               `to the wrong video is worse than no claim. If they do not actually disagree, say ` +
               `so plainly rather than inventing a difference. Distinguish a real disagreement ` +
               `from two videos covering different topics. If a transcript was cut off, do not ` +
-              `claim to know how that video ends. Keep it readable — short paragraphs or bullets, ` +
-              `not an essay.${gapNote}${skippedNote}\n\n${batch.context}`
+              `claim to know how that video ends. Each video's channel is in its header, ` +
+              `so answer "who made this" per video rather than ignoring it. Keep it readable — ` +
+              `short paragraphs or bullets, not an essay.${gapNote}${skippedNote}\n\n${batch.context}`
             : `The user shared a YouTube video. Respond to what they actually asked, drawing on ` +
               `what was said in it. If they asked a specific question, answer it from the ` +
               `transcript. Otherwise react to the content the way a person who just watched it ` +
               `would — comment on the substance, not on the fact that you were given a ` +
               `transcript. Cite a timestamp when you refer to a specific moment. If the ` +
               `transcript was cut off, do not claim to know how the video ends.${gapNote}${skippedNote}` +
+              `\n\nIf they asked who the channel or speaker is, or what the video is called, ` +
+              `answer straight from the Title and Channel fields in the data below — do not ` +
+              `say you cannot tell them when it is written there.` +
               `\n\n${batch.context}`;
 
       const narration = await askAction({
