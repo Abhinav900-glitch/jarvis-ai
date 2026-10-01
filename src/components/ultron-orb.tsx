@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 
 export interface UltroneOrbProps {
   /** 0..1 — mic level while listening, speech level while replying. */
-  energy: number;
+  energy?: number;
   mood?: Mood | null;
   /**
    * A camera stream already open elsewhere (live mode holds one for vision).
@@ -43,7 +43,7 @@ export interface UltroneOrbProps {
 }
 
 export function UltronOrb({
-  energy,
+  energy = 0,
   mood = null,
   stream = null,
   gesturesEnabled = false,
@@ -80,6 +80,15 @@ export function UltronOrb({
   });
   const [trackingError, setTrackingError] = useState<string | null>(null);
   const [webglFailed, setWebglFailed] = useState(false);
+  const [internalGestures, setInternalGestures] = useState(false);
+
+  // Uncontrolled when the caller does not pass `gesturesEnabled`, so the orb
+  // can be dropped in anywhere (the landing page) and still respond to G.
+  const gesturesOn = gesturesEnabled || internalGestures;
+  const toggleGestures = useCallback(
+    () => setInternalGestures((v) => !v),
+    [],
+  );
 
   // --- Scene lifecycle -------------------------------------------------
   useEffect(() => {
@@ -128,7 +137,7 @@ export function UltronOrb({
 
   // --- Hand tracking lifecycle -----------------------------------------
   useEffect(() => {
-    if (!gesturesEnabled) {
+    if (!gesturesOn) {
       trackerRef.current?.stop();
       trackerRef.current = null;
       return;
@@ -166,20 +175,25 @@ export function UltronOrb({
       trackerRef.current = null;
       arbiter.reset();
     };
-  }, [gesturesEnabled, stream]);
+  }, [gesturesOn, stream]);
 
   // --- Keyboard ---------------------------------------------------------
   const resetView = useCallback(() => sceneRef.current?.resetView(), []);
   useEffect(() => {
-    if (!gesturesEnabled) return;
     const onKey = (e: KeyboardEvent) => {
+      // Never steal keys from something the user is typing into.
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+        return;
+      }
+      if (e.key === "g" || e.key === "G") toggleGestures();
       if (e.key === "r" || e.key === "R") resetView();
       if (e.key === "+" || e.key === "=") sceneRef.current?.zoomIn();
       if (e.key === "-" || e.key === "_") sceneRef.current?.zoomOut();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [gesturesEnabled, resetView]);
+  }, [toggleGestures, resetView]);
 
   return (
     <div className={cn("relative h-full w-full", className)}>
@@ -201,7 +215,7 @@ export function UltronOrb({
       />
 
       {/* Status line, only while gestures are actually on. */}
-      {gesturesEnabled && (
+      {gesturesOn ? (
         <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 text-center text-[10px] tracking-[0.2em] text-[#7f88ad] uppercase">
           {trackingError ? (
             <span className="text-amber-400/80">{trackingError}</span>
@@ -219,7 +233,7 @@ export function UltronOrb({
             <span>Open palm to zoom · pinch to spin · clap to switch on</span>
           )}
         </div>
-      )}
+      ) : null}
 
       {webglFailed ? (
         <div className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-muted-foreground">

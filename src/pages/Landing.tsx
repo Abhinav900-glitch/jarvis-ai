@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router";
 import { JarvisIcon } from "@/components/jarvis-icon";
+import { UltronOrb } from "@/components/ultron-orb";
 import { AUTHOR } from "@/lib/languages";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -111,7 +112,8 @@ export default function Landing() {
       </header>
 
       {/* Hero */}
-      <section className="mx-auto w-full max-w-5xl px-6 pt-16 pb-20 sm:pt-24">
+      <section className="mx-auto grid w-full max-w-5xl items-center gap-12 px-6 pt-16 pb-20 sm:pt-24 lg:grid-cols-[1.1fr_0.9fr]">
+        <div>
         <motion.div {...fadeUp} className="mb-8 inline-flex">
           <div className="relative flex size-16 items-center justify-center rounded-2xl border bg-card">
             <JarvisIcon className="size-8" animate />
@@ -150,6 +152,22 @@ export default function Landing() {
         <motion.p {...fadeUp} className="mt-4 text-xs text-muted-foreground">
           No credit card. Guests get the full engine.
         </motion.p>
+        </div>
+
+        {/* The orb itself, running. Drag to spin, scroll to zoom. Webcam
+            gestures are opt-in and only exist in the app, so nothing here
+            asks for a camera — this is the same Three.js scene live mode
+            uses, standing in for a screenshot. */}
+        <motion.div
+          {...fadeUp}
+          className="relative mx-auto aspect-square w-full max-w-[440px]"
+        >
+          <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_50%_50%,rgba(99,102,241,0.12),transparent_65%)]" />
+          <UltronOrb className="relative h-full w-full" />
+          <p className="absolute inset-x-0 bottom-0 text-center text-[11px] tracking-[0.18em] text-muted-foreground uppercase">
+            Drag to spin · scroll to zoom
+          </p>
+        </motion.div>
       </section>
 
       <Separator className="mx-auto max-w-5xl" />
