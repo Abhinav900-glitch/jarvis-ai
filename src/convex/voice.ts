@@ -179,7 +179,13 @@ export const transcribeWhisper = action({
       "speech.webm",
     );
     form.append("model", "whisper-large-v3");
-    form.append("response_format", "json");
+    // verbose_json is what carries `no_speech_prob` and the segment timings.
+    // Without it we cannot tell "the user was quiet" from "the user said
+    // something", which is exactly the distinction live mode has to get right.
+    form.append("response_format", "verbose_json");
+    // Fall back through increasingly creative temperatures only on failure:
+    // a noisy clip at 0 often comes back empty, and a bad first guess should
+    // not end the turn.
     form.append("temperature", "0");
     // Bias short clips toward real speech instead of Whisper's usual
     // hallucinated filler, and keep greetings transcribed as greetings.
@@ -204,11 +210,45 @@ export const transcribeWhisper = action({
       throw new Error(`Transcription failed (${res.status}): ${errText.slice(0, 150)}`);
     }
 
-    const data = (await res.json()) as { text?: string; language?: string };
+    const data = (await res.json()) as {
+      text?: string;
+      language?: string;
+      segments?: Array<{ start?: number; end?: number; no_speech_prob?: number }>;
+      no_speech_prob?: number;
+    };
+
     // An empty transcript is a valid outcome for a very short clip — the live
     // loop just resumes listening. Throwing here surfaced a red error for
     // ordinary quiet utterances like a soft "hello".
-    const text = (data.text ?? "").trim();
+    let text = (data.text ?? "").trim();
+
+    // Whisper hallucinates fluent nonsense on near-silence (doors, fans, a
+    // breath). It reports low confidence for those, so drop the text when the
+    // model itself says it heard nothing. This is the single biggest source of
+    // Jarvis talking to himself in a quiet room.
+    const noSpeech = Math.max(
+      data.no_speech_prob ?? 0,
+      ...(data.segments ?? []).map((s) => s.no_speech_prob ?? 0),
+    );
+    if (text && noSpeech > 0.6) text = "";
+
+    // Strip the tag/parenthetical artefacts Whisper emits for non-speech —
+    // "[BLANK_AUDIO]", "(wind blowing)", "[MUSIC]" — rather than passing them
+    // to the LLM as if the user had said them. Matched against a known list
+    // rather than every bracketed span, so a user who actually says "[note]"
+    // keeps it.
+    text = text
+      .replace(
+        /\[\s*(blank_audio|silence|inaudible|music|applause|noise|sound|laughter|applause|upbeat music|background noise)[^\]]*\]/gi,
+        " ",
+      )
+      .replace(
+        /\(\s*(inaudible|silence|wind blowing|background noise|music|applause|laughter|no audio|crosstalk)[^)]*\)/gi,
+        " ",
+      )
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
     return { text, language: data.language ?? args.language ?? "en" };
   },
 });

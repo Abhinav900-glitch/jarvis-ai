@@ -9,6 +9,7 @@ import {
   stopThinkingHum,
   unlockAudioElement,
 } from "@/lib/audio";
+import { trimSilence } from "@/lib/audio-trim";
 
 // ---------------------------------------------------------------------------
 // useLiveMode — hands-free voice conversation (ChatGPT / Gemini Live style)
@@ -56,14 +57,27 @@ export interface LiveMode {
  */
 export type LiveTurnHandler = (audio: Blob, countryCode: string) => Promise<string>;
 
-const SILENCE_DB = 0.045; // RMS threshold for barge-in detection
+const BARGE_IN_HOLD_MS = 350; // sustained voice needed to interrupt Jarvis
 
 // --- Turn endpointing -------------------------------------------------------
 // This is what makes live mode behave like a ChatGPT / Gemini voice call: the
 // mic never stops, we wait for you to begin a statement, then wait for you to
 // finish it, and only then cut the clip and send it for transcription. Without
 // it the recorder would run forever and Jarvis would never get a turn.
-const SPEECH_RMS = 0.022; // above this level the user counts as speaking
+// --- Adaptive voice activity ------------------------------------------------
+// A single fixed RMS gate works in a quiet room and fails everywhere else. In a
+// café the background sits above the gate, so every turn ends on a fridge hum
+// and barge-ins fire at nothing; in a silent room a soft voice never clears it
+// and live mode simply looks dead. So the gate tracks the room instead: a slow
+// EMA of the quietest recent frames becomes the floor, and speech has to clear
+// that floor by a margin.
+const NOISE_FLOOR_MIN = 0.004; // don't chase digital silence
+const NOISE_FLOOR_MAX = 0.06; // don't let a sustained loud passage become the floor
+const NOISE_FALL_RATE = 0.05; // fast to fall once a loud passage ends
+const NOISE_RISE_RATE = 0.002; // very slow to rise, so speech never raises the floor
+const ABS_FLOOR = 0.011; // absolute gate for an already-silent room
+const SPEECH_SNR = 3.2; // must clear the measured floor by this factor to start
+const RELEASE_SNR = 1.9; // lower bar to keep counting as speech (hysteresis)
 const TURN_END_SILENCE_MS = 750; // pause in speech that ends the turn
 // Short utterances matter: "hello", "thanks", "yes" are real turns. Gate on
 // genuine *voiced* time (not wall clock, which would include the trailing
@@ -125,6 +139,9 @@ export function useLiveMode(
   const speechStartRef = useRef<number | null>(null);
   const lastLoudRef = useRef<number | null>(null);
   const quietStartRef = useRef<number | null>(null);
+  // Rolling measurement of the room's quiet level, so the speech gate can sit
+  // above the background instead of at a hardcoded volume.
+  const noiseFloorRef = useRef<number>(0.004);
   // stopRecording is declared after the level monitor, so the monitor calls
   // it through a ref to avoid a stale closure.
   const stopRecordingRef = useRef<() => void>(() => {});
@@ -187,6 +204,9 @@ export function useLiveMode(
     const analyser = analyserRef.current;
     if (!analyser) return;
     const buf = new Float32Array(analyser.fftSize);
+    // Re-seed on every start so a session beginning in a noisy room does not
+    // inherit the floor measured somewhere else.
+    noiseFloorRef.current = NOISE_FLOOR_MIN;
 
     const tick = () => {
       if (!activeRef.current) return;
@@ -196,13 +216,33 @@ export function useLiveMode(
       const rms = Math.sqrt(sum / buf.length);
       setLevel(Math.min(1, rms * 6));
 
+      // Track the room's quiet floor. It only falls quickly and rises almost
+      // not at all, which is what keeps the user's own speech from being
+      // absorbed into the background and the gate drifting upward.
+      const floor = noiseFloorRef.current;
+      const isQuieter = rms < floor;
+      noiseFloorRef.current = Math.min(
+        NOISE_FLOOR_MAX,
+        Math.max(
+          NOISE_FLOOR_MIN,
+          floor + (rms - floor) * (isQuieter ? NOISE_FALL_RATE : NOISE_RISE_RATE),
+        ),
+      );
+
+      // Two gates off the same floor: a higher one to declare speech, a lower
+      // one to keep it declared. Without that gap the detector chatters on and
+      // off inside a single word and cuts the turn mid-syllable.
+      const base = Math.max(ABS_FLOOR, noiseFloorRef.current);
+      const speechGate = base * SPEECH_SNR;
+      const releaseGate = base * RELEASE_SNR;
+
       if (speakingRef.current) {
         // While Jarvis speaks, watch for the user talking over him
-        if (rms > SILENCE_DB) {
+        if (rms > releaseGate) {
           if (silenceStartRef.current === null) {
             silenceStartRef.current = Date.now();
-          } else if (Date.now() - silenceStartRef.current > 350) {
-            // 350ms of sustained voice → interrupt
+          } else if (Date.now() - silenceStartRef.current > BARGE_IN_HOLD_MS) {
+            // Sustained voice → interrupt
             bargeInRef.current = true;
             window.speechSynthesis.cancel();
             stopTtsAudio();
@@ -212,7 +252,7 @@ export function useLiveMode(
         }
       } else if (recorderRef.current?.state === "recording") {
         // Listening: track speech start / end to close the turn.
-        if (rms > SPEECH_RMS) {
+        if (rms > speechGate) {
           const now = Date.now();
           if (speechStartRef.current === null) speechStartRef.current = now;
           lastLoudRef.current = now; // most recent voiced frame
@@ -295,7 +335,11 @@ export function useLiveMode(
           if (processingRef.current) startThinkingHum();
         }, 420);
         try {
-          await onTurnRef.current(blob, countryRef.current);
+          // The recorder is always rolling, so this clip is padded with silence
+          // on both sides. Trimming it cuts upload time and stops Whisper
+          // hearing a silent lead-in as an invitation to hallucinate.
+          const trimmed = await trimSilence(blob);
+          await onTurnRef.current(trimmed, countryRef.current);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Transcription failed.");
         } finally {
@@ -382,7 +426,10 @@ export function useLiveMode(
             speechLangRef.current ??
             (countryRef.current ? getCountry(countryRef.current).langTag : "en-US");
         }
-        u.rate = 1.05;
+        // Honour the pace the user picked in the composer. The server TTS
+        // already respects it, so hardcoding a rate here made the fallback
+        // voice ignore their choice.
+        u.rate = voicePrefRef.current?.pace ?? 1.05;
         return u;
       });
       utterances.forEach((u, i) => {
