@@ -50,10 +50,11 @@ import {
   GitBranch,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { JarvisIcon } from "@/components/jarvis-icon";
 import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud";
+import type { GestureAction } from "@/lib/gesture-actions";
 import { JarvisOrb } from "@/components/jarvis-orb";
 import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage, looksLikeMathOrMarkdown } from "@/components/markdown-message";
@@ -975,6 +976,9 @@ export default function Dashboard() {
   }, [wakeGate]);
 
   const liveTurnRef = useRef<(text: string) => Promise<void>>(async () => {});
+  // Hand control for the orb. Off until asked for: it needs the camera, and
+  // silently opening it during a voice call would be a surprise.
+  const [orbGestures, setOrbGestures] = useState(false);
   // Rolling conversation shown on the full-screen JARVIS HUD (live voice call)
   const [liveTranscript, setLiveTranscript] = useState<LiveTurn[]>([]);
   const live = useLiveMode(
@@ -1035,6 +1039,30 @@ export default function Dashboard() {
     // Only override the speaking language when the user has asked for the
     // reply to be spoken in another language.
     liveTranslate.speakTranslated ? translateTarget : null,
+  );
+  // Gestures drive Jarvis, not the visuals — pinch-to-spin and two-hand zoom
+  // are handled inside the tracker itself. These are the deliberate, one-shot
+  // actions, each confirmed through the gesture arbiter before it arrives.
+  const handleOrbGesture = useCallback(
+    (action: GestureAction) => {
+      switch (action) {
+        case "interrupt":
+          live.skipSpeaking();
+          break;
+        case "new_chat":
+          setActiveId(null);
+          break;
+        case "pause_listening":
+        case "resume_listening":
+          // Live mode is hands-free by design: pausing the mic mid-call would
+          // leave no way to talk without reaching for the mouse.
+          toast.info("Live mode keeps listening — say anything, or tap Skip.");
+          break;
+        default:
+          break;
+      }
+    },
+    [live],
   );
   // Speak each new assistant reply when live mode is active. Streaming means
   // the row grows in place, so wait for generation to finish before speaking
@@ -4454,6 +4482,11 @@ export default function Dashboard() {
         transcript={liveTranscript}
         language={getCountry(countryCode).name}
         mood={live.mood}
+        energy={live.level}
+        cameraStream={live.cameraStream}
+        gesturesEnabled={orbGestures}
+        onToggleGestures={() => setOrbGestures((v) => !v)}
+        onGestureAction={handleOrbGesture}
         wakeGated={wakeGate}
         onToggleWake={() => setWakeGate((v) => !v)}
         onStop={() => {

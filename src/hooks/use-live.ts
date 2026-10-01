@@ -44,6 +44,12 @@ export interface LiveMode {
   level: number;
   /** Coarse delivery read of the user's last turn, or null if unmeasurable. */
   mood: Mood | null;
+  /**
+   * The camera stream live mode already holds, if any. The orb's hand tracker
+   * attaches to this rather than opening a second getUserMedia, which would
+   * compete with this one for the same device.
+   */
+  cameraStream: MediaStream | null;
   error: string | null;
   start: () => void;
   stop: () => void;
@@ -125,6 +131,9 @@ export function useLiveMode(
   // Mirrors moodRef for the UI. A ref alone would not re-render, so the live
   // HUD could never show what it heard.
   const [mood, setMood] = useState<Mood | null>(null);
+  // Mirrors streamRef for consumers. A ref read during render is not safe, and
+  // the orb needs the live stream so it does not open a second camera.
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
 
   // "Latest value" refs. These are read from long-lived callbacks (mic
   // timers, media event handlers) that must not be re-created on every render,
@@ -659,6 +668,7 @@ export function useLiveMode(
     recorderRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    setCameraStream(null);
     void audioCtxRef.current?.close().catch(() => {});
     audioCtxRef.current = null;
     analyserRef.current = null;
@@ -693,6 +703,7 @@ export function useLiveMode(
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+      setCameraStream(stream);
 
       // Set up the analyser for level monitoring + barge-in
       const source = ctx.createMediaStreamSource(stream);
@@ -765,6 +776,7 @@ export function useLiveMode(
     level,
     error,
     mood,
+    cameraStream,
     start,
     stop,
     skipSpeaking,

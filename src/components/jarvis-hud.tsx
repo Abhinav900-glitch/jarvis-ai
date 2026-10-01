@@ -12,11 +12,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Mic, MicOff, SkipForward, X, Zap } from "lucide-react";
+import { Mic, MicOff, SkipForward, X, Zap, Hand } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { WAKE_PHRASE } from "@/lib/wake-word";
 import type { Mood } from "@/lib/voice-mood";
+import type { GestureAction } from "@/lib/gesture-actions";
+import { UltronOrb } from "@/components/ultron-orb";
 
 export type HudPhase = "listening" | "processing" | "speaking" | "idle";
 
@@ -42,6 +44,16 @@ export interface JarvisHudProps {
   onStop: () => void;
   /** Interrupt the spoken reply — drop straight back to listening */
   onSkip: () => void;
+  /** 0..1 mic / speech level, drives the orb's energy. */
+  energy?: number;
+  /** A camera stream already open (live mode holds one for vision). */
+  cameraStream?: MediaStream | null;
+  /** Webcam hand tracking for the orb. */
+  gesturesEnabled?: boolean;
+  /** Turn webcam hand tracking on or off. */
+  onToggleGestures?: () => void;
+  /** A confirmed hand gesture resolved to a Jarvis action. */
+  onGestureAction?: (action: GestureAction) => void;
 }
 
 const STATUS_LABELS: Record<HudPhase, string> = {
@@ -141,8 +153,17 @@ export function JarvisHud({
   onToggleWake,
   onStop,
   onSkip,
+  energy = 0,
+  cameraStream = null,
+  gesturesEnabled = false,
+  onToggleGestures,
+  onGestureAction,
 }: JarvisHudProps) {
   const [boost, setBoost] = useState(false);
+  // The Three.js orb replaces the CSS sphere. Optimistic: it mounts and tries
+  // to create a WebGL context, and flips this back to false (revealing the CSS
+  // sphere) if that fails.
+  const [orbLive, setOrbLive] = useState(true);
 
   if (!open) return null;
 
@@ -203,7 +224,7 @@ export function JarvisHud({
               aria-label={
                 boosting ? "Return the sphere to its normal speed" : "Spin the sphere faster"
               }
-              className={cn("sphere-button", fast && "fast")}
+              className={cn("sphere-button", orbLive && "hidden", fast && "fast")}
             >
               {/* The lit body. It only breathes — all rotation is in the cage,
                   because in-plane rotation is what makes a sphere read flat. */}
@@ -234,7 +255,16 @@ export function JarvisHud({
                 </span>
               </span>
             </button>
-            <span className="sphere-glow" aria-hidden="true" />
+            <span className={cn("sphere-glow", orbLive && "hidden")} aria-hidden="true" />
+            <UltronOrb
+              className={cn("absolute inset-0 rounded-full", !orbLive && "hidden")}
+              energy={energy}
+              mood={mood}
+              stream={cameraStream}
+              gesturesEnabled={gesturesEnabled}
+              onGestureAction={onGestureAction}
+              onUnavailable={() => setOrbLive(false)}
+            />
           </div>
 
           <div className="mt-3 flex shrink-0 flex-col items-center gap-2">
@@ -267,6 +297,23 @@ export function JarvisHud({
           </div>
 
           <div className="flex h-12 shrink-0 items-center justify-center gap-4">
+            <button
+              onClick={onToggleGestures}
+              title={
+                gesturesEnabled
+                  ? "Hand control on — pinch to spin, two hands to zoom, open palm to interrupt"
+                  : "Hand control off — uses the camera for gestures"
+              }
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] transition-colors",
+                gesturesEnabled
+                  ? "border-[#ffaa30]/40 bg-[#ffaa30]/15 text-[#ffcc66]"
+                  : "border-white/10 bg-white/[0.04] text-[#8189a7] hover:bg-white/[0.08]",
+              )}
+            >
+              <Hand className="size-3" />
+              Gestures
+            </button>
             <button
               onClick={onToggleWake}
               title={
