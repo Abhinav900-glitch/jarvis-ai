@@ -55,6 +55,10 @@ export interface LiveMode {
   stop: () => void;
   /** Skip the reply currently being spoken and listen again immediately. */
   skipSpeaking: () => void;
+  /** Switch the mic on or off without ending the session (a clap). */
+  toggleMute: () => void;
+  /** True while the mic is switched off. */
+  muted: boolean;
   /** Feed Jarvis's reply text — spoken aloud, then listening resumes. */
   deliverReply: (text: string) => void;
 }
@@ -134,6 +138,10 @@ export function useLiveMode(
   // Mirrors streamRef for consumers. A ref read during render is not safe, and
   // the orb needs the live stream so it does not open a second camera.
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  // Mic off, session still up. A clap flips this, which is the one control
+  // that has to work without touching anything.
+  const [muted, setMuted] = useState(false);
+  const mutedRef = useRef(false);
 
   // "Latest value" refs. These are read from long-lived callbacks (mic
   // timers, media event handlers) that must not be re-created on every render,
@@ -329,6 +337,7 @@ export function useLiveMode(
   const startRecording = useCallback(() => {
     const stream = streamRef.current;
     if (!stream || speakingRef.current || processingRef.current || !activeRef.current) return;
+    if (mutedRef.current) return;
     // Never stack two recorders on the same stream.
     if (recorderRef.current?.state === "recording") return;
 
@@ -777,6 +786,14 @@ export function useLiveMode(
     error,
     mood,
     cameraStream,
+    muted,
+    toggleMute: () => {
+      mutedRef.current = !mutedRef.current;
+      setMuted(mutedRef.current);
+      if (mutedRef.current && recorderRef.current?.state === "recording") {
+        recorderRef.current.stop();
+      }
+    },
     start,
     stop,
     skipSpeaking,

@@ -52,6 +52,8 @@ export interface JarvisHudProps {
   gesturesEnabled?: boolean;
   /** Turn webcam hand tracking on or off. */
   onToggleGestures?: () => void;
+  /** True while the mic is switched off by a clap. */
+  muted?: boolean;
   /** A confirmed hand gesture resolved to a Jarvis action. */
   onGestureAction?: (action: GestureAction) => void;
 }
@@ -157,6 +159,7 @@ export function JarvisHud({
   cameraStream = null,
   gesturesEnabled = false,
   onToggleGestures,
+  muted = false,
   onGestureAction,
 }: JarvisHudProps) {
   const [boost, setBoost] = useState(false);
@@ -313,6 +316,7 @@ export function JarvisHud({
             >
               <Hand className="size-3" />
               Gestures
+              {muted ? " · off" : ""}
             </button>
             <button
               onClick={onToggleWake}

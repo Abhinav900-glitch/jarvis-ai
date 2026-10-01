@@ -207,12 +207,16 @@ export function UltronOrb({
             <span className="text-amber-400/80">{trackingError}</span>
           ) : status.mode !== "idle" ? (
             <span>
-              {status.mode === "spin" ? "Pinch + move — spinning" : "Two hands — zooming"}
+              {status.mode === "spin"
+                ? "Pinch + move — spinning"
+                : status.mode === "clap"
+                  ? "Clap detected"
+                  : "Open palm — move it closer or further to zoom"}
             </span>
           ) : status.hands > 0 ? (
             <span>{status.gesture.replace("_", " ")}</span>
           ) : (
-            <span>Show a hand · R resets view</span>
+            <span>Open palm to zoom · pinch to spin · clap to switch on</span>
           )}
         </div>
       )}

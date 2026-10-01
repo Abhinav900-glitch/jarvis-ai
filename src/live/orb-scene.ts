@@ -46,11 +46,23 @@ const HOME_POSITION = new THREE.Vector3(0, 0.5, 5.5);
 const MIN_DISTANCE = 0.6;
 const MAX_DISTANCE = 40;
 
-const C_BRIGHT = 0xffaa30;
-const C_MID = 0xdd7700;
-const C_DIM = 0x884400;
-const C_FAINT = 0x553300;
-const C_HOT = 0xffcc66;
+/**
+ * Palette.
+ *
+ * Rainbow, not the original amber: the hue is a function of position on the
+ * orb (and of time), so the sphere reads as a spectrum rather than a single
+ * tinted wireframe. `hueFor` is the only place hue is decided, which is what
+ * keeps the layers related instead of looking like unrelated objects.
+ */
+const BASE_HUE = 0.55;
+const hueFor = (offset: number, sat: number, light: number) =>
+  new THREE.Color().setHSL((BASE_HUE + offset) % 1, sat, light);
+
+const C_BRIGHT = hueFor(0, 0.95, 0.62);
+const C_MID = hueFor(0.02, 0.9, 0.5);
+const C_DIM = hueFor(0.04, 0.85, 0.32);
+const C_FAINT = hueFor(0.06, 0.8, 0.18);
+const C_HOT = hueFor(-0.02, 1, 0.72);
 
 /**
  * Palettes per mood.
@@ -59,11 +71,11 @@ const C_HOT = 0xffcc66;
  * object, just warmer or cooler, or it flickers between identities as the
  * coarse mood estimate moves around.
  */
-const MOOD_TINTS: Record<Mood, { core: number; glow: number }> = {
-  stressed: { core: 0x3f7fd0, glow: 0x1d3f6b },
-  animated: { core: 0xff7a2e, glow: 0xff3300 },
-  tired: { core: 0x7a6a52, glow: 0x2e2a20 },
-  calm: { core: C_HOT, glow: C_MID },
+const MOOD_TINTS: Record<Mood, { core: THREE.Color; glow: number }> = {
+  stressed: { core: hueFor(0.58, 0.8, 0.5), glow: 0x1d3f6b },
+  animated: { core: hueFor(0.02, 0.95, 0.55), glow: 0xff3300 },
+  tired: { core: hueFor(0.1, 0.35, 0.45), glow: 0x2e2a20 },
+  calm: { core: C_HOT, glow: C_MID.getHex() },
 };
 
 interface SpriteDrift {
@@ -164,7 +176,9 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
         vec4 cg = texture2D(tDiffuse, vUv);
         vec4 cb = texture2D(tDiffuse, vUv - dir * offset * 0.5);
         gl_FragColor = vec4(cr.r, cg.g * 1.05, cb.b * 0.6, 1.0) * flicker;
-        gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.15, 0.85, 0.55), 0.3);
+        // Only a touch of grading. The original pushed hard toward amber,
+        // which would flatten a rainbow palette back to one hue.
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.04, 0.99, 1.06), 0.3);
       }
     `,
   });
@@ -179,7 +193,7 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
   controls.enablePan = false;
 
   // --- Geometry helpers ------------------------------------------------
-  const lineMat = (color: number, opacity = 1) =>
+  const lineMat = (color: THREE.ColorRepresentation, opacity = 1) =>
     new THREE.LineBasicMaterial({
       color,
       transparent: true,
@@ -224,21 +238,29 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
   // --- Layer 1: outer wireframe shell ---------------------------------
   const outerShell = new THREE.Group();
   for (let i = -15; i <= 15; i++) {
-    const lat = (i / 15) * (Math.PI / 2) * 0.95;
+    const t = i / 15;
+    const lat = t * (Math.PI / 2) * 0.95;
+    // Hue sweeps pole to pole, so the sphere reads as a spectrum from any
+    // angle rather than as one tinted cage.
+    const col = hueFor(t * 0.85, 0.92, 0.55);
     outerShell.add(
       new THREE.Line(
         latRing(R1, lat),
-        lineMat(i % 3 === 0 ? C_MID : C_FAINT, i % 3 === 0 ? 0.5 : 0.12),
+        lineMat(i % 3 === 0 ? col : C_FAINT, i % 3 === 0 ? 0.5 : 0.12),
       ),
     );
   }
   for (let i = 0; i < 24; i++) {
     const lon = (i / 24) * Math.PI * 2;
     const isMajor = i % 6 === 0;
+    // Meridians cycle hue with longitude instead, crossing the latitudes.
     outerShell.add(
       new THREE.Line(
         meridian(R1, lon),
-        lineMat(isMajor ? C_MID : C_FAINT, isMajor ? 0.6 : 0.1),
+        lineMat(
+          isMajor ? hueFor((i / 24) * 0.7, 0.9, 0.55) : C_FAINT,
+          isMajor ? 0.6 : 0.1,
+        ),
       ),
     );
   }
@@ -452,7 +474,13 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
     if (!ctx) return null;
     ctx.font = "bold 14px Courier New";
     const alpha = 0.35 + Math.random() * 0.55;
-    ctx.fillStyle = `rgba(255, ${(130 + Math.random() * 80) | 0}, ${(20 + Math.random() * 30) | 0}, ${alpha})`;
+    // Each snippet gets its own hue, so the drifting text is a full spread of
+    // the spectrum rather than a field of identical amber.
+    const tint = hueFor(Math.random(), 0.95, 0.62);
+    const r = Math.round(tint.r * 255);
+    const g = Math.round(tint.g * 255);
+    const b = Math.round(tint.b * 255);
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(text, 128, 16);
@@ -574,13 +602,26 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
   const dCtx = dotC.getContext("2d");
   if (dCtx) {
     const grad = dCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
-    grad.addColorStop(0, "rgba(255,170,48,1)");
-    grad.addColorStop(0.2, "rgba(255,120,20,0.6)");
-    grad.addColorStop(0.5, "rgba(200,80,0,0.15)");
-    grad.addColorStop(1, "rgba(100,40,0,0)");
+    grad.addColorStop(0, "rgba(255,255,255,1)");
+    grad.addColorStop(0.2, "rgba(255,255,255,0.6)");
+    grad.addColorStop(0.5, "rgba(255,255,255,0.15)");
+    grad.addColorStop(1, "rgba(255,255,255,0)");
     dCtx.fillStyle = grad;
     dCtx.fillRect(0, 0, 64, 64);
   }
+  // Per-dust hue, so the halo carries the spectrum too. The sprite is white
+  // and the colour comes from the vertex attribute.
+  const dustColors = new Float32Array(B.dust * 3);
+  for (let i = 0; i < B.dust; i++) {
+    const c = hueFor(Math.random(), 0.9, 0.6);
+    dustColors[i * 3] = c.r;
+    dustColors[i * 3 + 1] = c.g;
+    dustColors[i * 3 + 2] = c.b;
+  }
+  dustGeo.setAttribute(
+    "color",
+    new THREE.Float32BufferAttribute(dustColors, 3),
+  );
   const dustPoints = new THREE.Points(
     dustGeo,
     new THREE.PointsMaterial({
@@ -591,7 +632,7 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       sizeAttenuation: true,
-      color: C_BRIGHT,
+      vertexColors: true,
     }),
   );
   orbGroup.add(dustPoints);
@@ -685,7 +726,7 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
 
   const setMood = (mood: Mood | null) => {
     const tint = MOOD_TINTS[mood ?? "calm"];
-    tintTarget.setHex(tint.core);
+    tintTarget.copy(tint.core);
     glowSphereMat.color.setHex(tint.glow);
   };
 

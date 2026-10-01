@@ -25,7 +25,9 @@ export type Gesture =
   | "pinch"
   | "point"
   | "peace"
-  | "thumbs_up";
+  | "thumbs_up"
+  /** Two hands meeting — a deliberate, attention-getting "switch on". */
+  | "clap";
 
 export type GestureSource = "hand" | "touch";
 
@@ -37,7 +39,9 @@ export type GestureAction =
   | "pause_listening"
   | "resume_listening"
   | "new_chat"
-  | "cycle_persona";
+  | "cycle_persona"
+  /** Clap — flip the mic on or off. */
+  | "toggle_listening";
 
 export interface GestureBinding {
   gesture: Gesture;
@@ -53,22 +57,17 @@ export interface GestureBinding {
  * with ordinary tapping on the transcript underneath.
  */
 export const HAND_BINDINGS: readonly GestureBinding[] = [
-  // Interrupting is the most valuable thing a gesture can do, so it gets the
-  // easiest gesture: a raised open palm is both the most reliable pose to
-  // detect and the clearest "stop" signal.
-  { gesture: "open_palm", action: "interrupt", label: "Interrupt Jarvis" },
-  // A pinch is a deliberate, slow-to-make shape, which makes it a good "commit"
-  // gesture for sending rather than something that fires on a passing hand.
-  { gesture: "pinch", action: "send", label: "Send what I said" },
-  { gesture: "fist", action: "pause_listening", label: "Pause listening" },
-  { gesture: "peace", action: "resume_listening", label: "Resume listening" },
+  // A clap is the least ambiguous signal a person can make and cannot be made
+  // by accident while gesturing at the orb, so it gets the simplest meaning.
+  { gesture: "clap", action: "toggle_listening", label: "Clap: switch Jarvis on or off" },
   { gesture: "thumbs_up", action: "new_chat", label: "Start a new chat" },
   { gesture: "point", action: "cycle_persona", label: "Switch persona" },
+  { gesture: "fist", action: "pause_listening", label: "Pause listening" },
+  { gesture: "peace", action: "resume_listening", label: "Resume listening" },
 ];
 
 export const TOUCH_BINDINGS: readonly GestureBinding[] = [
-  { gesture: "open_palm", action: "interrupt", label: "Two-finger tap: interrupt" },
-  { gesture: "pinch", action: "send", label: "Pinch: send" },
+  { gesture: "clap", action: "toggle_listening", label: "Two-finger tap: switch Jarvis on or off" },
   { gesture: "thumbs_up", action: "new_chat", label: "Long press: new chat" },
   { gesture: "peace", action: "resume_listening", label: "Swipe up: resume" },
   { gesture: "fist", action: "pause_listening", label: "Swipe down: pause" },
@@ -222,4 +221,26 @@ export function classifyHand(
   if (thumbExtended) return "thumbs_up";
 
   return "idle";
+}
+
+/**
+ * Palm size in normalised frame units.
+ *
+ * Drives the "hold your palm up and bring it closer or further to zoom"
+ * control. Both dimensions are averaged because either alone is noisy: palm
+ * width swings with the wrist, and palm length foreshortens when the hand
+ * tilts away from the camera.
+ */
+export function palmSpan(
+  landmarks: Array<{ x: number; y: number; z: number }>,
+): number {
+  const width = Math.hypot(
+    landmarks[5].x - landmarks[17].x,
+    landmarks[5].y - landmarks[17].y,
+  );
+  const length = Math.hypot(
+    landmarks[0].x - landmarks[9].x,
+    landmarks[0].y - landmarks[9].y,
+  );
+  return (width + length) / 2;
 }

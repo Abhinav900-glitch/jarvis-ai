@@ -19,7 +19,7 @@ import {
   HandLandmarker,
   type NormalizedLandmark,
 } from "@mediapipe/tasks-vision";
-import { classifyHand, type Gesture } from "@/lib/gesture-actions";
+import { classifyHand, palmSpan, type Gesture } from "@/lib/gesture-actions";
 
 const WASM_CDN =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm";
@@ -38,7 +38,20 @@ const PINCH_OFF = 0.45;
 const ROTATE_SPEED = 5.0;
 const SMOOTHING = 0.4;
 
-export type GestureMode = "idle" | "spin" | "zoom";
+/**
+ * Clap detection.
+ *
+ * A clap is not a pose, it is an event, so it is found from the SHAPE of the
+ * gap between two hands over time rather than from landmarks alone: the hands
+ * must start apart, close past CLOSE_RATIO of that gap, and do it fast. Requiring
+ * all three is what stops two hands resting near each other from firing it
+ * continuously.
+ */
+const CLOSE_RATIO = 0.55;
+const CLAP_WINDOW_MS = 300;
+const CLAP_COOLDOWN_MS = 700;
+
+export type GestureMode = "idle" | "zoom" | "spin" | "clap";
 
 export interface TrackerStatus {
   hands: number;
@@ -62,6 +75,8 @@ interface Point {
 interface HandState {
   pinching: boolean;
   grab: Point;
+  /** Smoothed palm size, for the distance-to-zoom control. */
+  span: number;
 }
 
 const dist2d = (a: { x: number; y: number }, b: { x: number; y: number }) =>
@@ -80,6 +95,13 @@ export class HandTracker {
   private prevSpinGrab: Point | null = null;
   private prevZoomDist: number | null = null;
   private lastStatus: TrackerStatus = { hands: 0, mode: "idle", gesture: "idle" };
+  /** Previous gap between the two hands, for clap detection. */
+  private prevHandGap: number | null = null;
+  /** Largest gap seen recently, the baseline a clap closes. */
+  private clapBaseline = 0;
+  /** When the hands were last seen open, in ms. */
+  private lastOpenAt = 0;
+  private lastClapAt = 0;
   /** True when we opened the camera ourselves and must therefore close it. */
   private ownsStream = false;
 
@@ -161,6 +183,10 @@ export class HandTracker {
     this.prevMode = "idle";
     this.prevSpinGrab = null;
     this.prevZoomDist = null;
+    this.prevHandGap = null;
+    this.clapBaseline = 0;
+    this.lastOpenAt = 0;
+    this.lastClapAt = 0;
     const ctx = this.overlay?.getContext("2d");
     if (ctx && this.overlay) {
       ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
@@ -187,6 +213,7 @@ export class HandTracker {
 
   private processHands(landmarks: NormalizedLandmark[][], labels: string[]): void {
     const pinchedGrabs: Point[] = [];
+    const hands: Array<{ state: HandState; label: string }> = [];
     const seen = new Set<string>();
     let primary: NormalizedLandmark[] | null = null;
 
@@ -211,7 +238,7 @@ export class HandTracker {
 
       let state = this.handStates.get(label);
       if (!state) {
-        state = { pinching: false, grab: raw };
+        state = { pinching: false, grab: raw, span: palmSpan(lm) };
         this.handStates.set(label, state);
       }
 
@@ -222,6 +249,10 @@ export class HandTracker {
         x: state.grab.x + (raw.x - state.grab.x) * SMOOTHING,
         y: state.grab.y + (raw.y - state.grab.y) * SMOOTHING,
       };
+      // Palm size is smoothed harder than the grab point: a 2% frame-to-frame
+      // wobble is enough to make the zoom creep if it is not.
+      state.span += (palmSpan(lm) - state.span) * 0.12;
+      hands.push({ state, label });
       if (state.pinching) pinchedGrabs.push(state.grab);
     });
 
@@ -229,11 +260,54 @@ export class HandTracker {
       if (!seen.has(key)) this.handStates.delete(key);
     }
 
-    const mode: GestureMode =
-      pinchedGrabs.length >= 2 ? "zoom" : pinchedGrabs.length === 1 ? "spin" : "idle";
+    const now = performance.now();
+    let clapped = false;
 
-    // Reset reference points on any mode change, or the first frame after a
-    // switch emits a huge jump as a "delta".
+    // --- Clap: two hands closing fast ------------------------------------
+    // Measured between the two grabs, which is stable regardless of hand size.
+    const gap =
+      hands.length === 2
+        ? Math.hypot(
+            hands[0].state.grab.x - hands[1].state.grab.x,
+            hands[0].state.grab.y - hands[1].state.grab.y,
+          )
+        : null;
+
+    if (gap === null) {
+      this.prevHandGap = null;
+      this.clapBaseline = 0;
+      this.lastOpenAt = 0;
+    } else {
+      if (gap > this.clapBaseline) this.clapBaseline = gap;
+      // The window must be measured from the last frame the hands were OPEN,
+      // not from when they first opened. Stamping it on the first separating
+      // frame means holding your hands apart for a second leaves the stamp
+      // stale, and the next real clap is then rejected as "too slow".
+      if (this.clapBaseline > 0.01 && gap > this.clapBaseline * 0.85) {
+        this.lastOpenAt = now;
+      }
+      if (
+        this.clapBaseline > 0.01 &&
+        gap < this.clapBaseline * CLOSE_RATIO &&
+        this.lastOpenAt > 0 &&
+        now - this.lastOpenAt < CLAP_WINDOW_MS &&
+        now - this.lastClapAt > CLAP_COOLDOWN_MS
+      ) {
+        clapped = true;
+        this.lastClapAt = now;
+        // Re-baseline immediately, or hands resting together re-fire it.
+        this.clapBaseline = gap;
+        this.lastOpenAt = 0;
+      }
+      this.prevHandGap = gap;
+    }
+
+    // --- Mode: clap > pinch-to-spin > open-palm-to-zoom -------------------
+    let mode: GestureMode = "idle";
+    if (clapped) mode = "clap";
+    else if (pinchedGrabs.length >= 1) mode = "spin";
+    else if (hands.length >= 1) mode = "zoom";
+
     if (mode !== this.prevMode) {
       this.prevSpinGrab = null;
       this.prevZoomDist = null;
@@ -251,22 +325,24 @@ export class HandTracker {
       }
       this.prevSpinGrab = grab;
     } else if (mode === "zoom") {
-      const d = Math.hypot(
-        pinchedGrabs[0].x - pinchedGrabs[1].x,
-        pinchedGrabs[0].y - pinchedGrabs[1].y,
-      );
-      if (this.prevZoomDist && d > 1e-4) {
-        // Hands apart -> factor < 1 -> camera moves closer.
-        const factor = Math.min(1.18, Math.max(0.85, this.prevZoomDist / d));
-        this.callbacks.onZoom(factor);
+      // Palm closer to the camera reads as a larger palm, so a bigger span
+      // means "come closer" and zooms IN.
+      const span = hands[0].state.span;
+      if (this.prevZoomDist && this.prevZoomDist > 1e-4 && span > 1e-4) {
+        const factor = Math.min(1.06, Math.max(0.94, this.prevZoomDist / span));
+        if (Math.abs(factor - 1) > 1e-4) this.callbacks.onZoom(factor);
       }
-      this.prevZoomDist = d;
+      this.prevZoomDist = span;
     }
 
-    // A pinch is already spoken for by spin/zoom, so it never becomes an
-    // action pose — otherwise dragging the orb would fire "send" repeatedly.
-    const gesture: Gesture =
-      mode === "idle" && primary ? classifyHand(primary) : "idle";
+    // A pinch is already spoken for by spin, and a clap is its own event, so
+    // neither becomes an action pose — dragging the orb would otherwise fire
+    // actions continuously.
+    const gesture: Gesture = clapped
+      ? "clap"
+      : mode === "idle" && primary
+        ? classifyHand(primary)
+        : "idle";
 
     this.emitStatus({ hands: landmarks.length, mode, gesture });
   }

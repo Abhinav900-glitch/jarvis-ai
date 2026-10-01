@@ -1049,6 +1049,11 @@ export default function Dashboard() {
         case "interrupt":
           live.skipSpeaking();
           break;
+        case "toggle_listening":
+          // A clap is the one gesture that works with no touching at all.
+          live.toggleMute();
+          toast.success(live.muted ? "Jarvis is switched off." : "Jarvis is listening.");
+          break;
         case "new_chat":
           setActiveId(null);
           break;
@@ -4486,6 +4491,7 @@ export default function Dashboard() {
         cameraStream={live.cameraStream}
         gesturesEnabled={orbGestures}
         onToggleGestures={() => setOrbGestures((v) => !v)}
+        muted={live.muted}
         onGestureAction={handleOrbGesture}
         wakeGated={wakeGate}
         onToggleWake={() => setWakeGate((v) => !v)}
