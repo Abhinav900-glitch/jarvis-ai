@@ -4453,6 +4453,7 @@ export default function Dashboard() {
         level={live.level}
         transcript={liveTranscript}
         language={getCountry(countryCode).name}
+        mood={live.mood}
         wakeGated={wakeGate}
         onToggleWake={() => setWakeGate((v) => !v)}
         onStop={() => {

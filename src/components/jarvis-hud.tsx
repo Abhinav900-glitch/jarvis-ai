@@ -16,6 +16,7 @@ import { Mic, MicOff, SkipForward, X, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { WAKE_PHRASE } from "@/lib/wake-word";
+import type { Mood } from "@/lib/voice-mood";
 
 export type HudPhase = "listening" | "processing" | "speaking" | "idle";
 
@@ -33,6 +34,8 @@ export interface JarvisHudProps {
   transcript: LiveTurn[];
   /** Selected country/language name for the HUD readout */
   language: string;
+  /** Coarse delivery read of the user's last turn, or null if unmeasurable. */
+  mood?: Mood | null;
   /** When true, turns that don't open with the wake phrase are ignored */
   wakeGated: boolean;
   onToggleWake: () => void;
@@ -46,6 +49,18 @@ const STATUS_LABELS: Record<HudPhase, string> = {
   processing: "Thinking…",
   speaking: "Speaking…",
   idle: "Ready when you are",
+};
+
+/**
+ * What the mood detector heard, phrased as an observation rather than a
+ * diagnosis. It is a coarse prosodic read, so the HUD says what it noticed
+ * ("you sound tense") instead of claiming to know a feeling.
+ */
+const MOOD_LABELS: Record<Mood, string> = {
+  stressed: "you sound tense",
+  animated: "you sound animated",
+  tired: "you sound tired",
+  calm: "you sound settled",
 };
 
 const STATUS_HINTS: Record<HudPhase, string> = {
@@ -121,6 +136,7 @@ export function JarvisHud({
   level,
   transcript,
   language,
+  mood,
   wakeGated,
   onToggleWake,
   onStop,
@@ -152,6 +168,15 @@ export function JarvisHud({
       <div className="pointer-events-none absolute top-6 left-0 right-0 text-center text-[11px] tracking-[0.28em] text-[#9ea6c5] uppercase">
         <b className="font-semibold text-[#e9eaff]">JARVIS</b> &nbsp;·&nbsp;{" "}
         {language}
+        {mood ? (
+          <>
+            {" "}
+            &nbsp;·&nbsp;{" "}
+            <span className="normal-case tracking-normal text-[#7f88ad]">
+              {MOOD_LABELS[mood]}
+            </span>
+          </>
+        ) : null}
       </div>
 
       {/* Close button */}

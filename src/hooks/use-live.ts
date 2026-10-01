@@ -42,6 +42,8 @@ export interface LiveMode {
   processing: boolean;
   /** Live mic level 0..1 — drives the orb pulse */
   level: number;
+  /** Coarse delivery read of the user's last turn, or null if unmeasurable. */
+  mood: Mood | null;
   error: string | null;
   start: () => void;
   stop: () => void;
@@ -58,6 +60,25 @@ export interface LiveMode {
 export type LiveTurnHandler = (audio: Blob, countryCode: string) => Promise<string>;
 
 const BARGE_IN_HOLD_MS = 350; // sustained voice needed to interrupt Jarvis
+
+/**
+ * How the browser's own voice should carry a detected mood.
+ *
+ * This is the fallback path, so it cannot act — only pace and pitch. The
+ * choices deliberately answer the mood rather than mirror it: someone who
+ * sounds wound up gets a slower, lower, steadier delivery, because matching
+ * their agitation back at them reads as mockery.
+ */
+const BROWSER_DELIVERY: Record<Mood, { rate: number; pitch: number }> = {
+  stressed: { rate: 0.92, pitch: 0.94 },
+  animated: { rate: 1.05, pitch: 1.08 },
+  tired: { rate: 0.9, pitch: 0.98 },
+  calm: { rate: 1, pitch: 1 },
+};
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
 
 // --- Turn endpointing -------------------------------------------------------
 // This is what makes live mode behave like a ChatGPT / Gemini voice call: the
@@ -101,6 +122,9 @@ export function useLiveMode(
   const [processing, setProcessing] = useState(false);
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Mirrors moodRef for the UI. A ref alone would not re-render, so the live
+  // HUD could never show what it heard.
+  const [mood, setMood] = useState<Mood | null>(null);
 
   // "Latest value" refs. These are read from long-lived callbacks (mic
   // timers, media event handlers) that must not be re-created on every render,
@@ -343,8 +367,9 @@ export function useLiveMode(
           // on both sides. Trimming it cuts upload time and stops Whisper
           // hearing a silent lead-in as an invitation to hallucinate; the same
           // decode yields a rough read of how the user sounded.
-          const { trimmed, mood } = await prepareVoiceClip(blob);
-          moodRef.current = mood;
+          const { trimmed, mood: heard } = await prepareVoiceClip(blob);
+          moodRef.current = heard;
+          setMood(heard);
           await onTurnRef.current(trimmed, countryRef.current);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Transcription failed.");
@@ -435,7 +460,14 @@ export function useLiveMode(
         // Honour the pace the user picked in the composer. The server TTS
         // already respects it, so hardcoding a rate here made the fallback
         // voice ignore their choice.
-        u.rate = voicePrefRef.current?.pace ?? 1.05;
+        const pace = voicePrefRef.current?.pace ?? 1.05;
+        const delivery = moodRef.current ? BROWSER_DELIVERY[moodRef.current] : undefined;
+        u.rate = clamp(pace * (delivery?.rate ?? 1), 0.5, 2);
+        // A synthesiser can only gesture at emotion through pitch and pace, but
+        // that is still far better than reading every mood in the same flat
+        // tone — and it is the only channel left when the server chain falls
+        // through to the browser.
+        u.pitch = clamp(delivery?.pitch ?? 1, 0.5, 2);
         return u;
       });
       utterances.forEach((u, i) => {
@@ -732,6 +764,7 @@ export function useLiveMode(
     processing,
     level,
     error,
+    mood,
     start,
     stop,
     skipSpeaking,
