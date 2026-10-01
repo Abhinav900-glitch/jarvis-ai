@@ -76,6 +76,7 @@ import { useVoicePlayer, useVoiceRecorder } from "@/hooks/use-voice";
 import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
+import { findYouTubeLinks } from "@/lib/youtube";
 import { stripWakeWord } from "@/lib/wake-word";
 import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
@@ -515,6 +516,7 @@ export default function Dashboard() {
   const getWorldTimeAction = useAction(api.ai.getWorldTime);
   const getCurrencyRateAction = useAction(api.ai.getCurrencyRate);
   const getWeatherAction = useAction(api.ai.getWeather);
+  const getVideoAction = useAction(api.youtube.getVideo);
   const detectWeatherAction = useAction(api.ai.detectWeatherQuery);
   const indexMessagesAction = useAction(api.rag.indexMessages);
   const getCountryInfoAction = useAction(api.ai.getCountryInfo);
@@ -1295,6 +1297,77 @@ export default function Dashboard() {
   };
 
   // ---- Natural-language weather: store user msg, fetch data, AI narrates ----
+  /**
+   * Answer a turn that contains a YouTube link.
+   *
+   * The transcript is fetched first and handed to the model as reference data,
+   * so the reply is based on what was actually said rather than on the title.
+   * When the transcript cannot be read the model is told so explicitly and
+   * asked to say what it does and does not know, which is the only safe
+   * response when the content itself is unavailable.
+   */
+  const runYouTubeReply = async (url: string, originalText: string) => {
+    setSending(true);
+    setAssistantError(null);
+    setPanelNlp(null);
+    setPanelNews(null);
+    setPanelVoice(null);
+    if (recorder.recording) recorder.stop();
+    setInput("");
+
+    try {
+      let sessionId: Id<"chatSessions">;
+      let history: { role: string; content: string }[] = [];
+      if (!activeId) {
+        const { sessionId: sid } = await startWithMessage({ content: originalText });
+        sessionId = sid;
+        setActiveId(sid);
+      } else {
+        sessionId = activeId;
+        await appendMessage({ sessionId, role: "user", content: originalText });
+        history = (messages ?? []).slice(-12).map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+      }
+
+      const video = await getVideoAction({ url });
+
+      const instruction = video.transcriptUnavailable
+        ? `The user shared this YouTube video. You could not read its transcript, so ` +
+          `you have only the title and channel below. Tell them what you can: the video's ` +
+          `subject from its title, and that you could not read or watch it. Be brief and ` +
+          `honest about the limit. Do not guess at the content, and do not summarise ` +
+          `something you have not seen.\n\n${video.context}`
+        : `The user shared this YouTube video. Read the transcript and respond to what they ` +
+          `actually asked, drawing on what was said in the video. If they asked a specific ` +
+          `question, answer it from the transcript. Otherwise react to the content the way ` +
+          `a person who just watched it would — comment on the substance, not on the fact ` +
+          `that you were given a transcript. Cite a timestamp when you refer to a specific ` +
+          `moment. If the transcript was cut off, do not claim to know how the video ends.\n\n${video.context}`;
+
+      const narration = await askAction({
+        prompt: `The user said: "${originalText}"\n\n${instruction}`,
+        history,
+      });
+
+      await appendMessage({
+        sessionId,
+        role: "assistant",
+        content: narration.text,
+        model: narration.model,
+        usedFallback: narration.usedFallback,
+        usedSearch: false,
+      });
+    } catch (err) {
+      setAssistantError(
+        err instanceof Error ? err.message : "Could not read that video.",
+      );
+    } finally {
+      setSending(false);
+    }
+  };
+
   const runWeatherReply = async (city: string, originalText: string) => {
     setSending(true);
     setAssistantError(null);
@@ -1533,6 +1606,18 @@ export default function Dashboard() {
       if (imgIntent?.[1]) {
         const prompt = imgIntent[1].replace(/[.?!]+$/, "").trim();
         await runImageGenerationMessage(prompt, text);
+        return;
+      }
+    }
+
+    // A YouTube link in the message. Placed after the attachment and sound
+    // handlers so those keep priority when a message contains more than one
+    // thing, and before the generic chat path so the transcript reaches the
+    // model instead of only the bare link.
+    if (!editingId && text && pendingImages.length === 0 && pendingFiles.length === 0 && !deepResearch) {
+      const videoLinks = findYouTubeLinks(text);
+      if (videoLinks.length > 0) {
+        await runYouTubeReply(videoLinks[0].url, text);
         return;
       }
     }
