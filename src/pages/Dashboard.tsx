@@ -46,8 +46,11 @@ import {
   Home,
   Lightbulb,
   Bookmark,
+  AlarmClock,
+  GitBranch,
+  Sparkles,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { JarvisIcon } from "@/components/jarvis-icon";
 import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud";
@@ -97,6 +100,22 @@ import { ExportPanel } from "@/components/export-panel";
 import { useCamera } from "@/hooks/use-camera";
 import { useLiveTranslation } from "@/hooks/use-live-translation";
 import { toast } from "sonner";
+import {
+  CommandPalette,
+  type PaletteCommand,
+} from "@/components/command-palette";
+import { PersonaPanel } from "@/components/persona-panel";
+import { TasksPanel } from "@/components/tasks-panel";
+import { ProjectSidebar } from "@/components/project-sidebar";
+import { BranchBar, BranchMenu } from "@/components/branch-bar";
+
+/** An uploaded document waiting on the composer, not yet sent. */
+interface PendingFile {
+  url: string;
+  name: string;
+  type: string;
+  size: number;
+}
 
 // ---------------------------------------------------------------------------
 // Source types
@@ -416,9 +435,22 @@ export default function Dashboard() {
 
   const sessions = useQuery(api.chats.listSessions) ?? [];
   const [activeId, setActiveId] = useState<Id<"chatSessions"> | null>(null);
+  // Which line of the conversation is on screen. Null is the main line, and
+  // the only line for every chat that has never been edited or regenerated.
+  const [activeBranchId, setActiveBranchId] = useState<Id<"chatBranches"> | null>(null);
+  const [showPalette, setShowPalette] = useState(false);
+  const [showPersona, setShowPersona] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
   const messages = useQuery(
     api.chats.listMessages,
-    activeId ? { sessionId: activeId } : "skip",
+    activeId ? { sessionId: activeId, branchId: activeBranchId } : "skip",
+  );
+
+  // A chat can pin a persona of its own; it overrides the user's default for
+  // every reply in that conversation.
+  const activePersonaId = useMemo(
+    () => sessions.find((s) => s._id === activeId)?.personaId ?? undefined,
+    [sessions, activeId],
   );
 
   const startWithMessage = useMutation(api.chats.startWithMessage);
@@ -487,12 +519,9 @@ export default function Dashboard() {
   const [pendingImages, setPendingImages] = useState<
     { url: string; publicId: string; provider?: string }[]
   >([]);
-  const [pendingFile, setPendingFile] = useState<{
-    url: string;
-    name: string;
-    type: string;
-    size: number;
-  } | null>(null);
+  // Several documents can ride along with one message; the old single slot
+  // silently dropped everything but the first.
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [editingId, setEditingId] = useState<Id<"chatMessages"> | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -570,6 +599,10 @@ export default function Dashboard() {
   const extractMemory = useAction(api.memory.extract);
 
   const editMessage = useMutation(api.chats.editMessage);
+  // Editing and regenerating fork rather than delete; the original line of the
+  // conversation stays reachable from the branch bar.
+  const forkBranch = useMutation(api.branches.forkBranch);
+  const createSessionMutation = useMutation(api.chats.createSession);
   const patchMessageContent = useMutation(api.chats.patchMessageContent);
   // Streaming is on by default: for a long answer, seeing the first sentence
   // immediately is worth far more than the handful of ms it costs.
@@ -649,31 +682,28 @@ export default function Dashboard() {
       const results = await Promise.all(acceptable.map((f) => uploadFile(f)));
       const images: { url: string; publicId: string; provider?: string }[] =
         [];
-      let firstFile: {
-        url: string;
-        name: string;
-        type: string;
-        size: number;
-      } | null = null;
+      const documents: PendingFile[] = [];
 
       results.forEach((r, i) => {
         if (!r) return;
         if (r.resourceType === "image") {
           images.push({ url: r.url, publicId: r.publicId });
-        } else if (!firstFile) {
-          firstFile = {
+        } else {
+          documents.push({
             url: r.url,
             name: acceptable[i].name,
             type: acceptable[i].type || r.resourceType,
             size: acceptable[i].size,
-          };
+          });
         }
       });
 
       if (images.length > 0) {
         setPendingImages((prev) => [...prev, ...images]);
       }
-      if (firstFile) setPendingFile(firstFile);
+      if (documents.length > 0) {
+        setPendingFiles((prev) => [...prev, ...documents]);
+      }
     } finally {
       setUploading(false);
       setUploadCount(0);
@@ -1029,8 +1059,9 @@ export default function Dashboard() {
     setPanelNews(null);
     setPanelVoice(null);
     setPendingImages([]);
-    setPendingFile(null);
+    setPendingFiles([]);
     setEditingId(null);
+    setActiveBranchId(null);
     setRegionResult(null);
     setShowCalculator(false);
     setFollowUps([]);
@@ -1039,13 +1070,13 @@ export default function Dashboard() {
   }, [activeId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Keyboard shortcuts: Ctrl/Cmd+K starts a new chat, "/" focuses the input
-  // (when not already typing).
+  // Keyboard shortcuts: Ctrl/Cmd+K opens the command palette, "/" focuses the
+  // input (when not already typing).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setActiveId(null);
+        setShowPalette((v) => !v);
         setSidebarOpen(false);
         return;
       }
@@ -1091,24 +1122,79 @@ export default function Dashboard() {
     } catch { /* ignore */ }
   }, [regionTimezone]);
 
-  // Global keyboard shortcuts
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-        e.preventDefault();
-        setShowCalculator((v) => !v);
-        setRegionResult(null);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
-
-  // Edit a user message: load into input, delete all later messages
+  // Edit a user message: load it into the composer. The send that follows forks
+  // the conversation at this message instead of deleting everything after it.
   const handleEditMessage = async (msgId: Id<"chatMessages">, content: string) => {
     setEditingId(msgId);
     setInput(content);
     inputRef.current?.focus();
+  };
+
+  /**
+   * Regenerate a reply.
+   *
+   * Forks just before the reply being replaced and asks again on the new
+   * branch, so a worse regeneration costs nothing: the original answer is still
+   * there, one click away in the branch bar.
+   */
+  const handleRegenerate = async (assistantId: Id<"chatMessages">) => {
+    if (!activeId || sending) return;
+    const list = messages ?? [];
+    const index = list.findIndex((m) => m._id === assistantId);
+    if (index < 0) return;
+    const prompt = [...list.slice(0, index)].reverse().find((m) => m.role === "user");
+    if (!prompt) return;
+
+    const history = list
+      .slice(0, index)
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    setSending(true);
+    setAssistantError(null);
+    try {
+      const branchId = await forkBranch({
+        sessionId: activeId,
+        atMessageId: prompt._id,
+      });
+      setActiveBranchId(branchId);
+      const answer = await runAsk(prompt.content, history);
+      await appendMessage({
+        sessionId: activeId,
+        branchId,
+        role: "assistant",
+        content: answer.text,
+        model: answer.model,
+        usedFallback: answer.usedFallback,
+        usedSearch: false,
+      });
+    } catch (err) {
+      setAssistantError(
+        err instanceof Error ? err.message : "Regeneration failed.",
+      );
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  };
+
+  /** Fork from the newest user message — "try a different direction". */
+  const handleForkLatest = async () => {
+    if (!activeId) return;
+    const latestUser = [...(messages ?? [])].reverse().find((m) => m.role === "user");
+    if (!latestUser) return;
+    try {
+      const branchId = await forkBranch({
+        sessionId: activeId,
+        atMessageId: latestUser._id,
+      });
+      setActiveBranchId(branchId);
+      setInput(latestUser.content);
+      inputRef.current?.focus();
+      toast.success("Branched — the original conversation is untouched.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not branch.");
+    }
   };
 
   // ---- Natural-language weather: store user msg, fetch data, AI narrates ----
@@ -1303,7 +1389,7 @@ export default function Dashboard() {
     // A turn is sendable if it has text, an attachment, OR the camera is on
     // and the user wants Jarvis to look at what's in front of them.
     const hasCamera = camera.enabled;
-    if ((!text && pendingImages.length === 0 && !pendingFile && !hasCamera) || sending)
+    if ((!text && pendingImages.length === 0 && pendingFiles.length === 0 && !hasCamera) || sending)
       return;
     if (text.length > 8000) {
       setAssistantError("Message too long — keep it under 8,000 characters.");
@@ -1311,7 +1397,7 @@ export default function Dashboard() {
     }
 
     // PDF attachments route through the document-Q&A flow (extract text + ask)
-    if (pendingFile && /pdf/.test(pendingFile.type)) {
+    if (pendingFiles.some((f) => /pdf/.test(f.type)) && !editingId) {
       setInput("");
       await handlePdfQuestion(text);
       return;
@@ -1322,7 +1408,7 @@ export default function Dashboard() {
     // persona to an empty string would just be a stray instruction.
     const countryPersona = getCountry(countryCode).persona;
     const effectiveText =
-      !text || editingId || deepResearch || pendingImages.length > 0 || pendingFile
+      !text || editingId || deepResearch || pendingImages.length > 0 || pendingFiles.length > 0
         ? text
         : `${text}\n\n[System: ${countryPersona}]`;
 
@@ -1330,13 +1416,13 @@ export default function Dashboard() {
     // answered with the real audio, which is the one thing a text model
     // cannot do for itself.
     const soundCues = findSoundCues(text);
-    if (!editingId && soundCues.length > 0 && !pendingFile) {
+    if (!editingId && soundCues.length > 0 && pendingFiles.length === 0) {
       await runSoundEffectMessage(soundCues, text);
       return;
     }
 
     // Natural-language image generation: "generate an image of..." etc.
-    if (!editingId && text && pendingImages.length === 0 && !pendingFile && !deepResearch) {
+    if (!editingId && text && pendingImages.length === 0 && pendingFiles.length === 0 && !deepResearch) {
       const imgIntent = text.match(
         /^\s*(?:hey\s+|hi\s+|ok(?:ay)?[,\s]+)?(?:jarvis[,\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:gen(?:erate|rate|arate)|create|make|draw|paint|render|show|give)\s+(?:me\s+)?(?:an?|the)??\s*(?:ai\s+)?(?:image|picture|photo|artwork|drawing|painting|illustration|pic)\s*(?:of|showing|with|about|for)?\s*[:]?\s*([\s\S]{3,400})/i,
       );
@@ -1348,7 +1434,7 @@ export default function Dashboard() {
     }
 
     // Natural-language weather: fetch live data directly, no slash command needed
-    if (!editingId && text && pendingImages.length === 0 && !pendingFile) {
+    if (!editingId && text && pendingImages.length === 0 && pendingFiles.length === 0) {
       try {
         const detection = await detectWeatherAction({ message: text });
         if (detection.isWeather && detection.city) {
@@ -1387,16 +1473,25 @@ export default function Dashboard() {
           imagePublicId: pendingImages[0].publicId,
         }
       : undefined;
-    const filePayload = pendingFile
+    const attachments = pendingFiles.map((f) => ({
+      url: f.url,
+      name: f.name,
+      type: f.type,
+      size: f.size,
+    }));
+    // The legacy single-file fields still describe the first document, so rows
+    // written by older builds (and every export) keep rendering.
+    const firstFile = attachments[0];
+    const filePayload = firstFile
       ? {
-          fileUrl: pendingFile.url,
-          fileName: pendingFile.name,
-          fileType: pendingFile.type,
-          fileSize: pendingFile.size,
+          fileUrl: firstFile.url,
+          fileName: firstFile.name,
+          fileType: firstFile.type,
+          fileSize: firstFile.size,
         }
       : undefined;
     setPendingImages([]);
-    setPendingFile(null);
+    setPendingFiles([]);
     setInput("");
 
     // Grab the camera frame once, here, so the streaming and non-streaming
@@ -1418,16 +1513,31 @@ export default function Dashboard() {
       let sessionId: Id<"chatSessions">;
       let history: { role: string; content: string }[] = [];
       let userMsgId: Id<"chatMessages"> | undefined;
+      // Every write in this turn lands on the same line of the conversation.
+      let runBranchId: Id<"chatBranches"> | null = activeBranchId;
 
       if (editingId) {
-        // Edit flow: update the existing message, which also deletes later messages
-        const result = await editMessage({
-          messageId: editingId,
+        // Editing forks. The original conversation survives intact, so changing
+        // two words in a prompt three turns back can never cost the user an
+        // answer they had already read.
+        const baseSessionId =
+          activeId ?? (await createSessionMutation({ title: "New chat" }));
+        if (!activeId) setActiveId(baseSessionId);
+        runBranchId = await forkBranch({
+          sessionId: baseSessionId,
+          atMessageId: editingId,
+        });
+        setActiveBranchId(runBranchId);
+        sessionId = baseSessionId;
+        userMsgId = await appendMessage({
+          sessionId,
+          branchId: runBranchId,
+          role: "user",
           content: messageContent,
           ...imagePayload,
           ...filePayload,
+          attachments,
         });
-        sessionId = result.sessionId;
         setEditingId(null);
         history = (messages ?? [])
           .filter((m) => m._id !== editingId)
@@ -1446,10 +1556,12 @@ export default function Dashboard() {
         sessionId = activeId;
         userMsgId = await appendMessage({
           sessionId,
+          branchId: runBranchId,
           role: "user",
           content: messageContent,
           ...imagePayload,
           ...filePayload,
+          attachments,
         });
         history = (messages ?? []).map((m) => ({
           role: m.role,
@@ -1485,6 +1597,7 @@ export default function Dashboard() {
         answerText = extractFollowUps(answer.text);
         const msgId = await appendMessage({
           sessionId,
+          branchId: runBranchId,
           role: "assistant",
           content: answerText,
           model: answer.model,
@@ -1507,6 +1620,7 @@ export default function Dashboard() {
             effectiveText,
             history,
             allVision && allVision.length > 0 ? allVision : undefined,
+            runBranchId,
           );
           answerText = extractFollowUps(answer.text);
           // The streamed text still carries the SUGGEST trailer — rewrite the
@@ -1538,6 +1652,7 @@ export default function Dashboard() {
           answerText = extractFollowUps(answer.text);
           const msgId = await appendMessage({
             sessionId,
+            branchId: runBranchId,
             role: "assistant",
             content: answerText,
             model: answer.model,
@@ -1609,9 +1724,11 @@ export default function Dashboard() {
     prompt: string,
     history: { role: string; content: string }[],
     imageUrls?: string[],
+    branchId?: Id<"chatBranches"> | null,
   ) => {
     const streamMsgId = await appendMessage({
       sessionId,
+      branchId: branchId ?? null,
       role: "assistant",
       content: "",
     });
@@ -1623,6 +1740,7 @@ export default function Dashboard() {
         messageId: streamMsgId,
         prompt,
         history,
+        personaId: activePersonaId,
         ...(imageUrls && imageUrls.length > 0 ? { imageUrls } : {}),
       });
     } catch (err) {
@@ -1658,7 +1776,12 @@ export default function Dashboard() {
     history: { role: string; content: string }[],
     imageUrls?: string[],
   ) => {
-    return await askAction({ prompt, history, imageUrls });
+    return await askAction({
+      prompt,
+      history,
+      imageUrls,
+      personaId: activePersonaId,
+    });
   };
 
   const runDeepResearch = async (
@@ -1866,12 +1989,15 @@ export default function Dashboard() {
 
   // ---- PDF Q&A: extract text from a PDF and ask Jarvis about it ----
   const handlePdfQuestion = async (question: string) => {
-    if (!pendingFile || pdfBusy) return;
-    const file = pendingFile;
+    if (pdfBusy) return;
+    // Only the first PDF is read this turn; the rest stay on the composer
+    // rather than being quietly discarded.
+    const file = pendingFiles.find((f) => /pdf/.test(f.type));
+    if (!file) return;
     setPdfBusy(true);
     setAssistantError(null);
     const userQuestion = question || "Summarize this document";
-    setPendingFile(null);
+    setPendingFiles((prev) => prev.filter((f) => f !== file));
     try {
       const { text, pages } = await extractPdfTextAction({ url: file.url });
 
@@ -1922,7 +2048,7 @@ export default function Dashboard() {
         usedFallback: answer.usedFallback,
         usedSearch: false,
       });
-      setPendingFile(null);
+      setPendingFiles([]);
     } catch (err) {
       setAssistantError(
         err instanceof Error ? err.message : "PDF analysis failed.",
@@ -2236,43 +2362,11 @@ export default function Dashboard() {
             </Button>
           </div>
           <Separator />
-          <div className="flex-1 overflow-y-auto p-2">
-            {sessions.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-muted-foreground">
-                No chats yet
-              </p>
-            ) : (
-              <ul className="space-y-0.5">
-                {sessions.map((s) => (
-                  <li key={s._id} className="group relative">
-                    <button
-                      onClick={() => {
-                        setActiveId(s._id);
-                        setSidebarOpen(false);
-                      }}
-                      className={`w-full truncate rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
-                        activeId === s._id
-                          ? "bg-accent font-medium"
-                          : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                      }`}
-                    >
-                      {s.title}
-                    </button>
-                    <button
-                      onClick={() => {
-                        void deleteSession({ sessionId: s._id });
-                        if (activeId === s._id) setActiveId(null);
-                      }}
-                      className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                      title="Delete chat"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <ProjectSidebar
+            activeId={activeId}
+            onSelect={(id) => setActiveId(id)}
+            onNewChat={() => setActiveId(null)}
+          />
           <Separator />
           <div className="flex items-center justify-between px-5 py-3 text-xs text-muted-foreground">
             <span className="truncate">
@@ -2323,51 +2417,18 @@ export default function Dashboard() {
                   </button>
                 </div>
                 <Separator />
-                <div className="flex-1 overflow-y-auto p-2">
-                  <Button
-                    variant="ghost"
-                    className="mb-1 w-full justify-start gap-2 text-sm"
-                    onClick={() => {
+                <div className="flex-1 overflow-hidden">
+                  <ProjectSidebar
+                    activeId={activeId}
+                    onSelect={(id) => {
+                      setActiveId(id);
+                      setSidebarOpen(false);
+                    }}
+                    onNewChat={() => {
                       setActiveId(null);
                       setSidebarOpen(false);
                     }}
-                  >
-                    <Plus className="size-4" /> New chat
-                  </Button>
-                  {sessions.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-muted-foreground">
-                      No chats yet
-                    </p>
-                  ) : (
-                    <ul className="space-y-0.5">
-                      {sessions.map((s) => (
-                        <li key={s._id} className="group relative">
-                          <button
-                            onClick={() => {
-                              setActiveId(s._id);
-                              setSidebarOpen(false);
-                            }}
-                            className={`w-full truncate rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
-                              activeId === s._id
-                                ? "bg-accent font-medium"
-                                : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                            }`}
-                          >
-                            {s.title}
-                          </button>
-                          <button
-                            onClick={() => {
-                              void deleteSession({ sessionId: s._id });
-                              if (activeId === s._id) setActiveId(null);
-                            }}
-                            className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                          >
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                  />
                 </div>
                 <Separator />
                 <div className="flex items-center justify-between px-5 py-3 text-xs text-muted-foreground">
@@ -2424,6 +2485,16 @@ export default function Dashboard() {
                 title="New chat"
               >
                 <Plus className="size-4" />
+              </Button>
+
+              {/* Command palette */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Command palette (⌘K)"
+                onClick={() => setShowPalette(true)}
+              >
+                <Search className="size-4" />
               </Button>
 
               {/* Tools menu */}
@@ -2549,6 +2620,20 @@ export default function Dashboard() {
                   <DropdownMenuItem onClick={toggleTheme}>
                     {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
                     {isDark ? "Light mode" : "Dark mode"}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setShowPersona(true)}>
+                    <Sparkles className="size-4" />
+                    How Jarvis works
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowTasks(true)}>
+                    <AlarmClock className="size-4" />
+                    Scheduled tasks
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowPalette(true)}>
+                    <Search className="size-4" />
+                    Command palette
+                    <span className="ml-auto text-[10px] opacity-60">⌘K</span>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleConnectCloudinary} disabled={cloudinaryConnecting || cloudinaryStatus?.connected}>
@@ -2745,6 +2830,14 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="mx-auto max-w-2xl px-6 py-8">
+                {activeId ? (
+                  <BranchBar
+                    sessionId={activeId}
+                    activeBranchId={activeBranchId}
+                    onSelect={(branchId) => setActiveBranchId(branchId)}
+                    onNewBranch={() => void handleForkLatest()}
+                  />
+                ) : null}
                 <ul className="space-y-8">
                   {messages.map((m) => (
                     <li key={m._id}>
@@ -2792,18 +2885,16 @@ export default function Dashboard() {
                         )}
                         {m.role === "assistant" && m._id === lastMsg?._id && !sending && (
                           <button
-                            onClick={() => {
-                              const prevUser = [...(messages ?? [])]
-                                .reverse()
-                                .find((x) => x.role === "user");
-                              if (prevUser) void handleEditMessage(prevUser._id, prevUser.content);
-                            }}
-                            title="Regenerate this reply"
+                            onClick={() => void handleRegenerate(m._id)}
+                            title="Regenerate this reply — the original is kept"
                             className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
                           >
                             <RotateCcw className="size-3" />
                           </button>
                         )}
+                        {m.role === "user" && activeId ? (
+                          <BranchMenu sessionId={activeId} messageId={m._id} />
+                        ) : null}
                         {m.role === "assistant" && (
                           <span className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
                             {m.usedSearch || m.usedFallback ? (
@@ -2896,6 +2987,29 @@ export default function Dashboard() {
                               </div>
                             );
                           })()}
+                          {(m.attachments ?? []).length > 0 ? (
+                            <div className="mb-2 space-y-1.5">
+                              {(m.attachments ?? []).map((att) => (
+                                <a
+                                  key={att.url}
+                                  href={att.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex max-w-xs items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs transition-colors hover:bg-accent"
+                                >
+                                  <FileText className="size-4 shrink-0 text-muted-foreground" />
+                                  <span className="min-w-0 flex-1 truncate font-medium">
+                                    {att.name}
+                                  </span>
+                                  {att.size ? (
+                                    <span className="shrink-0 text-muted-foreground">
+                                      {(att.size / 1024).toFixed(0)} KB
+                                    </span>
+                                  ) : null}
+                                </a>
+                              ))}
+                            </div>
+                          ) : null}
                           {m.fileUrl ? (
                             <a
                               href={m.fileUrl}
@@ -3310,8 +3424,8 @@ export default function Dashboard() {
                   className="hidden"
                   onChange={handleFileInput}
                 />
-                {/* Previews: image thumbnails + file chip */}
-                {pendingImages.length > 0 || pendingFile ? (
+                {/* Previews: image thumbnails + file chips */}
+                {pendingImages.length > 0 || pendingFiles.length > 0 ? (
                   <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
                     {pendingImages.map((img, i) => (
                       <div key={img.url} className="relative inline-block">
@@ -3358,16 +3472,19 @@ export default function Dashboard() {
                         </button>
                       </div>
                     ))}
-                    {pendingFile ? (
-                      <div className="relative inline-flex max-w-[240px] items-center gap-2 rounded-lg border bg-background px-3 py-2">
+                    {pendingFiles.map((file) => (
+                      <div
+                        key={file.url}
+                        className="relative inline-flex max-w-[240px] items-center gap-2 rounded-lg border bg-background px-3 py-2"
+                      >
                         <FileText className="size-4 shrink-0 text-muted-foreground" />
                         <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                          {pendingFile.name}
+                          {file.name}
                         </span>
                         <span className="shrink-0 text-[10px] text-muted-foreground">
-                          {(pendingFile.size / 1024).toFixed(0)} KB
+                          {(file.size / 1024).toFixed(0)} KB
                         </span>
-                        {/pdf/.test(pendingFile.type) ? (
+                        {/pdf/.test(file.type) ? (
                           <button
                             onClick={() => void handlePdfQuestion("")}
                             disabled={pdfBusy}
@@ -3378,13 +3495,18 @@ export default function Dashboard() {
                           </button>
                         ) : null}
                         <button
-                          onClick={() => setPendingFile(null)}
+                          onClick={() =>
+                            setPendingFiles((prev) =>
+                              prev.filter((f) => f.url !== file.url),
+                            )
+                          }
                           className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+                          title="Remove attachment"
                         >
                           <X className="size-3" />
                         </button>
                       </div>
-                    ) : null}
+                    ))}
                   </div>
                 ) : null}
                 {/* URL summarize input */}
@@ -3639,7 +3761,7 @@ export default function Dashboard() {
                     size="icon-sm"
                     onClick={() => void runModeSend()}
                     data-send-button
-                    disabled={(!input.trim() && pendingImages.length === 0 && !pendingFile && !modeNews && !modeAnalyze && !camera.enabled) || sending || panelBusy !== null}
+                    disabled={(!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0 && !modeNews && !modeAnalyze && !camera.enabled) || sending || panelBusy !== null}
                     className="size-7 rounded-lg"
                   >
                     {sending ? (

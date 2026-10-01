@@ -34,20 +34,116 @@ const schema = defineSchema(
 
     // add other tables here
 
-    // Jarvis AI chat sessions
-    chatSessions: defineTable({
+    // Folders that group chats. Deleting one leaves its chats behind, set to
+    // unfiled, because losing a conversation to a tidy-up is never what the
+    // user meant.
+    projects: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      color: v.optional(v.string()),
+      icon: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_created", ["userId", "createdAt"]),
+
+    // Reusable instruction sets. A session can pin one so every reply in that
+    // conversation answers as that persona; the user's own instructions sit
+    // above whichever persona is active.
+    personas: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      /** Appended to the system prompt as extra standing instructions. */
+      instructions: v.string(),
+      /** Emoji shown in the picker. */
+      icon: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId"]),
+
+    // One row per user: the free-form standing instructions ("how Jarvis
+    // should work"), plus which persona is active.
+    userSettings: defineTable({
+      userId: v.id("users"),
+      customInstructions: v.optional(v.string()),
+      activePersonaId: v.optional(v.id("personas")),
+      updatedAt: v.optional(v.number()),
+    }).index("by_user", ["userId"]),
+
+    // Recurring or one-off jobs Jarvis runs on its own: a morning digest, a
+    // nightly backup check, a reminder to stretch. The cron sweeps for due
+    // rows, so the schedule is stored rather than held in memory.
+    scheduledTasks: defineTable({
       userId: v.id("users"),
       title: v.string(),
+      /** The instruction the task runs. */
+      prompt: v.string(),
+      /** Where completed runs are posted. */
+      sessionId: v.optional(v.id("chatSessions")),
+      kind: v.union(
+        v.literal("once"),
+        v.literal("hourly"),
+        v.literal("daily"),
+        v.literal("weekly"),
+      ),
+      /** For "once": the wall-clock time to fire, ms epoch. */
+      runAt: v.optional(v.number()),
+      /** For "daily"/"weekly": minutes past local midnight. */
+      minuteOfDay: v.optional(v.number()),
+      /** For "weekly": 0 = Sunday. */
+      dayOfWeek: v.optional(v.number()),
+      /** IANA zone, so "9am" means 9am where the user is. */
+      timezone: v.optional(v.string()),
+      enabled: v.optional(v.boolean()),
+      lastRunAt: v.optional(v.number()),
+      lastResult: v.optional(v.string()),
       createdAt: v.number(),
       updatedAt: v.number(),
     })
       .index("by_user", ["userId"])
-      .index("by_user_updated", ["userId", "updatedAt"]),
+      .index("by_enabled", ["enabled"]),
+
+    // Jarvis AI chat sessions
+    chatSessions: defineTable({
+      userId: v.id("users"),
+      title: v.string(),
+      projectId: v.optional(v.id("projects")),
+      personaId: v.optional(v.id("personas")),
+      pinned: v.optional(v.boolean()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_updated", ["userId", "updatedAt"])
+      .index("by_project", ["projectId"]),
+
+    // An alternative continuation of a conversation. Editing an old message or
+    // regenerating a reply does not destroy the old path: it forks a branch
+    // that shares the history up to the fork point and then diverges, so the
+    // original is always one click away.
+    chatBranches: defineTable({
+      sessionId: v.id("chatSessions"),
+      userId: v.id("users"),
+      /** The message the fork happened at. */
+      forkedAtMessageId: v.optional(v.id("chatMessages")),
+      /** "main" for the original line of conversation. */
+      name: v.string(),
+      createdAt: v.number(),
+    })
+      .index("by_session", ["sessionId"])
+      .index("by_user", ["userId"]),
 
     // Jarvis AI chat messages
     chatMessages: defineTable({
       sessionId: v.id("chatSessions"),
       userId: v.id("users"),
+      /** The branch this message belongs to; absent means the main line. */
+      branchId: v.optional(v.id("chatBranches")),
+      /**
+       * Position within a set of siblings, so regenerating offers "1 of 3"
+       * rather than silently discarding the reply the user already read.
+       */
+      variantIndex: v.optional(v.number()),
       role: v.union(
         v.literal("user"),
         v.literal("assistant"),
@@ -80,8 +176,26 @@ const schema = defineSchema(
       fileName: v.optional(v.string()),
       fileType: v.optional(v.string()),
       fileSize: v.optional(v.number()),
+      /**
+       * Every attachment on the message, not just the first. `fileUrl` and
+       * friends above stay for the single-file case that predates this.
+       */
+      attachments: v.optional(
+        v.array(
+          v.object({
+            url: v.string(),
+            name: v.string(),
+            type: v.optional(v.string()),
+            size: v.optional(v.number()),
+            /** Extracted text, for documents the model should read. */
+            text: v.optional(v.string()),
+          }),
+        ),
+      ),
       createdAt: v.number(),
-    }).index("by_session", ["sessionId"]),
+    })
+      .index("by_session", ["sessionId"])
+      .index("by_branch", ["branchId"]),
 
     // RAG: embeddings of past chat messages for semantic retrieval.
     // Embeddings use HuggingFace feature-extraction (384-dim all-MiniLM-L6-v2).

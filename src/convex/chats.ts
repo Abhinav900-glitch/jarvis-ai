@@ -3,6 +3,20 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import { getAuthUserId } from "@convex-dev/auth/server";
 import type { Id } from "./_generated/dataModel";
 
+/**
+ * One uploaded file or image on a message. `text` carries extracted content for
+ * documents the model should read rather than just see.
+ */
+const attachmentValidator = v.array(
+  v.object({
+    url: v.string(),
+    name: v.string(),
+    type: v.optional(v.string()),
+    size: v.optional(v.number()),
+    text: v.optional(v.string()),
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -21,7 +35,11 @@ export const listSessions = query({
 });
 
 export const createSession = mutation({
-  args: { title: v.optional(v.string()) },
+  args: {
+    title: v.optional(v.string()),
+    projectId: v.optional(v.id("projects")),
+    personaId: v.optional(v.id("personas")),
+  },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to start a chat.");
@@ -30,6 +48,8 @@ export const createSession = mutation({
     const sessionId = await ctx.db.insert("chatSessions", {
       userId,
       title: args.title ?? "New chat",
+      projectId: args.projectId,
+      personaId: args.personaId,
       createdAt: now,
       updatedAt: now,
     });
@@ -79,7 +99,14 @@ export const deleteSession = mutation({
 // ---------------------------------------------------------------------------
 
 export const listMessages = query({
-  args: { sessionId: v.id("chatSessions") },
+  args: {
+    sessionId: v.id("chatSessions"),
+    /**
+     * Which line of the conversation to show. Omitted (or null) is the main
+     * line, which is every chat written before branching existed.
+     */
+    branchId: v.optional(v.union(v.id("chatBranches"), v.null())),
+  },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) return [];
@@ -87,11 +114,15 @@ export const listMessages = query({
     const session = await ctx.db.get(args.sessionId);
     if (!session || session.userId !== userId) return [];
 
-    return await ctx.db
+    const all = await ctx.db
       .query("chatMessages")
       .withIndex("by_session", (q) => q.eq("sessionId", args.sessionId))
-      .order("asc")
       .collect();
+
+    const branchId = args.branchId ?? null;
+    return all
+      .filter((m) => (m.branchId ?? null) === branchId)
+      .sort((a, b) => a.createdAt - b.createdAt);
   },
 });
 
@@ -126,6 +157,8 @@ export const appendMessage = mutation({
     fileName: v.optional(v.string()),
     fileType: v.optional(v.string()),
     fileSize: v.optional(v.number()),
+    attachments: v.optional(attachmentValidator),
+    branchId: v.optional(v.union(v.id("chatBranches"), v.null())),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -139,6 +172,7 @@ export const appendMessage = mutation({
     const messageId = await ctx.db.insert("chatMessages", {
       sessionId: args.sessionId,
       userId,
+      branchId: args.branchId ?? undefined,
       role: args.role,
       content: args.content,
       model: args.model,
@@ -152,6 +186,7 @@ export const appendMessage = mutation({
       fileName: args.fileName,
       fileType: args.fileType,
       fileSize: args.fileSize,
+      attachments: args.attachments,
       createdAt: Date.now(),
     });
 
@@ -178,6 +213,9 @@ export const startWithMessage = mutation({
     fileName: v.optional(v.string()),
     fileType: v.optional(v.string()),
     fileSize: v.optional(v.number()),
+    attachments: v.optional(attachmentValidator),
+    projectId: v.optional(v.id("projects")),
+    personaId: v.optional(v.id("personas")),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -192,6 +230,8 @@ export const startWithMessage = mutation({
     const sessionId = await ctx.db.insert("chatSessions", {
       userId,
       title,
+      projectId: args.projectId,
+      personaId: args.personaId,
       createdAt: now,
       updatedAt: now,
     });
@@ -208,6 +248,7 @@ export const startWithMessage = mutation({
       fileName: args.fileName,
       fileType: args.fileType,
       fileSize: args.fileSize,
+      attachments: args.attachments,
       createdAt: now,
     });
 

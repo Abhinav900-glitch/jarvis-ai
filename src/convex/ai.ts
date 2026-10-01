@@ -1,7 +1,9 @@
 "use node";
 
 import { v } from "convex/values";
-import { action } from "./_generated/server";
+import type { FunctionReference } from "convex/server";
+import { action, internalAction } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { memoryContextFor } from "./memory";
 import { api, internal } from "./_generated/api";
@@ -183,6 +185,7 @@ function buildUserContent(
 async function callGroq(
   key: string,
   turns: ChatTurn[],
+  systemPrompt: string = JARVIS_PROMPT,
 ): Promise<LlmResult> {
   // Model availability is verified live against this Groq key:
   //  - qwen3.8-27b: the ONLY vision-capable model (accepts image_url parts)
@@ -208,7 +211,7 @@ async function callGroq(
       },
       body: JSON.stringify({
         model: m.id,
-        messages: [{ role: "system", content: JARVIS_PROMPT }, ...turns],
+        messages: [{ role: "system", content: systemPrompt }, ...turns],
         temperature: 0.6,
         max_tokens: 8192,
         reasoning_effort: "low",
@@ -240,6 +243,7 @@ async function callGroq(
 async function callHuggingFace(
   token: string,
   turns: ChatTurn[],
+  systemPrompt: string = JARVIS_PROMPT,
 ): Promise<LlmResult> {
   // Model availability verified live against the router for this token.
   // (Qwen2.5-7B-1M / gemma-2-2b-it are NOT served for this account.)
@@ -270,7 +274,7 @@ async function callHuggingFace(
       },
       body: JSON.stringify({
         model: m.id,
-        messages: [{ role: "system", content: JARVIS_PROMPT }, ...textTurns],
+        messages: [{ role: "system", content: systemPrompt }, ...textTurns],
         temperature: 0.6,
         max_tokens: 4096,
       }),
@@ -293,6 +297,39 @@ async function callHuggingFace(
   throw new Error(`Hugging Face failed: ${failures.join(", ")}`);
 }
 
+/**
+ * The system prompt for one reply: the base rules, plus whatever the user has
+ * told Jarvis about how it should work, plus any persona pinned to this chat.
+ *
+ * Read fresh on every reply rather than cached, so editing your instructions
+ * takes effect on the very next message instead of the next page load.
+ *
+ * Best-effort by design. A deleted persona or a transient read failure must
+ * degrade to the default behaviour, never fail the reply.
+ */
+async function systemPromptFor(
+  // Actions run on the node runtime with no database reader, so the block is
+  // resolved over an internal query rather than a direct read.
+  ctx: {
+    runQuery: (
+      fn: FunctionReference<"query", "internal">,
+      args: unknown,
+    ) => Promise<unknown>;
+  },
+  userId: Id<"users">,
+  sessionPersonaId?: Id<"personas"> | null | undefined,
+): Promise<string> {
+  try {
+    const block = (await ctx.runQuery(internal.workspace.instructionBlock, {
+      userId,
+      personaId: sessionPersonaId ?? null,
+    })) as string;
+    return block ? `${JARVIS_PROMPT}${block}` : JARVIS_PROMPT;
+  } catch {
+    return JARVIS_PROMPT;
+  }
+}
+
 export const ask = action({
   args: {
     prompt: v.string(),
@@ -302,6 +339,7 @@ export const ask = action({
       ),
     ),
     imageUrls: v.optional(v.array(v.string())),
+    personaId: v.optional(v.id("personas")),
   },
   handler: async (ctx, args): Promise<LlmResult> => {
     const userId = await getAuthUserId(ctx);
@@ -355,12 +393,17 @@ export const ask = action({
       ? `${effectivePrompt}\n\n---${memoryContext}`
       : effectivePrompt;
     const userContent = buildUserContent(promptWithMemory, args.imageUrls);
+    const systemPrompt = await systemPromptFor(ctx, userId, args.personaId);
 
     const failures: string[] = [];
 
     if (groqKey) {
       try {
-        return await callGroq(groqKey, [...history, { role: "user", content: userContent }]);
+        return await callGroq(
+          groqKey,
+          [...history, { role: "user", content: userContent }],
+          systemPrompt,
+        );
       } catch (err) {
         failures.push(`groq: ${err instanceof Error ? err.message : "unknown error"}`);
       }
@@ -370,10 +413,11 @@ export const ask = action({
 
     if (hfToken) {
       try {
-        return await callHuggingFace(hfToken, [
-          ...history,
-          { role: "user", content: userContent },
-        ]);
+        return await callHuggingFace(
+          hfToken,
+          [...history, { role: "user", content: userContent }],
+          systemPrompt,
+        );
       } catch (err) {
         failures.push(`huggingface: ${err instanceof Error ? err.message : "unknown error"}`);
       }
@@ -431,6 +475,7 @@ export const askStream = action({
       v.array(v.object({ role: v.string(), content: v.string() })),
     ),
     imageUrls: v.optional(v.array(v.string())),
+    personaId: v.optional(v.id("personas")),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -439,6 +484,8 @@ export const askStream = action({
     const history = (args.history ?? [])
       .slice(-12)
       .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
+
+    const systemPrompt = await systemPromptFor(ctx, userId, args.personaId);
 
     // Same two context layers as `ask`: RAG history first, then long-term
     // memory on top of it.
@@ -498,7 +545,7 @@ export const askStream = action({
           body: JSON.stringify({
             model: m.id,
             messages: [
-              { role: "system", content: JARVIS_PROMPT },
+              { role: "system", content: systemPrompt },
               ...history,
               { role: "user", content: buildUserContent(prompt, args.imageUrls) },
             ],
@@ -1453,5 +1500,59 @@ export const extractPdfText = action({
     }
 
     return { text: clean.slice(0, 60_000), pages: totalPages };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Scheduled tasks
+//
+// A cron has no session and no bearer token, so it cannot call the public
+// `ask`. This is the same completion path with the user's identity passed in
+// explicitly — including their instructions and active persona, so a scheduled
+// run sounds like the rest of their Jarvis.
+// ---------------------------------------------------------------------------
+
+export const askForTask = internalAction({
+  args: {
+    userId: v.id("users"),
+    prompt: v.string(),
+    history: v.optional(
+      v.array(v.object({ role: v.string(), content: v.string() })),
+    ),
+  },
+  handler: async (ctx, args): Promise<LlmResult> => {
+    const history = (args.history ?? [])
+      .slice(-8)
+      .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
+
+    const systemPrompt = await systemPromptFor(ctx, args.userId);
+    const userContent = buildUserContent(args.prompt);
+
+    const groqKey = process.env.GROQ_API_KEY;
+    const hfToken = process.env.HUGGING_FACE_TOKEN;
+    const messages: ChatTurn[] = [
+      ...history,
+      { role: "user", content: userContent },
+    ];
+
+    if (groqKey) {
+      try {
+        return await callGroq(groqKey, messages, systemPrompt);
+      } catch (err) {
+        console.error("[askForTask] groq failed:", err);
+      }
+    }
+
+    if (hfToken) {
+      try {
+        return await callHuggingFace(hfToken, messages, systemPrompt);
+      } catch (err) {
+        console.error("[askForTask] huggingface failed:", err);
+      }
+    }
+
+    throw new Error(
+      "No AI provider is configured, so the scheduled task could not run.",
+    );
   },
 });
