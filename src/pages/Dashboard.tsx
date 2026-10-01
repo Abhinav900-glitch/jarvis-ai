@@ -1022,6 +1022,11 @@ export default function Dashboard() {
       // "Answer in my language" is appended to the turn itself, so the whole
       // reply is written in the target language rather than translated after.
       const directive = liveTranslate.promptDirective(translateTarget);
+      // The detected mood is deliberately NOT appended to the prompt. This
+      // turn is persisted as the user's message, so any tone note would end up
+      // saved in the transcript and re-sent as history on later turns. It
+      // drives the voice instead (see useLiveMode), which is where a coarse
+      // prosodic read belongs anyway.
       await liveTurnRef.current(directive ? `${text}${directive}` : text);
       return text;
     },

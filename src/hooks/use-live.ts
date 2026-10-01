@@ -9,7 +9,7 @@ import {
   stopThinkingHum,
   unlockAudioElement,
 } from "@/lib/audio";
-import { trimSilence } from "@/lib/audio-trim";
+import { prepareVoiceClip, type Mood } from "@/lib/voice-mood";
 
 // ---------------------------------------------------------------------------
 // useLiveMode — hands-free voice conversation (ChatGPT / Gemini Live style)
@@ -117,6 +117,10 @@ export function useLiveMode(
   // language"; a tag means the reply was translated and needs a matching
   // voice on both the server TTS call and the browser fallback.
   const speechLangRef = useRef<string | null>(speechLangTag ?? null);
+  // How the user's last turn sounded. Read by the TTS call so Jarvis's
+  // delivery can answer the tone he was given — a steady voice to someone
+  // who sounded wound up, rather than matching their agitation.
+  const moodRef = useRef<Mood | null>(null);
   const speakTts = useAction(api.voice.speak);
 
   // Recording machinery
@@ -337,8 +341,10 @@ export function useLiveMode(
         try {
           // The recorder is always rolling, so this clip is padded with silence
           // on both sides. Trimming it cuts upload time and stops Whisper
-          // hearing a silent lead-in as an invitation to hallucinate.
-          const trimmed = await trimSilence(blob);
+          // hearing a silent lead-in as an invitation to hallucinate; the same
+          // decode yields a rough read of how the user sounded.
+          const { trimmed, mood } = await prepareVoiceClip(blob);
+          moodRef.current = mood;
           await onTurnRef.current(trimmed, countryRef.current);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Transcription failed.");
@@ -539,6 +545,7 @@ export function useLiveMode(
             ...(voicePrefRef.current?.pace
               ? { pace: voicePrefRef.current.pace }
               : {}),
+            ...(moodRef.current ? { mood: moodRef.current } : {}),
           });
 
           // Leaving the loop early abandons an in-flight generation; swallow
@@ -563,6 +570,7 @@ export function useLiveMode(
                 ...(voicePrefRef.current?.pace
                   ? { pace: voicePrefRef.current.pace }
                   : {}),
+                ...(moodRef.current ? { mood: moodRef.current } : {}),
               });
             }
             if (bargeInRef.current || !activeRef.current) {

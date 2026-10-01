@@ -504,6 +504,116 @@ async function speakWithGroq(
  * when none is available — the client then falls back to the browser's speech
  * synthesis, so a provider outage is never a user-facing error.
  */
+// ---------------------------------------------------------------------------
+// Hume Octave TTS — expressive speech with emotional intelligence.
+//
+// Octave is a speech-language model, not a formant synthesiser: it reads the
+// sentence and decides how it should be delivered (a joke lands differently
+// from a warning). The `description` field is acting direction — tone, pacing,
+// emphasis — so it is how Jarvis gets *emotion* into the voice rather than just
+// audio.
+//
+// Returns null rather than throwing when unset, so the existing provider chain
+// is untouched for anyone without a Hume key.
+// ---------------------------------------------------------------------------
+
+/** Languages Octave speaks. Anything outside this is a guaranteed miss. */
+const HUME_LANGUAGES = new Set([
+  "en", "es", "ja", "ko", "fr", "pt", "it", "de", "ru", "hi", "ar",
+]);
+
+/**
+ * What Jarvis is feeling while he says it.
+ *
+ * Derived from the user's own turn rather than invented per reply: a user who
+ * sounds frustrated gets a steadier, warmer delivery instead of a chirpy one,
+ * which is the whole point of using a model that understands prosody.
+ */
+const MOOD_DIRECTIONS: Record<string, string> = {
+  frustrated: "calm and even-tempered, a little slower, never chirpy",
+  angry: "unflappable and measured, noticeably slower",
+  sad: "gentle and subdued",
+  anxious: "reassuring and unhurried",
+  excited: "bright and energetic",
+  happy: "warm and upbeat",
+  tired: "low-energy and easy on the ears",
+  confused: "slow and deliberate, as if explaining carefully",
+  curious: "lively and interested",
+  stressed: "calm, grounding, unhurried",
+};
+
+function octaveDescription(mood?: string | null): string | undefined {
+  if (!mood) return undefined;
+  return MOOD_DIRECTIONS[mood];
+}
+
+async function speakWithHume(
+  text: string,
+  langTag?: string,
+  voice?: string,
+  pace?: number,
+  mood?: string | null,
+): Promise<{ audio: ArrayBuffer | null; voice: string }> {
+  const apiKey = process.env.HUME_API_KEY;
+  if (!apiKey) return { audio: null, voice: "browser" };
+
+  const language = (langTag ?? "en").split("-")[0].toLowerCase();
+  if (!HUME_LANGUAGES.has(language)) return { audio: null, voice: "browser" };
+
+  // The client already chunks replies for playback, so this is a safety net
+  // rather than the normal path.
+  const clipped = sanitizeForSpeech(text, 1200);
+  if (!clipped) return { audio: null, voice: "browser" };
+
+  const utterance: Record<string, unknown> = { text: clipped };
+
+  // A named voice is required for instant mode (the low-latency path live mode
+  // depends on). Without one, Octave designs a voice from the acting direction.
+  if (voice) {
+    utterance.voice = { name: voice };
+  } else {
+    const description = octaveDescription(mood);
+    if (description) utterance.description = description;
+  }
+  // Outside this range the model can go unstable.
+  if (typeof pace === "number" && pace >= 0.75 && pace <= 1.5) {
+    utterance.speed = pace;
+  }
+
+  try {
+    const res = await fetch("https://api.hume.ai/v0/tts", {
+      method: "POST",
+      headers: {
+        "X-Hume-Api-Key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        utterances: [utterance],
+        format: { type: "mp3" },
+        num_generations: 1,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error("Hume TTS error", res.status, errText.slice(0, 300));
+      return { audio: null, voice: "browser" };
+    }
+
+    const data = (await res.json()) as {
+      generations?: Array<{ audio?: string }>;
+    };
+    const encoded = data.generations?.[0]?.audio;
+    if (!encoded) return { audio: null, voice: "browser" };
+    return { audio: base64ToArrayBuffer(encoded), voice: voice ?? "hume" };
+  } catch (err) {
+    // A TTS outage must never break the turn; the chain moves on.
+    console.error("Hume TTS failed", err);
+    return { audio: null, voice: "browser" };
+  }
+}
+
 export const speak = action({
   args: {
     text: v.string(),
@@ -514,6 +624,11 @@ export const speak = action({
     speaker: v.optional(v.string()),
     /** Speaking rate: 0.5–2.0, where 1 is the model's natural pace. */
     pace: v.optional(v.number()),
+    /**
+     * Detected mood of the user's turn, e.g. "frustrated". Only used by
+     * providers that can act on it (Hume Octave).
+     */
+    mood: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<{ audio: ArrayBuffer | null; voice: string }> => {
     const userId = await getAuthUserId(ctx);
@@ -524,6 +639,8 @@ export const speak = action({
     const text = sanitizeForSpeech(args.text, 4000);
     if (!text) return { audio: null, voice: "browser" };
 
+    const hume = () =>
+      speakWithHume(text, args.langTag, args.voice, args.pace, args.mood);
     const sarvam = () =>
       speakWithSarvam(text, args.langTag, args.speaker, args.pace);
     const groq = () => speakWithGroq(text, args.voice);
@@ -532,9 +649,17 @@ export const speak = action({
     // Indic languages go to Sarvam first — sending Hindi to an English-only
     // model produces accented nonsense. For every other language Sarvam is
     // the final fallback, after the two general-purpose providers.
-    const chain = isIndicLangTag(args.langTag)
-      ? [sarvam, eleven, groq]
-      : [groq, eleven, sarvam];
+    //
+    // Octave leads when a key is configured: it is the only provider here that
+    // understands how a line should be *delivered*, and it covers 11 languages
+    // including every Indic one, so it does not displace Sarvam for Hindi.
+    const chain = process.env.HUME_API_KEY
+      ? isIndicLangTag(args.langTag)
+        ? [hume, sarvam, eleven, groq]
+        : [hume, groq, eleven, sarvam]
+      : isIndicLangTag(args.langTag)
+        ? [sarvam, eleven, groq]
+        : [groq, eleven, sarvam];
 
     for (const provider of chain) {
       const result = await provider();
