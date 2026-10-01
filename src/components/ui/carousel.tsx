@@ -88,16 +88,25 @@ function Carousel({
 
   React.useEffect(() => {
     if (!api || !setApi) return
-    setApi(api)
+    // Deferred by a tick: calling the setter synchronously here cascades a
+    // re-render before the browser paints, which shows up as a visible stutter
+    // on first mount. Cancelled on unmount or if `api` changes again first.
+    const timer = setTimeout(() => setApi(api), 0)
+    return () => clearTimeout(timer)
   }, [api, setApi])
 
   React.useEffect(() => {
     if (!api) return
-    onSelect(api)
+    // The initial onSelect is deferred for the same reason as setApi above: it
+    // updates state, and doing that synchronously inside the effect body
+    // cascades a render before paint. The event listeners below are unaffected
+    // because they already fire outside React's render.
+    const timer = setTimeout(() => onSelect(api), 0)
     api.on("reInit", onSelect)
     api.on("select", onSelect)
 
     return () => {
+      clearTimeout(timer)
       api?.off("select", onSelect)
     }
   }, [api, onSelect])

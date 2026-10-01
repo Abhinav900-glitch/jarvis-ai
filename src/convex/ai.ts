@@ -198,11 +198,22 @@ function buildUserContent(
 }
 
 /**
+ * First non-empty value among `names` in the environment. An unset var and a
+ * blank one are treated the same — a blank key is never a working key.
+ */
+function envKey(...names: string[]): string | null {
+  for (const name of names) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+/**
  * Mistral's key, under either of the names it is likely to have been saved as.
  */
 function mistralApiKey(): string | null {
-  const value = process.env.MISTRAL_API_KEY ?? process.env.MISTRAL_KEY;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+  return envKey("MISTRAL_API_KEY", "MISTRAL_KEY");
 }
 
 /**
@@ -210,12 +221,12 @@ function mistralApiKey(): string | null {
  * the vendor's own name rather than ours.
  */
 function edenApiKey(): string | null {
-  const value =
-    process.env.EDEN_AI_API_KEY ??
-    process.env.EDENAI_API_KEY ??
-    process.env.EDEN_API_KEY ??
-    process.env.EDEN_AI_TOKEN;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+  return envKey(
+    "EDEN_AI_API_KEY",
+    "EDENAI_API_KEY",
+    "EDEN_API_KEY",
+    "EDEN_AI_TOKEN",
+  );
 }
 
 async function callGroq(
@@ -508,6 +519,85 @@ async function callHuggingFace(
 }
 
 /**
+ * Run a prompt down the provider chain until one answers. Every AI entry point
+ * goes through here, so a turn never behaves differently because of which
+ * action happened to be serving it.
+ *
+ * Order: Mistral, Groq, Eden AI, HuggingFace.
+ *
+ * Mistral leads because its free Experiment tier answers reliably here and
+ * is the only provider verified to handle both text and images on a free
+ * key. Groq follows as the stronger text model. Eden AI is third because it
+ * is the last provider that still answers on a completely free key — it
+ * routes to models that cost this account nothing — so an outage at either
+ * of the first two still leaves a working, unfunded-independent path.
+ * HuggingFace is last: it is text-only, so by that point an image turn is
+ * already a lost cause and a text answer is the best that is left.
+ *
+ * A provider that is not configured is recorded and skipped rather than
+ * aborting, so the error the user eventually sees lists every reason.
+ */
+async function runProviderChain(
+  turns: ChatTurn[],
+  systemPrompt: string = JARVIS_PROMPT,
+  failurePrefix = "All models failed automatically.",
+): Promise<LlmResult> {
+  const providers: Array<{
+    name: string;
+    missing: string;
+    key: string | null;
+    call: (
+      key: string,
+      turns: ChatTurn[],
+      systemPrompt: string,
+    ) => Promise<LlmResult>;
+  }> = [
+    {
+      name: "mistral",
+      missing: "MISTRAL_API_KEY not configured",
+      key: mistralApiKey(),
+      call: callMistral,
+    },
+    {
+      name: "groq",
+      missing: "GROQ_API_KEY not configured",
+      key: envKey("GROQ_API_KEY"),
+      call: callGroq,
+    },
+    {
+      name: "eden",
+      missing: "EDEN_AI_API_KEY not configured",
+      key: edenApiKey(),
+      call: callEden,
+    },
+    {
+      name: "huggingface",
+      missing: "HUGGING_FACE_TOKEN not configured",
+      key: envKey("HUGGING_FACE_TOKEN"),
+      call: callHuggingFace,
+    },
+  ];
+
+  const failures: string[] = [];
+
+  for (const p of providers) {
+    if (!p.key) {
+      failures.push(`${p.name}: ${p.missing}`);
+      continue;
+    }
+    try {
+      return await p.call(p.key, turns, systemPrompt);
+    } catch (err) {
+      failures.push(
+        `${p.name}: ${err instanceof Error ? err.message : "unknown error"}`,
+      );
+    }
+  }
+
+  throw new Error(`${failurePrefix} ${failures.join(" · ")}`);
+}
+
+/**
  * The system prompt for one reply: the base rules, plus whatever the user has
  * told Jarvis about how it should work, plus any persona pinned to this chat.
  *
@@ -599,11 +689,6 @@ export const ask = action({
       // RAG is best-effort
     }
 
-    const groqKey = process.env.GROQ_API_KEY;
-    const hfToken = process.env.HUGGING_FACE_TOKEN;
-    const mistralKey = mistralApiKey();
-    const edenKey = edenApiKey();
-
     // Prepend RAG context to the text prompt when available
     const effectivePrompt = ragContext
       ? `${args.prompt}\n\n---${ragContext}`
@@ -632,77 +717,9 @@ export const ask = action({
       args.prompt,
     );
 
-    const failures: string[] = [];
-
-    // Order: Mistral, Groq, Eden AI, HuggingFace.
-    //
-    // Mistral leads because its free Experiment tier answers reliably here and
-    // is the only provider verified to handle both text and images on a free
-    // key. Groq follows as the stronger text model. Eden AI is third because it
-    // is the last provider that still answers on a completely free key — it
-    // routes to models that cost this account nothing — so an outage at either
-    // of the first two still leaves a working, unfunded-independent path.
-    // HuggingFace is last: it is text-only, so by that point an image turn is
-    // already a lost cause and a text answer is the best that is left.
-
-    if (mistralKey) {
-      try {
-        return await callMistral(
-          mistralKey,
-          [...history, { role: "user", content: userContent }],
-          systemPrompt,
-        );
-      } catch (err) {
-        failures.push(`mistral: ${err instanceof Error ? err.message : "unknown error"}`);
-      }
-    } else {
-      failures.push("mistral: MISTRAL_API_KEY not configured");
-    }
-
-    if (groqKey) {
-      try {
-        return await callGroq(
-          groqKey,
-          [...history, { role: "user", content: userContent }],
-          systemPrompt,
-        );
-      } catch (err) {
-        failures.push(`groq: ${err instanceof Error ? err.message : "unknown error"}`);
-      }
-    } else {
-      failures.push("groq: GROQ_API_KEY not configured");
-    }
-
-    if (edenKey) {
-      try {
-        return await callEden(
-          edenKey,
-          [...history, { role: "user", content: userContent }],
-          systemPrompt,
-        );
-      } catch (err) {
-        failures.push(`eden: ${err instanceof Error ? err.message : "unknown error"}`);
-      }
-    } else {
-      failures.push("eden: EDEN_AI_API_KEY not configured");
-    }
-
-    if (hfToken) {
-      try {
-        return await callHuggingFace(
-          hfToken,
-          [...history, { role: "user", content: userContent }],
-          systemPrompt,
-        );
-      } catch (err) {
-        failures.push(`huggingface: ${err instanceof Error ? err.message : "unknown error"}`);
-      }
-    } else {
-      failures.push("huggingface: HUGGING_FACE_TOKEN not configured");
-    }
-
-    throw new Error(
-      `All models failed automatically. ${failures.join(" · ")}`,
+    return await runProviderChain(
+      [...history, { role: "user", content: userContent }],
+      systemPrompt,
     );
   },
 });
@@ -915,31 +932,38 @@ export const askStream = action({
       }
     }
 
-    // Streaming unavailable or produced nothing — fall back to the plain path
-    // so the user still gets an answer. Guarded so a missing key produces a
-    // readable message instead of a raw provider error.
-    if (!groqKey) {
+    // Streaming unavailable or produced nothing — fall back to the plain
+    // provider chain so the user still gets an answer. The chain (not Groq
+    // alone) because a Groq outage or missing key must not end the reply, and
+    // the SAME system prompt the stream would have used, so the persona,
+    // identity rules and tone survive the fallback instead of being silently
+    // replaced by the bare default.
+    try {
+      const result = await runProviderChain(
+        [
+          ...history,
+          { role: "user", content: buildUserContent(prompt, args.imageUrls) },
+        ],
+        systemPrompt,
+      );
       await ctx.runMutation(internal.chats.finalizeStream, {
         messageId: args.messageId,
-        content: "Groq isn't configured for this deployment.",
+        content: result.text,
+        model: result.model,
+        usedFallback: result.usedFallback,
       });
-      return {
-        text: "Groq isn't configured for this deployment.",
-        model: "none",
-        usedFallback: true,
-      };
+      return result;
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "No AI provider is available for this deployment.";
+      await ctx.runMutation(internal.chats.finalizeStream, {
+        messageId: args.messageId,
+        content: message,
+      });
+      return { text: message, model: "none", usedFallback: true };
     }
-    const result = await callGroq(
-      groqKey,
-      [...history, { role: "user", content: buildUserContent(prompt, args.imageUrls) }],
-    );
-    await ctx.runMutation(internal.chats.finalizeStream, {
-      messageId: args.messageId,
-      content: result.text,
-      model: result.model,
-      usedFallback: result.usedFallback,
-    });
-    return result;
   },
 });
 
@@ -1025,52 +1049,20 @@ export const deepResearch = action({
       .join("\n\n");
 
     // 2) Have the LLM (with automatic fallback) synthesize the answer.
-    const groqKey = process.env.GROQ_API_KEY;
-    const hfToken = process.env.HUGGING_FACE_TOKEN;
-
     const history = (args.history ?? [])
       .slice(-12)
       .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
 
     const prompt = `Research this topic using the web results below. Answer in a clear, structured summary and cite sources inline as [1], [2], etc.\n\nWeb results:\n${context}\n\nTopic: ${args.query}`;
 
-    const failures: string[] = [];
-
-    if (groqKey) {
-      try {
-        return {
-          answer: await callGroq(groqKey, [
-            ...history,
-            { role: "user", content: prompt },
-          ]),
-          sources,
-        };
-      } catch (err) {
-        failures.push(`groq: ${err instanceof Error ? err.message : "unknown error"}`);
-      }
-    } else {
-      failures.push("groq: GROQ_API_KEY not configured");
-    }
-
-    if (hfToken) {
-      try {
-        return {
-          answer: await callHuggingFace(hfToken, [
-            ...history,
-            { role: "user", content: prompt },
-          ]),
-          sources,
-        };
-      } catch (err) {
-        failures.push(`huggingface: ${err instanceof Error ? err.message : "unknown error"}`);
-      }
-    } else {
-      failures.push("huggingface: HUGGING_FACE_TOKEN not configured");
-    }
-
-    throw new Error(
-      `Search succeeded (${sources.length} sources) but all AI models failed: ${failures.join(" · ")}`,
-    );
+    return {
+      answer: await runProviderChain(
+        [...history, { role: "user", content: prompt }],
+        JARVIS_PROMPT,
+        `Search succeeded (${sources.length} sources) but all AI models failed:`,
+      ),
+      sources,
+    };
   },
 });
 
@@ -1286,28 +1278,7 @@ URL: ${url}
 Page content:
 ${truncated}`;
 
-    const groqKey = process.env.GROQ_API_KEY;
-    const hfToken = process.env.HUGGING_FACE_TOKEN;
-
-    const failures: string[] = [];
-
-    if (groqKey) {
-      try {
-        return await callGroq(groqKey, [...history, { role: "user", content: prompt }]);
-      } catch (err) {
-        failures.push(`groq: ${err instanceof Error ? err.message : "unknown"}`);
-      }
-    }
-
-    if (hfToken) {
-      try {
-        return await callHuggingFace(hfToken, [...history, { role: "user", content: prompt }]);
-      } catch (err) {
-        failures.push(`huggingface: ${err instanceof Error ? err.message : "unknown"}`);
-      }
-    }
-
-    throw new Error(`All models failed. ${failures.join(" · ")}`);
+    return await runProviderChain([...history, { role: "user", content: prompt }]);
   },
 });
 
@@ -1711,45 +1682,16 @@ export const generateTitle = action({
     firstMessage: v.string(),
   },
   handler: async (_ctx, args): Promise<{ title: string }> => {
-    const groqKey = process.env.GROQ_API_KEY;
-    if (!groqKey) {
-      // Graceful fallback: truncate
-      const t = args.firstMessage.trim().slice(0, 50);
-      return { title: t.length < args.firstMessage.trim().length ? `${t}…` : t };
-    }
-
+    // Titles go through the same provider chain as every other reply, so a
+    // Groq outage (or a key that was never added) still produces a real
+    // title instead of silently degrading to a truncated first message.
     try {
-      const res = await fetch(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${groqKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "openai/gpt-oss-20b",
-            messages: [
-              {
-                role: "system",
-                content:
-                  "Generate a concise chat title (3-6 words) for the user's message. Reply with ONLY the title, no quotes, no punctuation at the end.",
-              },
-              { role: "user", content: args.firstMessage.slice(0, 500) },
-            ],
-            temperature: 0.3,
-            max_tokens: 20,
-          }),
-        },
+      const result = await runProviderChain(
+        [{ role: "user", content: args.firstMessage.slice(0, 500) }],
+        "Generate a concise chat title (3-6 words) for the user's message. Reply with ONLY the title, no quotes, no punctuation at the end.",
       );
-
-      if (res.ok) {
-        const data = (await res.json()) as {
-          choices?: { message?: { content?: string } }[];
-        };
-        const title = data.choices?.[0]?.message?.content?.trim();
-        if (title) return { title: title.slice(0, 60) };
-      }
+      const title = cleanTitle(result.text);
+      if (title) return { title };
     } catch {
       // fall through to truncation
     }
@@ -1758,6 +1700,20 @@ export const generateTitle = action({
     return { title: t.length < args.firstMessage.trim().length ? `${t}…` : t };
   },
 });
+
+/** Strip the decoration models add around a one-line title. */
+function cleanTitle(raw: string): string | null {
+  const first = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!first) return null;
+  const stripped = first
+    .replace(/^(?:#+\s*|["'`*_]+)|(["'`*_]+)$/g, "")
+    .replace(/[.:;,]+$/, "")
+    .trim();
+  return stripped ? stripped.slice(0, 60) : null;
+}
 
 // ---------------------------------------------------------------------------
 // PDF text extraction (unpdf — pure JS, works in Convex node runtime)
@@ -1813,31 +1769,15 @@ export const askForTask = internalAction({
     const systemPrompt = await systemPromptFor(ctx, args.userId);
     const userContent = buildUserContent(args.prompt);
 
-    const groqKey = process.env.GROQ_API_KEY;
-    const hfToken = process.env.HUGGING_FACE_TOKEN;
     const messages: ChatTurn[] = [
       ...history,
       { role: "user", content: userContent },
     ];
 
-    if (groqKey) {
-      try {
-        return await callGroq(groqKey, messages, systemPrompt);
-      } catch (err) {
-        console.error("[askForTask] groq failed:", err);
-      }
-    }
-
-    if (hfToken) {
-      try {
-        return await callHuggingFace(hfToken, messages, systemPrompt);
-      } catch (err) {
-        console.error("[askForTask] huggingface failed:", err);
-      }
-    }
-
-    throw new Error(
-      "No AI provider is configured, so the scheduled task could not run.",
+    return await runProviderChain(
+      messages,
+      systemPrompt,
+      "No AI provider could answer, so the scheduled task could not run.",
     );
   },
 });

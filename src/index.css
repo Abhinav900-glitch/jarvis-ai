@@ -846,6 +846,32 @@
   to { height: 18px; opacity: 1; }
 }
 
+/*
+ * Live level meter bars.
+ *
+ * The shimmer lives in CSS rather than in the component on purpose. It was
+ * previously computed from Date.now() during render, which is impure — it made
+ * the bar height depend on when React happened to render, broke hydration, and
+ * is exactly the kind of thing that produces a different bar chart on the server
+ * than in the browser. Bar height now comes from the measured level alone, and
+ * the movement is the browser's job.
+ */
+@keyframes jarvis-meter-pulse {
+  0%, 100% { transform: scaleY(0.72); }
+  50% { transform: scaleY(1); }
+}
+
+.jarvis-meter-bar {
+  transform-origin: center;
+  animation: jarvis-meter-pulse 0.9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-meter-bar {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sphere-axis {
     animation-duration: 40s;

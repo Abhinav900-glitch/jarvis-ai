@@ -6,7 +6,8 @@ import tseslint from "typescript-eslint";
 import eslintConfigPrettier from "eslint-config-prettier/flat";
 
 export default tseslint.config(
-  { ignores: ["dist"] },
+  // Convex codegen owns src/convex/_generated — never lint (or hand-edit) it.
+  { ignores: ["dist", "src/convex/_generated"] },
   {
     extends: [
       js.configs.recommended,
@@ -29,5 +30,16 @@ export default tseslint.config(
         { allowConstantExport: true },
       ],
     },
+  },
+  {
+    // Vendored shadcn/ui primitives intentionally export their variants and
+    // helpers next to the component. The rule buys nothing here.
+    files: ["src/components/ui/**"],
+    rules: { "react-refresh/only-export-components": "off" },
+  },
+  {
+    // Entry point: mounts the app, exports nothing. Nothing to fast-refresh.
+    files: ["src/main.tsx"],
+    rules: { "react-refresh/only-export-components": "off" },
   },
 );

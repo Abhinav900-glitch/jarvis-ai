@@ -57,7 +57,8 @@ import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud
 import type { GestureAction } from "@/lib/gesture-actions";
 import { JarvisOrb } from "@/components/jarvis-orb";
 import { Lightbox } from "@/components/lightbox";
-import { MarkdownMessage, looksLikeMathOrMarkdown } from "@/components/markdown-message";
+import { MarkdownMessage } from "@/components/markdown-message";
+import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
 import { CodePanel } from "@/components/code-panel";
 import { sanitizeForSpeech } from "@/lib/speech";
 import { Button } from "@/components/ui/button";

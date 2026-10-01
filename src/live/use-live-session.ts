@@ -98,8 +98,14 @@ export function useLiveSession(options: LiveSessionOptions = {}) {
 
   // Keep the latest options available to callbacks without re-creating
   // the transport on every render.
+  //
+  // Synced in an effect rather than during render: writing a ref while rendering
+  // is what the react-hooks/refs rule forbids, and every read of this ref happens
+  // in a callback or socket handler, which runs well after effects have flushed.
   const optionsRef = useRef({ language, vision, visionSource, visionFps, instructions });
-  optionsRef.current = { language, vision, visionSource, visionFps, instructions };
+  useEffect(() => {
+    optionsRef.current = { language, vision, visionSource, visionFps, instructions };
+  });
 
   const handleClearBuffer = useCallback(() => {
     // Barge-in: drop queued audio on the audio thread immediately.
@@ -197,6 +203,17 @@ export function useLiveSession(options: LiveSessionOptions = {}) {
     [handleControl],
   );
 
+  const stopResources = useCallback(async () => {
+    await Promise.allSettled([
+      micRef.current?.stop() ?? Promise.resolve(),
+      visionRef.current?.stop() ?? Promise.resolve(),
+      playbackRef.current?.stop() ?? Promise.resolve(),
+    ]);
+    micRef.current = null;
+    visionRef.current = null;
+    playbackRef.current = null;
+  }, []);
+
   const start = useCallback(async () => {
     if (activeRef.current) return;
     activeRef.current = true;
@@ -252,18 +269,7 @@ export function useLiveSession(options: LiveSessionOptions = {}) {
       setError(err instanceof Error ? err.message : "Could not start live mode.");
       await stopResources();
     }
-  }, [createTransport, url]);
-
-  const stopResources = useCallback(async () => {
-    await Promise.allSettled([
-      micRef.current?.stop() ?? Promise.resolve(),
-      visionRef.current?.stop() ?? Promise.resolve(),
-      playbackRef.current?.stop() ?? Promise.resolve(),
-    ]);
-    micRef.current = null;
-    visionRef.current = null;
-    playbackRef.current = null;
-  }, []);
+  }, [createTransport, stopResources, url]);
 
   const stop = useCallback(async () => {
     activeRef.current = false;

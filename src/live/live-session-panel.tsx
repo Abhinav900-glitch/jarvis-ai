@@ -33,16 +33,22 @@ function LevelMeter({ level, active }: { level: number; active: boolean }) {
   return (
     <div className="flex h-8 items-center justify-center gap-[3px]" aria-hidden>
       {Array.from({ length: 24 }).map((_, i) => {
-        const phase = Math.sin((Date.now() / 140 + i) * 0.9);
-        const height = active ? Math.max(2, level * (0.6 + 0.4 * phase) * 30) : 2;
+        // Height comes from the measured level alone. The movement between bars
+        // is a CSS animation with a per-bar delay, so nothing here depends on
+        // the clock and the render stays pure.
+        const height = active ? Math.max(2, level * 30) : 2;
         return (
           <div
             key={i}
             className={cn(
               "w-[3px] rounded-full transition-[height] duration-75",
-              active ? "bg-cyan-300/90" : "bg-cyan-500/20",
+              active ? "bg-cyan-300/90 jarvis-meter-bar" : "bg-cyan-500/20",
             )}
-            style={{ height: `${height}px` }}
+            style={
+              active
+                ? { height: `${height}px`, animationDelay: `${(i % 8) * 90}ms` }
+                : { height: `${height}px` }
+            }
           />
         );
       })}
