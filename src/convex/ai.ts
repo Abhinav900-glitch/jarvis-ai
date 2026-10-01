@@ -2,6 +2,7 @@
 
 import { v } from "convex/values";
 import { IDENTITY_INSTRUCTIONS } from "../lib/identity";
+import { asTone, buildToneContext, detectTextMood } from "../lib/emotional-intelligence";
 import type { FunctionReference } from "convex/server";
 import { action, internalAction } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
@@ -332,13 +333,25 @@ async function systemPromptFor(
   },
   userId: Id<"users">,
   sessionPersonaId?: Id<"personas"> | null | undefined,
+  /**
+   * How the user's turn sounded or read. Passed through from live mode when the
+   * browser measured their voice, and otherwise inferred from the wording.
+   * Both are weak signals, used only to pick a tone.
+   */
+  mood?: string | null,
+  /** The user's message, used to infer a tone when no mood was measured. */
+  userText?: string | null,
 ): Promise<string> {
   try {
     const block = (await ctx.runQuery(internal.workspace.instructionBlock, {
       userId,
       personaId: sessionPersonaId ?? null,
     })) as string;
-    return block ? `${JARVIS_PROMPT}${block}` : JARVIS_PROMPT;
+    const base = block ? `${JARVIS_PROMPT}${block}` : JARVIS_PROMPT;
+    // A measured voice mood wins over wording: prosody is a more direct read of
+    // how someone sounded than punctuation and word choice.
+    const tone = asTone(mood) ?? detectTextMood(userText ?? "");
+    return `${base}${buildToneContext(tone)}`;
   } catch {
     return JARVIS_PROMPT;
   }
@@ -347,6 +360,11 @@ async function systemPromptFor(
 export const ask = action({
   args: {
     prompt: v.string(),
+    /**
+     * How the user's turn sounded, from live mode's prosody reading. Used only to
+     * choose a tone; the facts of the answer never depend on it.
+     */
+    mood: v.optional(v.string()),
     history: v.optional(
       v.array(
         v.object({ role: v.string(), content: v.string() }),
@@ -407,7 +425,15 @@ export const ask = action({
       ? `${effectivePrompt}\n\n---${memoryContext}`
       : effectivePrompt;
     const userContent = buildUserContent(promptWithMemory, args.imageUrls);
-    const systemPrompt = await systemPromptFor(ctx, userId, args.personaId);
+    // The user's own words, before memory and RAG are mixed in, so the tone is
+    // read from what they actually said rather than from recalled context.
+    const systemPrompt = await systemPromptFor(
+      ctx,
+      userId,
+      args.personaId,
+      args.mood ?? null,
+      args.prompt,
+    );
 
     const failures: string[] = [];
 
@@ -485,6 +511,8 @@ export const askStream = action({
     sessionId: v.id("chatSessions"),
     messageId: v.id("chatMessages"),
     prompt: v.string(),
+    /** See the note on `ask`. */
+    mood: v.optional(v.string()),
     history: v.optional(
       v.array(v.object({ role: v.string(), content: v.string() })),
     ),
@@ -499,7 +527,13 @@ export const askStream = action({
       .slice(-12)
       .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
 
-    const systemPrompt = await systemPromptFor(ctx, userId, args.personaId);
+    const systemPrompt = await systemPromptFor(
+      ctx,
+      userId,
+      args.personaId,
+      args.mood ?? null,
+      args.prompt,
+    );
 
     // Same two context layers as `ask`: RAG history first, then long-term
     // memory on top of it.

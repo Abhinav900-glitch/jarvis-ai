@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { IDENTITY_INSTRUCTIONS } from "@/lib/identity";
+import { MANNERS_RULES } from "@/lib/emotional-intelligence";
 import { MicCapture } from "./audio";
 import { TtsPlayback } from "./playback";
 import { LiveTransport, type ConnectionStatus } from "./transport";
@@ -71,7 +72,11 @@ export function useLiveSession(options: LiveSessionOptions = {}) {
   // Defaulted rather than left undefined: the whole point of sending these is
   // that the local model otherwise has no idea who built this application, so
   // the default is the case worth having.
-  const instructions = options.instructions ?? IDENTITY_INSTRUCTIONS;
+  // The manners rules travel with the identity block by default. Live mode talks
+  // through a local model with its own system prompt, so without them it has no
+  // idea how it is expected to speak — and "no manners rules" reads as curt.
+  const instructions =
+    options.instructions ?? `${IDENTITY_INSTRUCTIONS}\n\n${MANNERS_RULES}`;
 
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [state, setState] = useState<SessionState>("idle");
