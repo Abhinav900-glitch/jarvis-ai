@@ -553,6 +553,18 @@ function octaveDescription(mood?: string | null): string | undefined {
   return MOOD_DIRECTIONS[mood];
 }
 
+/**
+ * The configured Hume key, if any.
+ *
+ * Hume's own docs and SDKs use `HUME_API_KEY`, but this project stores it as
+ * `HUME_AI_API_KEY`. Both are accepted: a mismatch here does not throw, it just
+ * leaves Octave at the end of the fallback chain, where it is indistinguishable
+ * from "not configured" — the exact failure that is easy to miss.
+ */
+function humeApiKey(): string | undefined {
+  return process.env.HUME_AI_API_KEY || process.env.HUME_API_KEY || undefined;
+}
+
 async function speakWithHume(
   text: string,
   langTag?: string,
@@ -560,7 +572,7 @@ async function speakWithHume(
   pace?: number,
   mood?: string | null,
 ): Promise<{ audio: ArrayBuffer | null; voice: string }> {
-  const apiKey = process.env.HUME_API_KEY;
+  const apiKey = humeApiKey();
   if (!apiKey) return { audio: null, voice: "browser" };
 
   const language = (langTag ?? "en").split("-")[0].toLowerCase();
@@ -689,7 +701,7 @@ export const speak = action({
     // Octave leads when a key is configured: it is the only provider here that
     // understands how a line should be *delivered*, and it covers 11 languages
     // including every Indic one, so it does not displace Sarvam for Hindi.
-    const chain = process.env.HUME_API_KEY
+    const chain = humeApiKey()
       ? isIndicLangTag(args.langTag)
         ? [hume, sarvam, eleven, groq]
         : [hume, groq, eleven, sarvam]
