@@ -197,6 +197,14 @@ function buildUserContent(
   return parts;
 }
 
+/**
+ * Mistral's key, under either of the names it is likely to have been saved as.
+ */
+function mistralApiKey(): string | null {
+  const value = process.env.MISTRAL_API_KEY ?? process.env.MISTRAL_KEY;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 async function callGroq(
   key: string,
   turns: ChatTurn[],
@@ -253,6 +261,88 @@ async function callGroq(
     return { text, model: `groq/${m.label}`, usedFallback: false };
   }
   throw new Error(`Groq failed: ${failures.join(", ")}`);
+}
+
+/**
+ * Mistral, for text and image understanding.
+ *
+ * Two things make this more than a copy of the Groq call:
+ *
+ *  1. `image_url` is a plain STRING here, not the `{ url }` object OpenAI and
+ *     Groq use. Sending the object shape to Mistral returns a 400, so the
+ *     parts are rewritten on the way out rather than trusted to be compatible.
+ *
+ *  2. Model availability differs per account. The free Experiment tier does not
+ *     necessarily serve the same models as a paid one, so a chain is tried and
+ *     each rejection is recorded — a single hard-coded id would fail for
+ *     everyone not on the top plan.
+ */
+async function callMistral(
+  key: string,
+  turns: ChatTurn[],
+  systemPrompt: string = JARVIS_PROMPT,
+): Promise<LlmResult> {
+  const hasImages = turns.some((t) => Array.isArray(t.content));
+  const models = hasImages
+    ? [
+        { id: "mistral-small-latest", label: "mistral-small" },
+        { id: "mistral-medium-latest", label: "mistral-medium" },
+        { id: "pixtral-large-latest", label: "pixtral-large" },
+      ]
+    : [
+        { id: "mistral-large-latest", label: "mistral-large" },
+        { id: "mistral-medium-latest", label: "mistral-medium" },
+        { id: "mistral-small-latest", label: "mistral-small" },
+        { id: "ministral-3b-latest", label: "ministral-3b" },
+      ];
+
+  // Rewrite the OpenAI-shaped image parts into Mistral's shape.
+  const mistralTurns = turns.map((t) => ({
+    ...t,
+    content: Array.isArray(t.content)
+      ? t.content.map((p) =>
+          p.type === "image_url" && typeof p.image_url === "object"
+            ? { type: "image_url", image_url: p.image_url.url }
+            : p,
+        )
+      : t.content,
+  }));
+
+  const failures: string[] = [];
+  for (const m of models) {
+    const res = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: m.id,
+        messages: [{ role: "system", content: systemPrompt }, ...mistralTurns],
+        temperature: 0.6,
+        max_tokens: 8192,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      failures.push(`${m.label} (${res.status}${detail ? `: ${detail.slice(0, 120)}` : ""})`);
+      continue;
+    }
+
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const text = data.choices?.[0]?.message?.content?.trim() || "";
+    if (!text) {
+      failures.push(`${m.label} (empty response)`);
+      continue;
+    }
+    return { text, model: `mistral/${m.label}`, usedFallback: false };
+  }
+
+  throw new Error(`Mistral failed: ${failures.join(", ")}`);
 }
 
 async function callHuggingFace(
@@ -406,6 +496,7 @@ export const ask = action({
 
     const groqKey = process.env.GROQ_API_KEY;
     const hfToken = process.env.HUGGING_FACE_TOKEN;
+    const mistralKey = mistralApiKey();
 
     // Prepend RAG context to the text prompt when available
     const effectivePrompt = ragContext
@@ -449,6 +540,24 @@ export const ask = action({
       }
     } else {
       failures.push("groq: GROQ_API_KEY not configured");
+    }
+
+    // Mistral sits between the two. It is vision-capable like Groq, so a turn
+    // with images is not silently downgraded to a text-only model when Groq is
+    // unavailable — and it is a different operator, so a Mistral outage is not
+    // also a Groq one.
+    if (mistralKey) {
+      try {
+        return await callMistral(
+          mistralKey,
+          [...history, { role: "user", content: userContent }],
+          systemPrompt,
+        );
+      } catch (err) {
+        failures.push(`mistral: ${err instanceof Error ? err.message : "unknown error"}`);
+      }
+    } else {
+      failures.push("mistral: MISTRAL_API_KEY not configured");
     }
 
     if (hfToken) {
@@ -1052,6 +1161,7 @@ ${truncated}`;
 
     const groqKey = process.env.GROQ_API_KEY;
     const hfToken = process.env.HUGGING_FACE_TOKEN;
+
     const failures: string[] = [];
 
     if (groqKey) {
