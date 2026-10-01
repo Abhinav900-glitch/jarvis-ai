@@ -18,13 +18,21 @@ import type { CodeProvider, CodeRunResult } from "../lib/code-run";
 // Three services stand behind this action, tried in order:
 //
 //   1. JDoodle            POST api.jdoodle.com/v1/execute        (needs a key)
-//   2. Wandbox            POST wandbox.org/api/compile.json      (no key at all)
-//   3. OnlineCompiler.io  POST api.onlinecompiler.io/api/run-code-sync/  (needs a key)
+//   2. OnlineCompiler.io  POST api.onlinecompiler.io/api/run-code-sync/  (needs a key)
+//   3. Wandbox            POST wandbox.org/api/compile.json      (no key at all)
 //
-// Wandbox is a free public playground, so it needs no credentials and is what
-// makes the code runner work before anyone has signed up for anything. It is
-// placed after JDoodle because JDoodle honours the version the user picked and
-// can install packages, which Wandbox can do neither of.
+// JDoodle leads because it honours the version the user picked and can install
+// packages, which neither of the others can do.
+//
+// OnlineCompiler.io comes second and Wandbox last. Both used to be the other way
+// round, on the reasoning that a keyless service is the safest floor. That was
+// wrong in practice: Wandbox is a free public playground and answers an outage
+// with HTTP 200 and an OCI error in the body, which costs roughly nine seconds
+// to discover and then fails anyway. Putting it last means the two engines that
+// hold credentials are both tried before the one that is both flaky and unable
+// to install anything. It stays in the chain because it needs no key at all, so
+// it is the only thing that keeps the runner working before anyone has signed
+// up for anything.
 //
 // The fallback fires for exactly one class of problem: the ENGINE failed. That
 // means no credentials, a refused connection, a 401, exhausted credits, a
@@ -537,8 +545,10 @@ async function runWithWandbox(
   result.memory = null;
 
   notes.push(
-    `This ran on the free Wandbox playground, which pins one fixed build per ` +
-      `language (${compiler}), so the behaviour may differ from the version selected.`,
+    `This ran on the free Wandbox playground, the last resort in the engine ` +
+      `chain, which pins one fixed build per language (${compiler}) and cannot ` +
+      `install packages at all. The keyed engines were tried first and did not ` +
+      `answer, so Wandbox's limits are what you are seeing here.`,
   );
   if (result.outputTruncated) {
     notes.push("Wandbox cuts output off after 128 KB.");
@@ -573,7 +583,7 @@ async function runWithOnlineCompiler(
   const compiler = ctx.language.onlineCompiler;
   if (!compiler) {
     const result = baseResult(ctx, provider, "", startedAt, providersTried);
-    result.requestError = `The fallback engine does not run ${ctx.language.label}.`;
+    result.requestError = `OnlineCompiler.io does not run ${ctx.language.label}.`;
     return { result, retryable: false };
   }
 
@@ -612,8 +622,8 @@ async function runWithOnlineCompiler(
     const aborted = err instanceof Error && err.name === "AbortError";
     return fail(
       aborted
-        ? "The fallback engine did not answer in time."
-        : "Could not reach the fallback engine.",
+        ? "OnlineCompiler.io did not answer in time."
+        : "Could not reach OnlineCompiler.io.",
       true,
     );
   } finally {
@@ -630,13 +640,13 @@ async function runWithOnlineCompiler(
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
       return fail(
-        "The fallback engine rejected its API key. Check ONLINECOMPILER_API_KEY.",
+        "OnlineCompiler.io rejected its API key. Check ONLINECOMPILER_API_KEY in the API keys tab.",
         false,
       );
     }
     if (response.status === 429) {
       return fail(
-        "The fallback engine is at its concurrent request limit. Try again shortly.",
+        "OnlineCompiler.io allows four runs at a time and is at its limit. Try again shortly.",
         true,
       );
     }
@@ -683,7 +693,7 @@ async function runWithOnlineCompiler(
 
   if (ctx.libs.length) {
     notes.push(
-      `The fallback cannot install packages, so ${ctx.libs.join(", ")} was not available to the program.`,
+      `OnlineCompiler.io cannot install packages, so ${ctx.libs.join(", ")} was not available to the program.`,
     );
   }
   notes.push(
@@ -765,6 +775,8 @@ export const runCode = action({
     // Build the chain from what is actually configured, so a missing key is a
     // silent skip rather than an error. Wandbox is the exception: it needs no
     // key, so it is always available for any language it actually supports.
+    // Order is JDoodle, OnlineCompiler.io, then Wandbox — see the header note
+    // for why the keyless playground goes last.
     const chain: Array<() => Promise<Attempt>> = [];
     if (jdoodle) {
       chain.push(() => {
@@ -773,18 +785,20 @@ export const runCode = action({
         return runWithJdoodle(runCtx, jdoodle as JdoodleCredentials, startedAt, providersTried);
       });
     }
-    if (language.wandbox) {
-      chain.push(() => {
-        runCtx.isFallback = jdoodle !== null;
-        providersTried.push("wandbox");
-        return runWithWandbox(runCtx, startedAt, providersTried);
-      });
-    }
     if (onlineCompiler && language.onlineCompiler) {
       chain.push(() => {
-        runCtx.isFallback = jdoodle !== null || language.wandbox !== undefined;
+        runCtx.isFallback = jdoodle !== null;
         providersTried.push("onlinecompiler");
         return runWithOnlineCompiler(runCtx, onlineCompiler, startedAt, providersTried);
+      });
+    }
+    // Last, because it is both the flakiest and the least capable. It is kept
+    // only because it needs no key, so it is the floor under everything else.
+    if (language.wandbox) {
+      chain.push(() => {
+        runCtx.isFallback = jdoodle !== null || (onlineCompiler !== null && language.onlineCompiler !== undefined);
+        providersTried.push("wandbox");
+        return runWithWandbox(runCtx, startedAt, providersTried);
       });
     }
 
@@ -797,7 +811,7 @@ export const runCode = action({
         result.requestError =
           `No configured engine runs ${language.label}. Add JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET in the API keys tab.`;
       } else {
-        result.requestError = `Neither fallback engine runs ${language.label}, and the primary engine is not configured.`;
+        result.requestError = `No configured engine runs ${language.label}. JDoodle needs JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET, and OnlineCompiler.io needs ONLINECOMPILER_API_KEY.`;
       }
       return result;
     }
