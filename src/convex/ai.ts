@@ -205,6 +205,19 @@ function mistralApiKey(): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/**
+ * Eden AI's key. Several spellings, because a gateway key is easy to save under
+ * the vendor's own name rather than ours.
+ */
+function edenApiKey(): string | null {
+  const value =
+    process.env.EDEN_AI_API_KEY ??
+    process.env.EDENAI_API_KEY ??
+    process.env.EDEN_API_KEY ??
+    process.env.EDEN_AI_TOKEN;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 async function callGroq(
   key: string,
   turns: ChatTurn[],
@@ -352,6 +365,86 @@ async function callMistral(
   }
 
   throw new Error(`Mistral failed: ${failures.join(", ")}`);
+}
+
+/**
+ * Eden AI — an aggregator gateway, used as a fallback.
+ *
+ * Their v3 endpoint is OpenAI-compatible down to the `image_url` object shape,
+ * so the turns are forwarded untouched — no translation needed, unlike Mistral.
+ * The model string is `provider/model`.
+ *
+ * A 402 is treated specially rather than as a generic failure. It means the
+ * account has no credit, which does not change between attempts, so it is
+ * surfaced as an actionable message instead of "try the next provider" — a
+ * chain that quietly skips a provider because it is unfunded is impossible to
+ * debug from the outside.
+ */
+async function callEden(
+  key: string,
+  turns: ChatTurn[],
+  systemPrompt: string = JARVIS_PROMPT,
+): Promise<LlmResult> {
+  const hasImages = turns.some((t) => Array.isArray(t.content));
+  const models = hasImages
+    ? [
+        { id: "vertex/gemini-flash-latest", label: "gemini-flash" },
+        { id: "openai/gpt-latest", label: "gpt-latest" },
+        { id: "anthropic/claude-sonnet-latest", label: "claude-sonnet" },
+      ]
+    : [
+        { id: "vertex/gemini-flash-latest", label: "gemini-flash" },
+        { id: "openai/gpt-latest", label: "gpt-latest" },
+        { id: "anthropic/claude-sonnet-latest", label: "claude-sonnet" },
+        { id: "mistral/mistral-large-latest", label: "mistral-large" },
+      ];
+
+  const failures: string[] = [];
+  for (const m of models) {
+    const res = await fetch("https://api.edenai.run/v3/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: m.id,
+        messages: [{ role: "system", content: systemPrompt }, ...turns],
+        temperature: 0.6,
+        max_tokens: 8192,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (res.status === 402) {
+      const detail = await res.text().catch(() => "");
+      let message = "Eden AI has no credit on this account.";
+      try {
+        const parsed = JSON.parse(detail) as { error?: { message?: string } };
+        if (parsed.error?.message) message = `Eden AI: ${parsed.error.message}`;
+      } catch {
+        /* keep the plain message */
+      }
+      failures.push(message);
+      // Unfunded is a property of the account, not of this model, so trying the
+      // rest would only repeat the same rejection.
+      break;
+    }
+
+    if (!res.ok) {
+      failures.push(`${m.label} (${res.status})`);
+      continue;
+    }
+
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const text = data.choices?.[0]?.message?.content?.trim() || "";
+    if (!text) {
+      failures.push(`${m.label} (empty response)`);
+      continue;
+    }
+    return { text, model: `eden/${m.label}`, usedFallback: true };
+  }
+
+  throw new Error(`Eden AI failed: ${failures.join(", ")}`);
 }
 
 async function callHuggingFace(
@@ -506,6 +599,7 @@ export const ask = action({
     const groqKey = process.env.GROQ_API_KEY;
     const hfToken = process.env.HUGGING_FACE_TOKEN;
     const mistralKey = mistralApiKey();
+    const edenKey = edenApiKey();
 
     // Prepend RAG context to the text prompt when available
     const effectivePrompt = ragContext
@@ -567,6 +661,23 @@ export const ask = action({
       }
     } else {
       failures.push("mistral: MISTRAL_API_KEY not configured");
+    }
+
+    // Eden AI routes to other people's models, so it is a genuinely independent
+    // last resort before the plain text-only HuggingFace fallback: an outage at
+    // one upstream vendor does not take this one down.
+    if (edenKey) {
+      try {
+        return await callEden(
+          edenKey,
+          [...history, { role: "user", content: userContent }],
+          systemPrompt,
+        );
+      } catch (err) {
+        failures.push(`eden: ${err instanceof Error ? err.message : "unknown error"}`);
+      }
+    } else {
+      failures.push("eden: EDEN_AI_API_KEY not configured");
     }
 
     if (hfToken) {
