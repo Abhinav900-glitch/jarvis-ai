@@ -494,12 +494,133 @@
   --sphere-size: min(78vw, 300px);
   /* radius of the cage's orbit rings — the sphere body is 76% of the stage box */
   --sphere-r: calc(var(--sphere-size) * 0.38);
-  background: radial-gradient(
-    ellipse at 50% 44%,
-    #15162a 0%,
-    #090a12 38%,
-    #040509 78%
-  );
+
+  /* Spectrum accents. Indigo (the old `--accent`) read as one flat colour and
+     fought the orb, which is genuinely multi-hued. These are steps on a real
+     spectrum, and the drift animation below walks every saturated element
+     through all of them — so the HUD and the orb stay the same object. */
+  --spec-1: #ff3d7f;
+  --spec-2: #ff9f43;
+  --spec-3: #ffe14d;
+  --spec-4: #4dff88;
+  --spec-5: #43e0ff;
+  --spec-6: #8b6cff;
+  --spec-7: #ff5ce1;
+
+  /* Aurora backdrop. Two drifting colour fields behind the orb, so the stage
+     is never a flat black rectangle: the sphere appears to sit inside
+     something. Deliberately very low contrast — it has to read as light in a
+     dark room, not as a light show competing with the orb for attention. */
+  background:
+    radial-gradient(ellipse at 50% 44%, #16162c 0%, #0a0a14 40%, #04050a 80%),
+    linear-gradient(180deg, #05060d 0%, #08091a 55%, #04050b 100%);
+}
+
+/* Two aurora fields on pseudo-elements: gradients cannot be animated directly
+   without repainting the whole stage every frame, so the colour stays static
+   and only the transform drifts. Composited transforms stay on the GPU. */
+.sphere-stage::before,
+.sphere-stage::after {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  pointer-events: none;
+  will-change: transform, opacity;
+  /* Behind the HUD, above the stage's own background.
+     This has to be negative, not auto: an absolutely positioned pseudo-element
+     with the default z-index paints in the positioned-descendants layer, which
+     is ABOVE the in-flow transcript text and control row — the aurora would
+     wash over the conversation. `.sphere-stage` is fixed, so it establishes a
+     stacking context and a negative child reliably lands between the two. */
+  z-index: -1;
+}
+
+.sphere-stage::before {
+  background:
+    radial-gradient(
+      38% 30% at 26% 30%,
+      rgba(255, 61, 127, 0.3),
+      transparent 70%
+    ),
+    radial-gradient(
+      34% 26% at 76% 26%,
+      rgba(67, 224, 255, 0.28),
+      transparent 70%
+    ),
+    radial-gradient(
+      40% 32% at 50% 82%,
+      rgba(139, 108, 255, 0.26),
+      transparent 72%
+    );
+  filter: blur(46px);
+  animation: jarvis-aurora-a 34s ease-in-out infinite alternate;
+}
+
+.sphere-stage::after {
+  background:
+    radial-gradient(
+      30% 24% at 68% 62%,
+      rgba(77, 255, 136, 0.2),
+      transparent 70%
+    ),
+    radial-gradient(
+      32% 26% at 30% 68%,
+      rgba(255, 159, 67, 0.2),
+      transparent 72%
+    );
+  filter: blur(58px);
+  animation: jarvis-aurora-b 47s ease-in-out infinite alternate;
+}
+
+@keyframes jarvis-aurora-a {
+  0% {
+    transform: translate3d(-3%, -2%, 0) scale(1);
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate3d(4%, 3%, 0) scale(1.16);
+    opacity: 0.55;
+  }
+}
+
+@keyframes jarvis-aurora-b {
+  0% {
+    transform: translate3d(3%, 2%, 0) scale(1.08);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translate3d(-4%, -3%, 0) scale(0.95);
+    opacity: 0.9;
+  }
+}
+
+/* Walks a saturated element through the whole spectrum. White and grey text
+   are unaffected by hue-rotate (they have no saturation to rotate), so this can
+   be dropped on a mixed row without washing out the words. */
+@keyframes jarvis-spectrum-drift {
+  from {
+    filter: hue-rotate(0deg);
+  }
+  to {
+    filter: hue-rotate(360deg);
+  }
+}
+
+.jarvis-spectrum {
+  animation: jarvis-spectrum-drift 24s linear infinite;
+}
+
+/* Motion is decoration here, and every moving thing on this screen is also a
+   distraction to someone reading the transcript. Honour the preference once and
+   the aurora and the drift both stand still — the colours remain. */
+@media (prefers-reduced-motion: reduce) {
+  .sphere-stage::before,
+  .sphere-stage::after,
+  .jarvis-spectrum,
+  .sphere-eq,
+  .jarvis-meter-bar {
+    animation: none !important;
+  }
 }
 
 /* Perspective on the scene + a true 3D rendering context on the body, so the

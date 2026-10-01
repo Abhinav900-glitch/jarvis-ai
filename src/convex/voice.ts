@@ -271,6 +271,15 @@ const TTS_VOICES = [
 
 const TTS_FALLBACK_VOICE = "Celeste";
 
+/**
+ * The voice names this provider accepts, exposed for the voice picker so the
+ * client never offers a name the pipeline would reject.
+ *
+ * Read by `config.voiceOptions` — which lives there rather than here because
+ * this is a `"use node"` module and can export actions only, not queries.
+ */
+export const GROQ_TTS_VOICES: readonly string[] = TTS_VOICES;
+
 // ---------------------------------------------------------------------------
 // ElevenLabs TTS — second fallback for Jarvis's voice.
 // Activates automatically when ELEVENLABS_API_KEY is set (Keys tab) and Groq
@@ -297,6 +306,11 @@ const ELEVENLABS_VOICES: Record<string, string> = {
   matilda: "XrExE9yKIg1WjnnlVkGX", // knowledgeable, professional
   river: "SAz9YHcvj6GT2YYXdXww", // relaxed, neutral, informative
 };
+
+/** Read by `config.voiceOptions` — see {@link GROQ_TTS_VOICES}. */
+export const ELEVENLABS_TTS_VOICES: readonly string[] = Object.keys(
+  ELEVENLABS_VOICES,
+);
 
 const ELEVENLABS_DEFAULT_VOICE = "brian";
 

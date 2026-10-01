@@ -61,6 +61,21 @@ export interface LiveMode {
   muted: boolean;
   /** Feed Jarvis's reply text — spoken aloud, then listening resumes. */
   deliverReply: (text: string) => void;
+  /**
+   * Resume listening after a pause. Only meaningful when {@link autoRestart} is
+   * off, where a reply leaves the mic closed instead of reopening by itself.
+   */
+  resumeListening: () => void;
+  /** True when the mic reopens by itself after every reply. */
+  autoRestart: boolean;
+  setAutoRestart: (on: boolean) => void;
+  /** True while the session is up but the mic is closed awaiting a resume. */
+  paused: boolean;
+  /** Active noise cancellation: spectral subtraction across the mic signal. */
+  noiseCancel: boolean;
+  setNoiseCancel: (on: boolean) => void;
+  /** True when the browser and the suppressor are both doing their part. */
+  echoCancelling: boolean;
 }
 
 /**
@@ -70,6 +85,42 @@ export interface LiveMode {
 export type LiveTurnHandler = (audio: Blob, countryCode: string) => Promise<string>;
 
 const BARGE_IN_HOLD_MS = 350; // sustained voice needed to interrupt Jarvis
+
+/**
+ * Wait until the browser has actually loaded its speech-synthesis voices.
+ *
+ * `getVoices()` legitimately returns `[]` on the first calls — Chrome and Safari
+ * both populate the list asynchronously and announce it with `voiceschanged`.
+ * Reading it cold therefore yields nothing, and every reply falls back to the
+ * OS default voice, which is how a chosen voice could be ignored for the first
+ * few sentences of a session and then quietly start working.
+ *
+ * Bounded, because a browser that never fires the event must not stop live mode
+ * from starting — the default voice is a far better outcome than no voice.
+ */
+function waitForVoices(timeoutMs = 1200): Promise<void> {
+  const synth = window.speechSynthesis;
+  if (!synth) return Promise.resolve();
+  if (synth.getVoices().length > 0) return Promise.resolve();
+
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      synth.removeEventListener("voiceschanged", finish);
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, timeoutMs);
+    synth.addEventListener("voiceschanged", finish);
+    // Some builds populate the list without ever firing the event; re-check
+    // once the timeout expires rather than trusting the event alone.
+    window.setTimeout(() => {
+      if (synth.getVoices().length > 0) finish();
+    }, 250);
+  });
+}
 
 /**
  * How the browser's own voice should carry a detected mood.
@@ -142,6 +193,21 @@ export function useLiveMode(
   // that has to work without touching anything.
   const [muted, setMuted] = useState(false);
   const mutedRef = useRef(false);
+  // Resume listening automatically after every reply. On by default, because a
+  // hands-free conversation that stops listening after every sentence is not
+  // hands-free; off for anyone who wants Jarvis to wait rather than keep an
+  // always-open mic between turns.
+  const [autoRestart, setAutoRestart] = useState(true);
+  // Up but not listening: auto-restart is off and the last reply has ended.
+  const [paused, setPaused] = useState(false);
+  // Active noise cancellation, on top of the browser's own suppression.
+  const [noiseCancel, setNoiseCancel] = useState(true);
+  const noiseCancelRef = useRef(true);
+  const autoRestartRef = useRef(true);
+  // Whether the audio path actually has echo cancellation engaged. Reported so
+  // the UI can say so honestly rather than implying a guarantee the browser may
+  // not honour — some platforms silently ignore the constraint.
+  const [echoCancelling, setEchoCancelling] = useState(false);
 
   // "Latest value" refs. These are read from long-lived callbacks (mic
   // timers, media event handlers) that must not be re-created on every render,
@@ -194,6 +260,19 @@ export function useLiveMode(
   // blip or a finished turn, so it goes through a ref rather than closing over
   // its own binding.
   const startRecordingRef = useRef<() => void>(() => {});
+  // Node feeding the noise suppressor, and the suppressor itself. Held so the
+  // toggle can reach the worklet mid-session — re-running getUserMedia to
+  // change a constraint would drop the conversation.
+  const suppressorRef = useRef<AudioWorkletNode | null>(null);
+  const suppressorPortRef = useRef<MessagePort | null>(null);
+  // What MediaRecorder actually records: the tapped (and suppressed) signal,
+  // not the raw microphone track.
+  const recordStreamRef = useRef<MediaStream | null>(null);
+  // Latest-value refs for the key handlers, which are registered once per
+  // session and must not close over the first render's callbacks.
+  const interruptRef = useRef<() => void>(() => {});
+  const stopRef = useRef<() => void>(() => {});
+  const toggleMuteRef = useRef<() => void>(() => {});
 
   // Keep the "latest value" refs in step with props/state after every commit.
   useEffect(() => {
@@ -201,6 +280,8 @@ export function useLiveMode(
     countryRef.current = countryCode;
     voicePrefRef.current = voicePref;
     speechLangRef.current = speechLangTag ?? null;
+    noiseCancelRef.current = noiseCancel;
+    autoRestartRef.current = autoRestart;
   });
 
   /** Stop server TTS playback instantly (barge-in / skip / session end). */
@@ -335,18 +416,23 @@ export function useLiveMode(
   // Recording → Whisper STT
   // ------------------------------------------------------------------
   const startRecording = useCallback(() => {
-    const stream = streamRef.current;
+    const stream = recordStreamRef.current ?? streamRef.current;
     if (!stream || speakingRef.current || processingRef.current || !activeRef.current) return;
     if (mutedRef.current) return;
     // Never stack two recorders on the same stream.
     if (recorderRef.current?.state === "recording") return;
 
     try {
-      const mime = MediaRecorder.isTypeSupported("audio/webm")
-        ? "audio/webm"
-        : MediaRecorder.isTypeSupported("audio/mp4")
-          ? "audio/mp4"
-          : "";
+      // Opus first, and named explicitly. `audio/webm` on its own is only
+      // guaranteed to be a container, so the browser may pick whatever
+      // encoder it likes — and the encoder it picks decides how much of the
+      // start of the utterance survives. Naming the codec is what makes the
+      // recording predictable across machines.
+      const mime = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ].find((m) => MediaRecorder.isTypeSupported(m));
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       chunksRef.current = [];
       rec.ondataavailable = (e) => {
@@ -370,7 +456,11 @@ export function useLiveMode(
         // Reject clips that held no real speech (a blip, or a recorder we cut
         // off before the user said anything) and just keep listening.
         if (blob.size < MIN_CLIP_BYTES || voicedMs < MIN_VOICED_MS || !activeRef.current) {
-          window.setTimeout(() => startRecordingRef.current(), 300);
+          // Barely any delay. This is the gap where the recorder is torn down
+          // and re-armed, and anything the user says inside it is never
+          // captured — a 300 ms wait here was long enough that starting a
+          // sentence the instant Jarvis finished clipped the first syllable.
+          window.setTimeout(() => startRecordingRef.current(), 60);
           return;
         }
         processingRef.current = true;
@@ -400,9 +490,15 @@ export function useLiveMode(
           processingRef.current = false;
           setProcessing(false);
           // Resume listening after the turn completes (reply delivery also
-          // triggers resume via deliverReply → utterance end)
+          // triggers resume via deliverReply → utterance end) — unless
+          // auto-restart is off, in which case the mic stays shut and the
+          // user opens it deliberately.
           if (!speakingRef.current && activeRef.current) {
-            window.setTimeout(() => startRecordingRef.current(), 400);
+            if (autoRestartRef.current) {
+              window.setTimeout(() => startRecordingRef.current(), 250);
+            } else {
+              setPaused(true);
+            }
           }
         }
       };
@@ -440,6 +536,10 @@ export function useLiveMode(
   const pickVoice = useCallback((): SpeechSynthesisVoice | null => {
     const synth = window.speechSynthesis;
     if (!synth) return null;
+    // `getVoices()` returns an EMPTY array until the browser has loaded its
+    // voice list, which it announces with a `voiceschanged` event. `start()`
+    // waits for that (see `waitForVoices`) so by the time anything is spoken
+    // the list is populated and this returns the voice that was chosen.
     const voices = synth.getVoices();
     // When live translation is on, the spoken text is in the target language,
     // so the voice must match that — not the country default.
@@ -675,9 +775,15 @@ export function useLiveMode(
     stopTtsAudio();
     stopRecording();
     recorderRef.current = null;
+    suppressorRef.current?.disconnect();
+    suppressorRef.current = null;
+    suppressorPortRef.current = null;
+    recordStreamRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     setCameraStream(null);
+    setPaused(false);
+    setEchoCancelling(false);
     void audioCtxRef.current?.close().catch(() => {});
     audioCtxRef.current = null;
     analyserRef.current = null;
@@ -709,17 +815,79 @@ export function useLiveMode(
       const ctx = new Ctx();
       audioCtxRef.current = ctx;
       await unlockAudio();
+      // Get the voice list ready before any reply can be spoken, so the first
+      // sentence uses the selected voice rather than the OS default. Bounded
+      // tightly: this sits on the path to live mode starting, and a slow
+      // voice-list load must not feel like the app is hanging.
+      await waitForVoices(500);
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          // Requested explicitly rather than left to `audio: true`.
+          //
+          // Echo cancellation is the important one: the mic stays open while
+          // Jarvis speaks, so without it his own voice comes back through the
+          // speakers and the barge-in detector — which fires on sustained sound
+          // — interrupts him mid-sentence. Noise suppression and AGC matter
+          // for a quiet voice in a noisy room.
+          //
+          // Browsers may ignore any of these, so the applied settings are read
+          // back below and reported honestly rather than assumed.
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
       streamRef.current = stream;
       setCameraStream(stream);
 
-      // Set up the analyser for level monitoring + barge-in
+      const track = stream.getAudioTracks()[0];
+      const applied = track?.getSettings?.() ?? {};
+      setEchoCancelling(applied.echoCancellation === true);
+
+      // Chain: mic → [noise suppressor] → { analyser, recorder feed }.
+      //
+      // The suppressor is optional in the strict sense — if the worklet cannot
+      // be loaded (no AudioWorklet, a CSP that blocks it, a browser quirk) the
+      // raw stream is used instead. Live mode failing to start at all because
+      // a noise filter was unavailable would be a far worse outcome than a
+      // slightly noisier microphone.
       const source = ctx.createMediaStreamSource(stream);
+      let tap: AudioNode = source;
+
+      if (noiseCancelRef.current && ctx.audioWorklet) {
+        try {
+          await ctx.audioWorklet.addModule("/noise-suppressor-worklet.js");
+          const suppressor = new AudioWorkletNode(ctx, "noise-suppressor", {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [1],
+            processorOptions: { sampleRate: ctx.sampleRate, enabled: true },
+          });
+          suppressorRef.current = suppressor;
+          suppressorPortRef.current = suppressor.port;
+          source.connect(suppressor);
+          tap = suppressor;
+        } catch {
+          suppressorRef.current = null;
+          suppressorPortRef.current = null;
+        }
+      }
+
+      // Set up the analyser for level monitoring + barge-in
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
-      source.connect(analyser);
+      tap.connect(analyser);
       analyserRef.current = analyser;
+
+      // The recorder is fed from a MediaStreamDestination rather than from the
+      // raw mic track, so the audio sent to Whisper is the same suppressed
+      // signal the detector is hearing. Tapping only the analyser would have
+      // made the orb look clean while the transcription stayed noisy — the
+      // noise would still reach the model, which is where it actually does harm.
+      const tapDest = ctx.createMediaStreamDestination();
+      tap.connect(tapDest);
+      recordStreamRef.current = tapDest.stream;
 
       activeRef.current = true;
       setActive(true);
@@ -742,27 +910,133 @@ export function useLiveMode(
     window.setTimeout(() => startRecording(), 150);
   }, [stopTtsAudio, startRecording]);
 
+  /** Open the mic. Used by auto-restart, by barge-in, and by the resume button. */
+  const resumeListening = useCallback(() => {
+    if (!activeRef.current) return;
+    if (mutedRef.current) return;
+    setPaused(false);
+    stopRecording();
+    window.setTimeout(() => startRecordingRef.current(), 120);
+  }, [stopRecording]);
+
+  /**
+   * What happens once a reply finishes playing.
+   *
+   * The single place the auto-restart decision is made, so the toggle cannot be
+   * honoured on one path and quietly ignored on another — which is exactly what
+   * happened when the resume call sat inside the reply callback directly.
+   */
+  const afterReply = useCallback(() => {
+    if (!activeRef.current) return;
+    if (autoRestartRef.current) {
+      resumeListening();
+    } else {
+      setPaused(true);
+      setListening(false);
+    }
+  }, [resumeListening]);
+
+  const toggleMute = useCallback(() => {
+    mutedRef.current = !mutedRef.current;
+    setMuted(mutedRef.current);
+    if (mutedRef.current) {
+      // Stopping rather than pausing discards the clip, so unmuting does not
+      // transcribe whatever was half-heard while the mic was off.
+      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+      setListening(false);
+    } else {
+      resumeListening();
+    }
+  }, [resumeListening]);
+
   const deliverReply = useCallback(
     (text: string) => {
       if (!activeRef.current) return;
       if (!text.trim()) {
-        if (!speakingRef.current) window.setTimeout(() => startRecording(), 300);
+        if (!speakingRef.current) afterReply();
         return;
       }
       // Pause the mic while Jarvis talks
       stopRecording();
       speakReply(text, () => {
-        if (activeRef.current && !bargeInRef.current) {
-          window.setTimeout(() => startRecording(), 400);
-        } else if (bargeInRef.current) {
-          // Interrupted — listen again immediately
-          bargeInRef.current = false;
-          window.setTimeout(() => startRecording(), 150);
-        }
+        if (!activeRef.current) return;
+        // Barge-in resumes even with auto-restart off: someone who talked over
+        // the reply has clearly said they are ready to talk again, and making
+        // them also press Resume would be pedantic.
+        if (bargeInRef.current) bargeInRef.current = false;
+        afterReply();
       });
     },
-    [speakReply, startRecording, stopRecording],
+    [speakReply, stopRecording, afterReply],
   );
+
+  const setNoiseCancellation = useCallback((on: boolean) => {
+    setNoiseCancel(on);
+    noiseCancelRef.current = on;
+    // Reaches the worklet directly, so this takes effect mid-sentence instead
+    // of needing the microphone reopened — which would drop the conversation.
+    try {
+      suppressorPortRef.current?.postMessage({ enabled: on });
+    } catch {
+      // No worklet this session (it failed to load, or ANC was off at start);
+      // the toggle still records the preference for the next session.
+    }
+  }, []);
+
+  // Keep the key handlers pointed at the current callbacks.
+  useEffect(() => {
+    interruptRef.current = () => {
+      if (activeRef.current) skipSpeaking();
+    };
+    stopRef.current = () => stop();
+    toggleMuteRef.current = () => toggleMute();
+  });
+
+  /**
+   * Keyboard shortcuts, live only while a session is up.
+   *
+   * Registered on `window` rather than the HUD so they work no matter what has
+   * focus, and skipped entirely whenever the user is typing — pressing M to mute
+   * must not insert an "m" into the chat box underneath. Auto-repeat is ignored
+   * so holding Space does not machine-gun the interrupt.
+   */
+  useEffect(() => {
+    if (!active) return;
+
+    const isTyping = (target: EventTarget | null): boolean => {
+      const el = target as HTMLElement | null;
+      if (!el || typeof el.tagName !== "string") return false;
+      return (
+        el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "SELECT" ||
+        el.isContentEditable === true
+      );
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isTyping(event.target)) return;
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        if (!event.repeat) interruptRef.current();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        stopRef.current();
+        return;
+      }
+      if (event.key === "m" || event.key === "M") {
+        event.preventDefault();
+        toggleMuteRef.current();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active]);
 
   // Cleanup on unmount
   useEffect(
@@ -787,16 +1061,21 @@ export function useLiveMode(
     mood,
     cameraStream,
     muted,
-    toggleMute: () => {
-      mutedRef.current = !mutedRef.current;
-      setMuted(mutedRef.current);
-      if (mutedRef.current && recorderRef.current?.state === "recording") {
-        recorderRef.current.stop();
-      }
-    },
+    toggleMute,
     start,
     stop,
     skipSpeaking,
     deliverReply,
+    resumeListening,
+    autoRestart,
+    setAutoRestart: (on: boolean) => {
+      setAutoRestart(on);
+      autoRestartRef.current = on;
+      if (on) resumeListening();
+    },
+    paused,
+    noiseCancel,
+    setNoiseCancel: setNoiseCancellation,
+    echoCancelling,
   };
 }

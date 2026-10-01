@@ -49,33 +49,66 @@ const MAX_DISTANCE = 40;
 /**
  * Palette.
  *
- * Rainbow, not the original amber: the hue is a function of position on the
- * orb (and of time), so the sphere reads as a spectrum rather than a single
- * tinted wireframe. `hueFor` is the only place hue is decided, which is what
- * keeps the layers related instead of looking like unrelated objects.
+ * A real spectrum. The previous ramp used hue offsets of 0, 0.02, 0.04 and
+ * 0.06 — a total spread of 0.06 of the hue circle, about 21°. Five shades of
+ * the same cyan, under a comment claiming the orb was rainbow. The particles
+ * and text sprites really did sweep the spectrum, which is exactly why it read
+ * as wrong: a few coloured specks over a uniformly blue body.
+ *
+ * Now the core ramp is spread across most of the hue circle, so brightness and
+ * hue travel together — the hot core is warm, the faint threads are cool — and
+ * a slow drift carries the whole thing around the spectrum over time. The
+ * result reads as one coherent rainbow rather than a blue orb with confetti.
+ *
+ * `hueFor` remains the only place hue is decided, which is what keeps the
+ * layers related instead of looking like unrelated objects.
  */
-const BASE_HUE = 0.55;
+const BASE_HUE = 0.02;
 const hueFor = (offset: number, sat: number, light: number) =>
   new THREE.Color().setHSL((BASE_HUE + offset) % 1, sat, light);
 
-const C_BRIGHT = hueFor(0, 0.95, 0.62);
-const C_MID = hueFor(0.02, 0.9, 0.5);
-const C_DIM = hueFor(0.04, 0.85, 0.32);
-const C_FAINT = hueFor(0.06, 0.8, 0.18);
-const C_HOT = hueFor(-0.02, 1, 0.72);
+/**
+ * How much of the hue circle the palette uses.
+ *
+ * Short of a full turn on purpose: 0.85 leaves a short run of similar hues
+ * where the ramp wraps, so the seam reads as a neighbouring pair of colours
+ * instead of a hard jump from violet back to red.
+ */
+const SPECTRUM_SPAN = 0.85;
+
+/** Position along the ramp, 0 = hottest, 1 = faintest thread. */
+const ramp = (t: number, sat: number, light: number) =>
+  hueFor(t * SPECTRUM_SPAN, sat, light);
+
+/**
+ * How fast the core's hue travels around the spectrum, in hue per second.
+ *
+ * 1/75 of a full turn per second: slow enough that it is felt rather than
+ * watched, and a whole cycle takes about a minute and a quarter — long enough
+ * that it reads as the orb being alive rather than as a colour-cycling toy.
+ */
+const HUE_DRIFT_RATE = 1 / 75;
+
+const C_BRIGHT = ramp(0.0, 0.95, 0.62);
+const C_MID = ramp(0.22, 0.9, 0.5);
+const C_DIM = ramp(0.46, 0.85, 0.32);
+const C_FAINT = ramp(0.7, 0.8, 0.18);
+const C_HOT = ramp(0.0, 1, 0.72);
 
 /**
  * Palettes per mood.
  *
- * Shifted rather than swapped outright: the orb should still read as the same
- * object, just warmer or cooler, or it flickers between identities as the
- * coarse mood estimate moves around.
+ * Shifted along the same spectrum rather than swapped for a fixed hex: a mood
+ * used to repaint the glow solid blue, brown or near-black, which threw away
+ * the rainbow entirely for as long as the mood held. Deriving every glow from
+ * `hueFor` keeps the orb chromatic whatever it is feeling — the mood now
+ * moves the spectrum rather than replacing it.
  */
-const MOOD_TINTS: Record<Mood, { core: THREE.Color; glow: number }> = {
-  stressed: { core: hueFor(0.58, 0.8, 0.5), glow: 0x1d3f6b },
-  animated: { core: hueFor(0.02, 0.95, 0.55), glow: 0xff3300 },
-  tired: { core: hueFor(0.1, 0.35, 0.45), glow: 0x2e2a20 },
-  calm: { core: C_HOT, glow: C_MID.getHex() },
+const MOOD_TINTS: Record<Mood, { core: THREE.Color; glow: THREE.Color }> = {
+  stressed: { core: ramp(0.08, 0.8, 0.5), glow: hueFor(0.12, 0.85, 0.3) },
+  animated: { core: ramp(0.96, 0.95, 0.55), glow: hueFor(0.98, 0.9, 0.36) },
+  tired: { core: ramp(0.62, 0.5, 0.45), glow: hueFor(0.66, 0.55, 0.26) },
+  calm: { core: C_HOT, glow: hueFor(0.22, 0.9, 0.34) },
 };
 
 interface SpriteDrift {
@@ -719,6 +752,10 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
   let targetEnergy = 0;
   const tintTarget = new THREE.Color(C_HOT);
   const tintNow = new THREE.Color(C_HOT);
+  const glowTarget = new THREE.Color(C_MID);
+  /** Scratch triple for the per-frame hue rotation. Allocating one of these
+   *  every frame at 60 fps is how a scene ends up churning the GC. */
+  const tempHsl = { h: 0, s: 0, l: 0 };
 
   const setEnergy = (level: number) => {
     targetEnergy = Math.max(0, Math.min(1, level));
@@ -727,7 +764,7 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
   const setMood = (mood: Mood | null) => {
     const tint = MOOD_TINTS[mood ?? "calm"];
     tintTarget.copy(tint.core);
-    glowSphereMat.color.setHex(tint.glow);
+    glowTarget.copy(tint.glow);
   };
 
   // --- Animation --------------------------------------------------------
@@ -746,7 +783,26 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
     const t = clock.getElapsedTime();
 
     energy += (targetEnergy - energy) * 0.12;
+    // Lerp toward the mood's colour first, then rotate the result. Order
+    // matters: rotating after the lerp keeps the drift absolute (driven by
+    // elapsed time, so it never accumulates) while the mood still pulls the
+    // orb to wherever it is pointing.
     tintNow.lerp(tintTarget, 0.03);
+    tintNow.getHSL(tempHsl);
+    tintNow.setHSL(
+      (tempHsl.h + t * HUE_DRIFT_RATE) % 1,
+      tempHsl.s,
+      tempHsl.l,
+    );
+    // The halo follows the same drift, so core and glow can never end up on
+    // opposite sides of the spectrum and read as two unrelated lights.
+    glowSphereMat.color.lerp(glowTarget, 0.05);
+    glowSphereMat.color.getHSL(tempHsl);
+    glowSphereMat.color.setHSL(
+      (tempHsl.h + t * HUE_DRIFT_RATE) % 1,
+      tempHsl.s,
+      tempHsl.l,
+    );
 
     outerShell.rotation.y += 0.0015;
     outerShell.rotation.x = Math.sin(t * 0.08) * 0.05;

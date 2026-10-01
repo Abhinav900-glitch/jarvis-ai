@@ -984,6 +984,10 @@ export default function Dashboard() {
   const [orbGestures, setOrbGestures] = useState(false);
   // Rolling conversation shown on the full-screen JARVIS HUD (live voice call)
   const [liveTranscript, setLiveTranscript] = useState<LiveTurn[]>([]);
+  // Voice inventory for the live-mode picker. Only the names and whether each
+  // provider is configured — no key material, so it is safe to send to the
+  // browser and needs no auth.
+  const voiceOptions = useQuery(api.config.voiceOptions, {});
   const live = useLiveMode(
     async (audio: Blob, country: string) => {
       const lang = getCountry(country).language;
@@ -4635,6 +4639,20 @@ export default function Dashboard() {
           setLiveTranscript([]);
         }}
         onSkip={() => live.skipSpeaking()}
+        paused={live.paused}
+        onResume={() => live.resumeListening()}
+        autoRestart={live.autoRestart}
+        onToggleAutoRestart={() => live.setAutoRestart(!live.autoRestart)}
+        noiseCancel={live.noiseCancel}
+        onToggleNoiseCancel={() => live.setNoiseCancel(!live.noiseCancel)}
+        echoCancelling={live.echoCancelling}
+        voiceOptions={voiceOptions ?? null}
+        voice={voicePref.voice ?? ""}
+        onVoiceChange={(voice) =>
+          setVoicePref((p) => ({ ...p, voice, speaker: undefined }))
+        }
+        pace={voicePref.pace}
+        onPaceChange={(pace) => setVoicePref((p) => ({ ...p, pace }))}
       />
 
       {/* ---- New surfaces: palette, instructions, schedules ---- */}

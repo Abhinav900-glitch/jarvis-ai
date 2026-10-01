@@ -10,9 +10,24 @@
 // through the `transcript` prop so the reply is readable, not just audible.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Mic, MicOff, SkipForward, X, Zap, Hand } from "lucide-react";
+import {
+  Mic,
+  MicOff,
+  SkipForward,
+  X,
+  Zap,
+  Hand,
+  Copy,
+  Check,
+  Download,
+  Waves,
+  MicVocal,
+  Pause,
+  Play,
+  ChevronDown,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { WAKE_PHRASE } from "@/lib/wake-word";
@@ -56,6 +71,38 @@ export interface JarvisHudProps {
   muted?: boolean;
   /** A confirmed hand gesture resolved to a Jarvis action. */
   onGestureAction?: (action: GestureAction) => void;
+
+  // --- New controls ---------------------------------------------------
+
+  /** Up but not listening, because auto-restart is off. */
+  paused?: boolean;
+  /** Open the mic after a deliberate pause. */
+  onResume?: () => void;
+  autoRestart?: boolean;
+  onToggleAutoRestart?: () => void;
+  noiseCancel?: boolean;
+  onToggleNoiseCancel?: () => void;
+  /** Whether the browser really applied echo cancellation, read back from the track. */
+  echoCancelling?: boolean;
+  /** Voices the server can speak with, grouped by provider. */
+  voiceOptions?: VoiceOptions | null;
+  /** Currently selected voice name, and the setter for it. */
+  voice?: string;
+  onVoiceChange?: (voice: string) => void;
+  /** Speaking rate, and the setter for it. */
+  pace?: number;
+  onPaceChange?: (pace: number) => void;
+}
+
+/** Shape returned by `config.voiceOptions`. */
+export interface VoiceOptions {
+  providers: {
+    id: string;
+    label: string;
+    available: boolean;
+    voices: string[];
+  }[];
+  paceRange: { min: number; max: number; default: number };
 }
 
 const STATUS_LABELS: Record<HudPhase, string> = {
@@ -95,6 +142,167 @@ function Equalizer() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+
+/** Pill toggle used by the control row. `tone` picks the spectrum step. */
+function Pill({
+  on,
+  onClick,
+  title,
+  accent = "var(--spec-6)",
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  title: string;
+  accent?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-pressed={on}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] transition-colors",
+        on ? "jarvis-spectrum" : "border-white/10 bg-white/[0.04] text-[#8189a7]",
+      )}
+      style={
+        on
+          ? {
+              borderColor: `${accent}66`,
+              backgroundColor: `${accent}1f`,
+              color: accent,
+            }
+          : undefined
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Download the transcript as Markdown, named for the moment it was taken. */
+function downloadTranscript(turns: LiveTurn[]) {
+  const body = turns
+    .filter((t) => t.user.trim() || t.assistant.trim())
+    .map((t) => {
+      const head = t.user.trim() ? `**You:** ${t.user.trim()}` : "";
+      const bodyText = t.assistant.trim() ? `**Jarvis:** ${t.assistant.trim()}` : "";
+      return [head, bodyText].filter(Boolean).join("\n\n");
+    })
+    .join("\n\n---\n\n");
+
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  const blob = new Blob([`# Jarvis live transcript\n\n${body}\n`], {
+    type: "text/markdown;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `jarvis-transcript-${stamp}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Revoked on the next tick so the download has certainly started.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Voice picker + speed slider, collapsed behind a single pill until wanted. */
+function VoiceControls({
+  options,
+  voice,
+  onVoiceChange,
+  pace,
+  onPaceChange,
+}: {
+  options: VoiceOptions | null;
+  voice: string;
+  onVoiceChange: (v: string) => void;
+  pace: number;
+  onPaceChange: (p: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { min, max } = options?.paceRange ?? { min: 0.5, max: 2, default: 1.05 };
+
+  // Flattened with the provider kept, because the same name can exist on two
+  // providers and picking by bare name would be ambiguous.
+  const all = useMemo(() => {
+    const providers = options?.providers ?? [];
+    return providers.flatMap((p) =>
+      p.voices.map((v) => ({ voice: v, label: p.label, available: p.available })),
+    );
+  }, [options]);
+
+  if (all.length === 0) return null;
+
+  return (
+    <div className="relative">
+      <Pill
+        on={open}
+        onClick={() => setOpen((v) => !v)}
+        title="Choose Jarvis's voice and speaking speed"
+        accent="var(--spec-5)"
+      >
+        <MicVocal className="size-3" />
+        Voice · {pace.toFixed(2)}×
+        <ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} />
+      </Pill>
+
+      {open && (
+        <div className="absolute bottom-full right-0 z-30 mb-2 w-64 rounded-xl border border-white/10 bg-[#0b0c18]/95 p-3 shadow-2xl backdrop-blur">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8189a7]">
+            Voice
+          </label>
+          <div className="max-h-44 space-y-1 overflow-y-auto pr-1">
+            {all.map((v) => {
+              const selected = v.voice.toLowerCase() === voice.toLowerCase();
+              return (
+                <button
+                  key={`${v.label}-${v.voice}`}
+                  disabled={!v.available}
+                  onClick={() => onVoiceChange(v.voice)}
+                  title={
+                    v.available
+                      ? `${v.voice} — ${v.label}`
+                      : `${v.label} is not configured. Add its key in the Keys tab to use it.`
+                  }
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
+                    !v.available && "cursor-not-allowed opacity-40",
+                    v.available && "hover:bg-white/[0.06]",
+                    selected && "bg-white/[0.1]",
+                  )}
+                  style={selected ? { color: "var(--spec-3)" } : undefined}
+                >
+                  <span className="capitalize">{v.voice}</span>
+                  <span className="text-[10px] text-[#8189a7]">{v.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <label className="mt-3 mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8189a7]">
+            Speed · {pace.toFixed(2)}×
+          </label>
+          <input
+            type="range"
+            min={min}
+            max={max}
+            step={0.05}
+            value={pace}
+            onChange={(e) => onPaceChange(Number(e.target.value))}
+            className="w-full accent-[var(--spec-3)]"
+            aria-label="Speaking speed"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * ChatGPT-call style caption log: you on the right, Jarvis answering below.
  * Rendered as the same written markdown the chat pane uses, so headings,
@@ -127,7 +335,10 @@ function ConversationLog({ turns }: { turns: LiveTurn[] }) {
           )}
           {turn.assistant && (
             <div className="max-w-[95%] text-sm leading-6">
-              <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.28em] text-[#818cf8]">
+              <span
+                className="jarvis-spectrum mb-1 block text-[10px] font-semibold uppercase tracking-[0.28em]"
+                style={{ color: "var(--spec-4)" }}
+              >
                 Jarvis
               </span>
               {/* `dark` scopes the markdown prose tokens to this always-dark
@@ -161,12 +372,25 @@ export function JarvisHud({
   onToggleGestures,
   muted = false,
   onGestureAction,
+  paused = false,
+  onResume,
+  autoRestart = true,
+  onToggleAutoRestart,
+  noiseCancel = true,
+  onToggleNoiseCancel,
+  echoCancelling = false,
+  voiceOptions = null,
+  voice = "",
+  onVoiceChange,
+  pace = 1.05,
+  onPaceChange,
 }: JarvisHudProps) {
   const [boost, setBoost] = useState(false);
   // The Three.js orb replaces the CSS sphere. Optimistic: it mounts and tries
   // to create a WebGL context, and flips this back to false (revealing the CSS
   // sphere) if that fails.
   const [orbLive, setOrbLive] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   if (!open) return null;
 
@@ -286,7 +510,9 @@ export function JarvisHud({
           </div>
 
           {boosting && phase !== "speaking" && (
-            <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#818cf8]/30 bg-[#818cf8]/10 px-2.5 py-1 text-[10px] font-semibold tracking-[0.2em] text-[#a5b4fc] uppercase">
+            <div
+              className="jarvis-spectrum mt-2 inline-flex items-center gap-1.5 rounded-full border border-[var(--spec-6)]/30 bg-[var(--spec-6)]/10 px-2.5 py-1 text-[10px] font-semibold tracking-[0.2em] text-[var(--spec-5)] uppercase"
+            >
               <Zap className="size-3" />
               Boost
             </div>
@@ -299,7 +525,16 @@ export function JarvisHud({
             <ConversationLog turns={transcript} />
           </div>
 
-          <div className="flex h-12 shrink-0 items-center justify-center gap-4">
+          <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 pb-2">
+            {paused && onResume && (
+              <button
+                onClick={onResume}
+                className="jarvis-spectrum inline-flex items-center gap-1.5 rounded-full border border-[var(--spec-4)]/50 bg-[var(--spec-4)]/15 px-3.5 py-1.5 text-[11px] font-medium text-[var(--spec-4)]"
+              >
+                <Play className="size-3" />
+                Resume listening
+              </button>
+            )}
             <button
               onClick={onToggleGestures}
               title={
@@ -310,7 +545,7 @@ export function JarvisHud({
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] transition-colors",
                 gesturesEnabled
-                  ? "border-[#ffaa30]/40 bg-[#ffaa30]/15 text-[#ffcc66]"
+                  ? "jarvis-spectrum border-[var(--spec-2)]/40 bg-[var(--spec-2)]/15 text-[var(--spec-2)]"
                   : "border-white/10 bg-white/[0.04] text-[#8189a7] hover:bg-white/[0.08]",
               )}
             >
@@ -328,23 +563,100 @@ export function JarvisHud({
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] transition-colors",
                 wakeGated
-                  ? "border-[#818cf8]/40 bg-[#818cf8]/15 text-[#a5b4fc]"
+                  ? "jarvis-spectrum border-[var(--spec-6)]/40 bg-[var(--spec-6)]/15 text-[var(--spec-5)]"
                   : "border-white/10 bg-white/[0.04] text-[#8189a7] hover:bg-white/[0.08]",
               )}
             >
               {wakeGated ? <Mic className="size-3" /> : <MicOff className="size-3" />}
               {wakeGated ? "Wake gate on" : "Wake gate off"}
             </button>
+            {onToggleAutoRestart && (
+              <Pill
+                on={autoRestart}
+                onClick={onToggleAutoRestart}
+                accent="var(--spec-4)"
+                title={
+                  autoRestart
+                    ? "Auto-restart on — the mic reopens by itself after every reply"
+                    : "Auto-restart off — Jarvis waits for you to resume listening"
+                }
+              >
+                {autoRestart ? <Waves className="size-3" /> : <Pause className="size-3" />}
+                Auto
+              </Pill>
+            )}
+            {onToggleNoiseCancel && (
+              <Pill
+                on={noiseCancel}
+                onClick={onToggleNoiseCancel}
+                accent="var(--spec-5)"
+                title={
+                  noiseCancel
+                    ? `Noise cancellation on — ${echoCancelling ? "browser echo cancellation active" : "browser echo cancellation unavailable on this device"}`
+                    : "Noise cancellation off — the raw microphone signal is used"
+                }
+              >
+                <Waves className="size-3" />
+                Noise
+              </Pill>
+            )}
+            {onVoiceChange && onPaceChange && (
+              <VoiceControls
+                options={voiceOptions}
+                voice={voice}
+                onVoiceChange={onVoiceChange}
+                pace={pace}
+                onPaceChange={onPaceChange}
+              />
+            )}
+            <button
+              onClick={() => {
+                const text = transcript
+                  .map((t) =>
+                    [t.user.trim() && `You: ${t.user.trim()}`, t.assistant.trim() && `Jarvis: ${t.assistant.trim()}`]
+                      .filter(Boolean)
+                      .join("\n"),
+                  )
+                  .filter(Boolean)
+                  .join("\n\n");
+                if (!text) return;
+                void navigator.clipboard
+                  ?.writeText(text)
+                  .then(() => {
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1600);
+                  })
+                  .catch(() => {});
+              }}
+              disabled={transcript.length === 0}
+              title="Copy the whole conversation"
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-[#8189a7] transition-colors hover:bg-white/[0.08] disabled:opacity-30"
+            >
+              {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+            <button
+              onClick={() => downloadTranscript(transcript)}
+              disabled={transcript.length === 0}
+              title="Download the conversation as Markdown"
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-[#8189a7] transition-colors hover:bg-white/[0.08] disabled:opacity-30"
+            >
+              <Download className="size-3" />
+              Export
+            </button>
             {phase === "speaking" && (
               <button
                 onClick={onSkip}
-                title="Skip reply"
-                className="inline-flex size-11 items-center justify-center rounded-full border border-white/15 bg-white/[0.06] text-[#c7d2fe] transition-colors hover:bg-white/[0.12]"
+                title="Skip reply (Space)"
+                className="jarvis-spectrum inline-flex size-11 items-center justify-center rounded-full border border-white/15 bg-white/[0.06] text-[var(--spec-5)] transition-colors hover:bg-white/[0.12]"
               >
                 <SkipForward className="size-4" />
               </button>
             )}
           </div>
+          <p className="shrink-0 pb-1 text-center text-[10px] tracking-[0.18em] text-[#4d5578] uppercase">
+            Space interrupt · Esc end · M mute
+          </p>
         </div>
       </div>
     </motion.div>
