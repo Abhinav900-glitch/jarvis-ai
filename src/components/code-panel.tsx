@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
   BookOpen,
@@ -36,6 +37,7 @@ import {
   buildRunPrompt,
   PROVIDER_LABELS,
   type CodeRunResult,
+  type EngineStatus,
 } from "@/lib/code-run";
 import {
   searchStarters,
@@ -61,6 +63,33 @@ export function CodePanel({
   onSendToJarvis: (text: string) => void;
 }) {
   const runCode = useAction(api.codeRunner.runCode);
+  const getRunnerStatus = useAction(api.codeRunner.runnerStatus);
+
+  // Which engines have their credentials, and why one might be missing. Fetched
+  // on demand rather than on mount: a key is often pasted while the panel is
+  // already open, and a stale "not configured" badge would be worse than none.
+  const [engines, setEngines] = useState<EngineStatus[] | null>(null);
+  const [showEngines, setShowEngines] = useState(false);
+  const [checkingEngines, setCheckingEngines] = useState(false);
+
+  const refreshEngines = async () => {
+    if (checkingEngines) return;
+    setCheckingEngines(true);
+    try {
+      const status = await getRunnerStatus();
+      setEngines(status.engines);
+    } catch {
+      setEngines(null);
+    } finally {
+      setCheckingEngines(false);
+    }
+  };
+
+  const toggleEngines = () => {
+    const next = !showEngines;
+    setShowEngines(next);
+    if (next && !engines) void refreshEngines();
+  };
 
   const [languageId, setLanguageId] = useState(DEFAULT_CODE_LANGUAGE);
   const [versionIndex, setVersionIndex] = useState<number | undefined>(undefined);
@@ -239,6 +268,24 @@ export function CodePanel({
                   installs {libs.join(", ")}
                 </span>
               )}
+          <button
+            onClick={toggleEngines}
+            className="ml-auto flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground"
+            title="Which execution engines are available"
+          >
+            <Loader2
+              className={cn(
+                "size-3",
+                checkingEngines && "animate-spin",
+              )}
+            />
+            Engines
+            {engines && (
+              <span className="tabular-nums">
+                {engines.filter((e) => e.configured).length}/{engines.length}
+              </span>
+            )}
+          </button>
           {result && (
             <span className="ml-1 flex items-center gap-2 text-[10px] text-muted-foreground/70">
               <span className={result.failed ? "text-amber-500" : "text-emerald-500"}>
@@ -268,7 +315,7 @@ export function CodePanel({
           )}
           <button
             onClick={onClose}
-            className="ml-auto rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+            className="ml-1 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
             title="Close"
           >
             <X className="size-3.5" />
@@ -389,6 +436,79 @@ export function CodePanel({
             </Button>
           </div>
         </div>
+
+        {/* ---- Engine availability ---- */}
+        {showEngines && (
+          <div className="mb-2 rounded-lg border bg-muted/20 p-2">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                Execution engines
+              </span>
+              <button
+                onClick={() => void refreshEngines()}
+                disabled={checkingEngines}
+                className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                title="Check again"
+              >
+                <Loader2
+                  className={cn("size-3", checkingEngines && "animate-spin")}
+                />
+              </button>
+            </div>
+
+            {!engines ? (
+              <p className="text-[11px] text-muted-foreground">
+                Could not read the engine configuration.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {engines.map((engine) => {
+                  // An engine with no key is still usable as a fallback for the
+                  // languages it covers, so it is shown as limited, not broken.
+                  const usable = engine.configured;
+                  return (
+                    <div key={engine.provider} className="text-[11px] leading-snug">
+                      <div className="flex items-center gap-1.5">
+                        {usable ? (
+                          <Check className="size-3 shrink-0 text-emerald-500" />
+                        ) : (
+                          <X className="size-3 shrink-0 text-amber-500" />
+                        )}
+                        <span className="font-medium">{engine.label}</span>
+                        <span className="text-muted-foreground">
+                          {usable
+                            ? "ready"
+                            : engine.envNames.length
+                              ? "no key found"
+                              : "no compiler for this language"}
+                        </span>
+                      </div>
+                      {engine.problem && (
+                        <p className="ml-5 text-muted-foreground">
+                          {engine.problem}
+                        </p>
+                      )}
+                      {!usable &&
+                        !engine.problem &&
+                        engine.unsupported.length > 0 && (
+                          <p className="ml-5 text-muted-foreground">
+                            Cannot run {engine.unsupported.join(", ")}.
+                          </p>
+                        )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <p className="mt-2 border-t pt-1.5 text-[10px] leading-snug text-muted-foreground/70">
+              Keys are read on the server and never sent to the browser. Engines
+              are tried in order and the first one that runs your program ends
+              the chain, so a working engine is used even if an earlier one is
+              unavailable.
+            </p>
+          </div>
+        )}
 
         {/* ---- Starter library ---- */}
         {showLibrary && (

@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import {
+  CODE_LANGUAGES,
   getCodeLanguage,
   resolveVersion,
   type CodeLanguage,
@@ -45,6 +46,12 @@ const JDOODLE_URL = "https://api.jdoodle.com/v1/execute";
 const WANDBOX_URL = "https://wandbox.org/api/compile.json";
 const ONLINECOMPILER_URL = "https://api.onlinecompiler.io/api/run-code-sync/";
 
+const PROVIDER_LABEL: Record<CodeProvider, string> = {
+  jdoodle: "JDoodle",
+  wandbox: "Wandbox",
+  onlinecompiler: "OnlineCompiler.io",
+};
+
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_SOURCE_CHARS = 200_000;
 const MAX_STDIN_CHARS = 20_000;
@@ -58,6 +65,35 @@ const OC_OUTPUT_CAP = 999;
  * indication that it did, so the length itself is the only available signal.
  */
 const WANDBOX_OUTPUT_CAP = 131_072;
+
+/**
+ * Every spelling of each variable that has ever been used for these engines.
+ *
+ * A key is added through the keys tab by hand, so it lands under whatever name
+ * was typed there. Enumerating the plausible ones is cheaper than the round trip
+ * it takes to discover a typo from a failed run.
+ */
+const JDOODLE_ID_NAMES = [
+  "JDOODLE_CLIENT_ID",
+  "JDOOLE_CLIENT_ID",
+  "JDOODLE_API_CLIENT_ID",
+  "JDOODLE_ID",
+  "JDOODLE_CLIENTID",
+];
+const JDOODLE_SECRET_NAMES = [
+  "JDOODLE_CLIENT_SECRET",
+  "JDOOLE_CLIENT_SECRET",
+  "JDOODLE_API_CLIENT_SECRET",
+  "JDOODLE_SECRET",
+  "JDOODLE_CLIENTSECRET",
+];
+const ONLINECOMPILER_KEY_NAMES = [
+  "ONLINECOMPILER_API_KEY",
+  "ONLINE_COMPILER_API_KEY",
+  "ONLINECOMPILER_KEY",
+  "ONLINE_COMPILER_KEY",
+  "ONLINECOMPILER_API_TOKEN",
+];
 
 function readEnv(...names: string[]): string | null {
   for (const name of names) {
@@ -78,26 +114,28 @@ interface JdoodleCredentials {
  * correct spelling or a common typo of it.
  */
 function getJdoodleCredentials(): JdoodleCredentials | null {
-  const clientId = readEnv(
-    "JDOODLE_CLIENT_ID",
-    "JDOOLE_CLIENT_ID",
-    "JDOODLE_API_CLIENT_ID",
-  );
-  const clientSecret = readEnv(
-    "JDOODLE_CLIENT_SECRET",
-    "JDOOLE_CLIENT_SECRET",
-    "JDOODLE_API_CLIENT_SECRET",
-  );
+  const clientId = readEnv(...JDOODLE_ID_NAMES);
+  const clientSecret = readEnv(...JDOODLE_SECRET_NAMES);
+
+  // A single key holding both halves. This is the common case when someone
+  // pastes the pair straight out of the JDoodle dashboard, and it is the
+  // reason a run can look "unconfigured" while a key is plainly present.
+  if (!clientId || !clientSecret) {
+    const combined = readEnv("JDOODLE_API_KEY", "JDOODLE_KEY", "JDoodle_Authorization");
+    if (combined) {
+      const parts = combined.split(/[:\s,]+/).filter(Boolean);
+      if (parts.length >= 2) {
+        return { clientId: parts[0], clientSecret: parts.slice(1).join("") };
+      }
+    }
+  }
+
   if (!clientId || !clientSecret) return null;
   return { clientId, clientSecret };
 }
 
 function getOnlineCompilerKey(): string | null {
-  return readEnv(
-    "ONLINECOMPILER_API_KEY",
-    "ONLINE_COMPILER_API_KEY",
-    "ONLINECOMPILER_KEY",
-  );
+  return readEnv(...ONLINECOMPILER_KEY_NAMES);
 }
 
 function clamp(text: string, max: number): string {
@@ -687,8 +725,112 @@ export const runCode = action({
     failure.providersTried = providersTried;
     if (providersTried.length > 1) {
       failure.requestError =
-        `All ${providersTried.length} execution engines failed. Last error: ${failure.requestError ?? "unknown error"}`;
+        `All ${providersTried.length} execution engines failed (${providersTried
+          .map((p) => PROVIDER_LABEL[p])
+          .join(", then ")}). Last error: ${failure.requestError ?? "unknown error"}`;
+    }
+
+    // A chain that never got started is a configuration problem, not a program
+    // problem, and saying so is the whole difference between a run the user
+    // can fix and one they can only stare at.
+    if (failure.requestError && !providersTried.length) {
+      failure.requestError += ` No engine was even contacted. ${
+        !jdoodle && !onlineCompiler
+          ? "Add JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET (jdoodle.com/compiler-api) or ONLINECOMPILER_API_KEY in the API keys tab."
+          : ""
+      }`;
     }
     return failure;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+export interface EngineStatus {
+  provider: CodeProvider;
+  label: string;
+  /** True when this engine has the credentials it needs. */
+  configured: boolean;
+  /**
+   * The variable names that would satisfy this engine. Shown so a missing key
+   * can be fixed by name rather than guessed at.
+   */
+  envNames: string[];
+  /**
+   * Languages this engine cannot run at all, for the reason that matters:
+   * Wandbox needs no key so it is limited by coverage, the other two by the
+   * key being present. A user picking Kotlin needs to know that installing a
+   * key is the fix, whereas Wandbox simply has no Kotlin compiler.
+   */
+  unsupported: string[];
+  /** Why it is unusable right now, or null when it is ready. */
+  problem: string | null;
+}
+
+/**
+ * Which execution engines are usable right now.
+ *
+ * A failed run on its own cannot distinguish "your program is wrong" from "your
+ * key was saved under the wrong name", and the second is by far the more likely
+ * cause. This reports the configuration without revealing any key material:
+ * names and booleans only, never a value or any part of one.
+ */
+export const runnerStatus = action({
+  args: {},
+  handler: async (ctx): Promise<{ engines: EngineStatus[]; ready: CodeProvider[] }> => {
+    await getAuthUserId(ctx);
+
+    const jdoodleReady = getJdoodleCredentials() !== null;
+    const onlineCompilerReady = getOnlineCompilerKey() !== null;
+
+    // JDoodle runs every language offered here, so a missing key takes the
+    // whole engine out of service rather than shrinking its coverage.
+    const allLabels = CODE_LANGUAGES.map((l) => l.label);
+
+    const engines: EngineStatus[] = [
+      {
+        provider: "jdoodle",
+        label: "JDoodle",
+        configured: jdoodleReady,
+        envNames: [JDOODLE_ID_NAMES[0], JDOODLE_SECRET_NAMES[0]],
+        unsupported: jdoodleReady ? [] : allLabels,
+        problem: jdoodleReady
+          ? null
+          : "No client ID and secret found. Add JDOODLE_CLIENT_ID and JDOODLE_CLIENT_SECRET from jdoodle.com/compiler-api in the API keys tab.",
+      },
+      {
+        provider: "wandbox",
+        label: "Wandbox",
+        // Always ready: it takes no key at all.
+        configured: true,
+        envNames: [],
+        // The one real limit here is coverage, not credentials.
+        unsupported: CODE_LANGUAGES.filter((l) => l.wandbox === undefined).map(
+          (l) => l.label,
+        ),
+        problem: null,
+      },
+      {
+        provider: "onlinecompiler",
+        label: "OnlineCompiler.io",
+        configured: onlineCompilerReady,
+        envNames: [ONLINECOMPILER_KEY_NAMES[0]],
+        unsupported: onlineCompilerReady
+          ? []
+          : CODE_LANGUAGES.filter((l) => l.onlineCompiler === undefined).map(
+              (l) => l.label,
+            ),
+        problem: onlineCompilerReady
+          ? null
+          : "No API key found. Add ONLINECOMPILER_API_KEY from the API Keys page at onlinecompiler.io in the API keys tab.",
+      },
+    ];
+
+    return {
+      engines,
+      ready: engines.filter((e) => e.configured).map((e) => e.provider),
+    };
   },
 });

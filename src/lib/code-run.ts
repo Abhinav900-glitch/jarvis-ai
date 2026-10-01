@@ -16,6 +16,23 @@ export const PROVIDER_LABELS: Record<CodeProvider, string> = {
   onlinecompiler: "OnlineCompiler.io",
 };
 
+/**
+ * What the server knows about one engine's configuration, with no key material
+ * in it. Drawn from the `runnerStatus` action.
+ */
+export interface EngineStatus {
+  provider: CodeProvider;
+  label: string;
+  /** True when the engine has everything it needs to run a program. */
+  configured: boolean;
+  /** Variable names that would satisfy this engine. */
+  envNames: string[];
+  /** Languages it cannot run, so the fix for "nothing runs" is obvious. */
+  unsupported: string[];
+  /** Why it is unusable, or null when it is ready. */
+  problem: string | null;
+}
+
 export interface CodeRunResult {
   /** False only when the run could not be completed at all. */
   ok: boolean;
