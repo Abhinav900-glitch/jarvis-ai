@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { IDENTITY_INSTRUCTIONS } from "@/lib/identity";
 import { MicCapture } from "./audio";
 import { TtsPlayback } from "./playback";
 import { LiveTransport, type ConnectionStatus } from "./transport";
@@ -29,6 +30,14 @@ export interface LiveSessionOptions {
   url?: string;
   /** ISO-639-1 language hint, e.g. "en". Omit for auto-detect. */
   language?: string;
+  /**
+   * Extra system instructions for the local model, sent once at session start.
+   *
+   * The local pipeline has no idea who built this application, so without this
+   * it will name whichever lab trained it when asked. Defaults to the shared
+   * identity block so the usual case needs no configuration.
+   */
+  instructions?: string | null;
   /** Send camera frames to the model. */
   vision?: boolean;
   visionSource?: VisionSource;
@@ -59,6 +68,11 @@ export function useLiveSession(options: LiveSessionOptions = {}) {
     visionFps = 1.5,
   } = options;
 
+  // Defaulted rather than left undefined: the whole point of sending these is
+  // that the local model otherwise has no idea who built this application, so
+  // the default is the case worth having.
+  const instructions = options.instructions ?? IDENTITY_INSTRUCTIONS;
+
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [state, setState] = useState<SessionState>("idle");
   const [active, setActive] = useState(false);
@@ -79,8 +93,8 @@ export function useLiveSession(options: LiveSessionOptions = {}) {
 
   // Keep the latest options available to callbacks without re-creating
   // the transport on every render.
-  const optionsRef = useRef({ language, vision, visionSource, visionFps });
-  optionsRef.current = { language, vision, visionSource, visionFps };
+  const optionsRef = useRef({ language, vision, visionSource, visionFps, instructions });
+  optionsRef.current = { language, vision, visionSource, visionFps, instructions };
 
   const handleClearBuffer = useCallback(() => {
     // Barge-in: drop queued audio on the audio thread immediately.
@@ -219,6 +233,10 @@ export function useLiveSession(options: LiveSessionOptions = {}) {
       }
 
       const transport = createTransport(url);
+      // Set before connect(): the socket opens asynchronously and sends
+      // session.start from its onopen, so anything set afterwards would arrive
+      // too late to be included.
+      transport.setInstructions(optionsRef.current.instructions);
       transportRef.current = transport;
       transport.connect();
 

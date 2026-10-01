@@ -48,10 +48,24 @@ export class LiveTransport {
   private manuallyClosed = false;
   private audioFramesSent = 0;
   private imageFramesSent = 0;
+  /**
+   * System instructions sent with the next `session.start`.
+   *
+   * Settable rather than constructor-only because the transport is created once
+   * per connection while the instructions come from React options that may
+   * change between renders; reading them at send time keeps the two in step
+   * without rebuilding the socket.
+   */
+  private instructions: string | null = null;
 
   constructor(url: string = DEFAULT_URL, callbacks: TransportCallbacks = {}) {
     this.url = url;
     this.callbacks = callbacks;
+  }
+
+  /** Instructions for the local model, applied on the next session start. */
+  setInstructions(value: string | null): void {
+    this.instructions = value && value.trim() ? value : null;
   }
 
   get connectionStatus(): ConnectionStatus {
@@ -86,7 +100,14 @@ export class LiveTransport {
     socket.onopen = () => {
       this.reconnectAttempts = 0;
       this.setStatus("open");
-      this.sendControl({ type: "session.start", sampleRate: MIC_SAMPLE_RATE, visionContext: 1 });
+      this.sendControl({
+        type: "session.start",
+        sampleRate: MIC_SAMPLE_RATE,
+        visionContext: 1,
+        // Omitted entirely when unset, so a server written before this field
+        // existed receives exactly the payload it always did.
+        ...(this.instructions ? { instructions: this.instructions } : {}),
+      });
     };
 
     socket.onmessage = (event: MessageEvent) => {

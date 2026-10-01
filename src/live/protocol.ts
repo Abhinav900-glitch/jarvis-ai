@@ -78,6 +78,16 @@ export interface SessionStartMessage {
   language?: string | null;
   voice?: string | null;
   visionContext?: number;
+  /**
+   * Extra system instructions for the local model, sent once at session start.
+   *
+   * Optional and additive on purpose. The local pipeline runs its own model
+   * with its own system prompt and knows nothing about who built this
+   * application, so without this it answers "who made you?" with the name of
+   * whichever lab trained it. A server that does not know this field ignores
+   * it, so an older local pipeline keeps working unchanged.
+   */
+  instructions?: string;
 }
 
 export interface TextMessage {
