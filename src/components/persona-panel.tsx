@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { DEFAULT_BEHAVIOR_INSTRUCTIONS } from "@/lib/identity";
 import { Separator } from "@/components/ui/separator";
 
 /**
@@ -56,6 +57,7 @@ function InstructionsEditor({
 }) {
   const [draft, setDraft] = useState(value);
   const [saving, setSaving] = useState(false);
+  const [showStyle, setShowStyle] = useState(false);
 
   const save = async () => {
     setSaving(true);
@@ -94,6 +96,49 @@ function InstructionsEditor({
         </span>
         <span>Applies to new messages in every chat.</span>
       </div>
+      {/* The house style. Shown rather than hidden, because it is active whether
+          or not the box above has anything in it — a user looking at an empty
+          box would otherwise have no way of knowing a default is shaping every
+          reply. */}
+      <div className="rounded-md border bg-muted/30 p-2.5">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="text-xs font-medium">House style</span>
+          <span className="text-[10px] text-muted-foreground">
+            {value.trim() ? "replaced by yours" : "active"}
+          </span>
+        </div>
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          {value.trim()
+            ? "Your instructions replace the house style, so these are not being applied."
+            : "Applied on every reply. Whichever model is answering — GPT, Llama, Gemini or a local one — these rules keep the behaviour consistent. Writing your own instructions above replaces them."}
+        </p>
+        {!value.trim() && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-[11px]"
+              onClick={() => setDraft(DEFAULT_BEHAVIOR_INSTRUCTIONS)}
+            >
+              Copy into the editor
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-[11px]"
+              onClick={() => setShowStyle((v) => !v)}
+            >
+              {showStyle ? "Hide" : "View"} the rules
+            </Button>
+          </div>
+        )}
+        {showStyle && !value.trim() && (
+          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap text-[11px] leading-snug text-muted-foreground">
+            {DEFAULT_BEHAVIOR_INSTRUCTIONS}
+          </pre>
+        )}
+      </div>
+
       <Button onClick={() => void save()} disabled={draft === value || saving}>
         {saving ? "Saving…" : "Save instructions"}
       </Button>

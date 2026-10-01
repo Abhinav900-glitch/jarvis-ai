@@ -3,6 +3,7 @@ import { internalQuery, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import type { GenericDatabaseReader } from "convex/server";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
+import { DEFAULT_BEHAVIOR_INSTRUCTIONS } from "../lib/identity";
 
 // ---------------------------------------------------------------------------
 // Personas and standing instructions.
@@ -232,17 +233,28 @@ export async function instructionBlockFor(
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .first()
     .catch(() => null);
-  if (!settings) return "";
 
   const parts: string[] = [];
-  const custom = settings.customInstructions?.trim();
+  const custom = settings?.customInstructions?.trim();
+
   if (custom) {
     parts.push(
       `STANDING INSTRUCTIONS FROM THE USER — these apply to every reply and outrank your usual habits:\n${custom}`,
     );
+  } else {
+    // Nothing of the user's own, so the house style applies.
+    //
+    // The model behind this app changes — GPT, Llama, Gemini, a local one —
+    // and each has its own default habits. These rules are what makes the
+    // behaviour the same whichever is configured. They are deliberately not
+    // stored in the user's settings, so writing their own instructions replaces
+    // them rather than stacking on top, and clearing the box brings them back.
+    parts.push(
+      `HOUSE STYLE — follow these on every reply:\n${DEFAULT_BEHAVIOR_INSTRUCTIONS}`,
+    );
   }
 
-  const personaId = sessionPersonaId ?? settings.activePersonaId ?? null;
+  const personaId = sessionPersonaId ?? settings?.activePersonaId ?? null;
   if (personaId) {
     const persona = await db.get(personaId).catch(() => null);
     if (persona) {
