@@ -146,9 +146,26 @@ export async function mongoDiagnose(): Promise<MongoDiagnosis> {
       endpoint: host,
       database: DB_NAME,
       status: null,
-      detail: String(err).slice(0, 160),
+      detail: errText(err),
     };
   }
+}
+
+/**
+ * Fetch failures from the node runtime bury the useful part at the end of a
+ * long message ("... invalid peer certificate: certificate not valid for ...")
+ * behind a `cause` chain. Slicing the front of `String(err)` throws away the
+ * only part that says what actually went wrong.
+ */
+function errText(err: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; cur && depth < 5; depth++) {
+    parts.push(String(cur));
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  const key = process.env.MONGODB_API_KEY;
+  return (key ? parts.join(" <- ").split(key).join("<redacted>") : parts.join(" <- ")).slice(0, 900);
 }
 
 export const MEMORY_COLLECTION = "memory";
