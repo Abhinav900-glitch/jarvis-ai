@@ -1,7 +1,7 @@
 "use node";
 
 // ---------------------------------------------------------------------------
-// Jarvis Code — the agentic surface.
+// AeroTransformGen Dev — the agentic surface.
 //
 // A run is one task handed over. Jarvis plans it, works the steps, and keeps
 // going on its own. The design constraint the user actually asked for is the
@@ -594,7 +594,7 @@ export const start = action({
   },
   handler: async (ctx, args): Promise<{ runId: Id<"agentRuns"> }> => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use Jarvis Code.");
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
     const goal = args.goal.trim().slice(0, 4000);
     if (goal.length < 8) {
       throw new Error("Give Jarvis a real task — a sentence or two.");
@@ -649,7 +649,7 @@ export const advance = action({
   args: { runId: v.id("agentRuns") },
   handler: async (ctx, args): Promise<{ status: string; remaining: number }> => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use Jarvis Code.");
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
     return runLoop(ctx, args.runId, userId);
   },
 });
@@ -659,7 +659,7 @@ export const answer = action({
   args: { runId: v.id("agentRuns"), choice: v.string() },
   handler: async (ctx, args): Promise<{ status: string; remaining: number }> => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use Jarvis Code.");
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
     const choice = args.choice.trim().slice(0, 600);
     if (!choice) throw new Error("Pick an option or type what to do.");
 
@@ -704,7 +704,7 @@ export const decideProposal = action({
   },
   handler: async (ctx, args): Promise<{ status: string; remaining: number }> => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use Jarvis Code.");
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
 
     const rows = (await ctx.runQuery(internal.agentStore.pendingProposals, {
       runId: args.runId,
@@ -800,7 +800,7 @@ export const rewind = action({
     args,
   ): Promise<{ path: string; restored: boolean }> => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use Jarvis Code.");
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
 
     const row = (await ctx.runQuery(internal.agentStore.getCheckpoint, {
       checkpointId: args.checkpointId,
@@ -833,7 +833,7 @@ export const cancel = action({
   args: { runId: v.id("agentRuns") },
   handler: async (ctx, args): Promise<{ status: string }> => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) throw new Error("Sign in to use Jarvis Code.");
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
     await ctx.runMutation(internal.agentStore.cancelRun, {
       runId: args.runId,
       userId,

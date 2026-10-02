@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// JarvisCodePanel — the agentic surface.
+// AeroTransformGen Dev — the agentic surface.
 //
 // The design brief this panel is built to: Jarvis decides for itself, and the
 // user is interrupted only for decisions that are genuinely theirs. So the
@@ -40,7 +40,7 @@ import { diffLines, diffStats, withContext, type DiffLine } from "@/lib/agent-di
 import { MarkdownMessage } from "@/components/markdown-message";
 import { cn } from "@/lib/utils";
 
-export interface JarvisCodePanelProps {
+export interface AeroTransformGenPanelProps {
   open: boolean;
   onClose: () => void;
 }
@@ -261,7 +261,10 @@ function StepCard({
   );
 }
 
-export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
+export function AeroTransformGenPanel({
+  open,
+  onClose,
+}: AeroTransformGenPanelProps) {
   // State first: the queries below are keyed off runId, so it has to exist
   // before they are declared or the first render reads it in its temporal dead
   // zone.
@@ -471,13 +474,13 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
           className="hud-panel hud-corners flex max-h-[86vh] w-full max-w-6xl flex-col"
           role="dialog"
           aria-modal="true"
-          aria-label="Jarvis Code"
+          aria-label="AeroTransformGen Dev"
         >
           {/* ---- header ---- */}
           <div className="flex items-center gap-2 border-b border-border/60 px-4 py-3">
             <Bot className="size-4 text-primary" />
             <span className="hud-label" data-tone="cyan">
-              Jarvis Code
+              AeroTransformGen Dev
             </span>
             {status ? (
               <span className="ml-2 inline-flex items-center gap-1.5">
@@ -512,14 +515,14 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
             {/* ---- handover ---- */}
             <div>
               <label
-                htmlFor="jarvis-code-goal"
+                htmlFor="atg-dev-goal"
                 className="hud-label block"
                 data-tone="blue"
               >
                 Hand it a task
               </label>
               <textarea
-                id="jarvis-code-goal"
+                id="atg-dev-goal"
                 value={goal}
                 onChange={(e) => setGoal(e.target.value)}
                 onKeyDown={(e) => {

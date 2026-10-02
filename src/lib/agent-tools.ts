@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // The agent's tool contract.
 //
-// This is the part that makes Jarvis Code a coding agent rather than a chat
+// This is the part that makes AeroTransformGen Dev a coding agent rather than a chat
 // panel. The model is given function declarations, calls one, the runtime
 // executes it against a real workspace, the result goes back into the
 // transcript, and the loop runs again — which is the whole shape of Claude

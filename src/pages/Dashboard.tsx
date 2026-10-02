@@ -78,7 +78,7 @@ import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
 import { CodePanel } from "@/components/code-panel";
-import { JarvisCodePanel } from "@/components/jarvis-code-panel";
+import { AeroTransformGenPanel } from "@/components/aerotransformgen-panel";
 import { sanitizeForSpeech } from "@/lib/speech";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -692,7 +692,7 @@ export default function Dashboard() {
   const [showMemory, setShowMemory] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showCode, setShowCode] = useState(false);
-  const [showJarvisCode, setShowJarvisCode] = useState(false);
+  const [showAeroTransform, setShowAeroTransform] = useState(false);
   const [streaming, setStreaming] = useState(false);
   // True while a "continue" call is in flight, so the button cannot be
   // double-pressed into two continuations of the same reply.
@@ -3624,10 +3624,10 @@ export default function Dashboard() {
                     ) : null}
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => setShowJarvisCode(true)}
+                    onClick={() => setShowAeroTransform(true)}
                   >
                     <Bot className="size-4" />
-                    Jarvis Code
+                    AeroTransformGen Dev
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => setShowCode((v) => !v)}
@@ -4592,12 +4592,12 @@ export default function Dashboard() {
               {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
             </AnimatePresence>
 
-            {/* ---- Jarvis Code: the agentic surface ---- */}
+            {/* ---- AeroTransformGen Dev: the agentic surface ---- */}
             <AnimatePresence>
-              {showJarvisCode ? (
-                <JarvisCodePanel
-                  open={showJarvisCode}
-                  onClose={() => setShowJarvisCode(false)}
+              {showAeroTransform ? (
+                <AeroTransformGenPanel
+                  open={showAeroTransform}
+                  onClose={() => setShowAeroTransform(false)}
                 />
               ) : null}
             </AnimatePresence>

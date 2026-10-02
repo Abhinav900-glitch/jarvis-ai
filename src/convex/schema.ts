@@ -280,7 +280,7 @@ const schema = defineSchema(
       .index("by_user", ["userId"])
       .index("by_user_time", ["userId", "createdAt"]),
 
-    // ---- Agentic runs (Jarvis Code) ------------------------------------
+    // ---- Agentic runs (AeroTransformGen Dev) ----------------------------
     // A run is one task the user handed over. Jarvis plans it, works the
     // steps, and only stops when a step is genuinely gated on a human
     // decision — the whole point of the feature is that the user is not
@@ -357,7 +357,7 @@ const schema = defineSchema(
     }).index("by_run", ["runId"]),
 
     // ---- The agent's workspace -----------------------------------------
-    // What makes Jarvis Code a coding agent rather than a chat panel: it owns
+    // What makes AeroTransformGen Dev a coding agent rather than a chat panel: it owns
     // files it can read, edit and run, so a step produces a real change rather
     // than a snippet in a transcript.
     //
