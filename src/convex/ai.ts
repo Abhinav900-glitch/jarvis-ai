@@ -32,7 +32,13 @@ interface TurnPart {
   image_url?: { url: string } | string;
 }
 
-interface ChatTurn {
+/**
+ * One turn in a conversation, plain text or multimodal.
+ *
+ * Exported so the agent can drive the same dispatch this module uses rather
+ * than reimplementing the provider chain.
+ */
+export interface ChatTurn {
   role: "user" | "assistant" | "system";
   content: string | TurnPart[];
 }
@@ -533,7 +539,14 @@ function groupByProvider(ranked: RankedEngine[]): Array<{
  * A provider with no key is recorded and skipped rather than aborting, so the
  * error the user eventually sees lists every reason.
  */
-async function runProviderChain(
+/**
+ * Walk a plan's engines until one answers, falling through on failure.
+ *
+ * Exported for the agent, which builds its own `EnginePlan` (it prefers the
+ * free OpenRouter roster) and then hands it here — so both surfaces walk
+ * engines through one implementation, and a provider bug is fixed once.
+ */
+export async function runProviderChain(
   turns: ChatTurn[],
   systemPrompt: string = JARVIS_PROMPT,
   failurePrefix = "All models failed automatically.",

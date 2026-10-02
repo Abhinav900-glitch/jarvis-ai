@@ -280,6 +280,69 @@ const schema = defineSchema(
       .index("by_user", ["userId"])
       .index("by_user_time", ["userId", "createdAt"]),
 
+    // ---- Agentic runs (Jarvis Code) ------------------------------------
+    // A run is one task the user handed over. Jarvis plans it, works the
+    // steps, and only stops when a step is genuinely gated on a human
+    // decision — the whole point of the feature is that the user is not
+    // consulted for anything the agent can reasonably settle itself.
+    agentRuns: defineTable({
+      userId: v.id("users"),
+      goal: v.string(),
+      title: v.string(),
+      status: v.union(
+        v.literal("planning"),
+        v.literal("running"),
+        v.literal("awaiting_user"),
+        v.literal("done"),
+        v.literal("failed"),
+        v.literal("cancelled"),
+      ),
+      /** How many steps the plan called for, once planned. */
+      planned: v.number(),
+      /** How many have actually been worked. */
+      done: v.number(),
+      /** Free-tier calls this run has spent. */
+      calls: v.number(),
+      answer: v.optional(v.string()),
+      error: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_time", ["userId", "createdAt"]),
+
+    agentSteps: defineTable({
+      runId: v.id("agentRuns"),
+      userId: v.id("users"),
+      position: v.number(),
+      title: v.string(),
+      detail: v.optional(v.string()),
+      status: v.union(
+        v.literal("pending"),
+        v.literal("running"),
+        v.literal("done"),
+        v.literal("failed"),
+        v.literal("needs_decision"),
+      ),
+      /** `provider/model` of the engine that actually answered this step. */
+      engineId: v.optional(v.string()),
+      output: v.optional(v.string()),
+      /** The agent's own one-clause reason for how it approached the step. */
+      rationale: v.optional(v.string()),
+      /**
+       * Why this step stopped for the user. Always set when the status is
+       * `needs_decision`, and it names the rule that fired rather than just
+       * repeating the question — otherwise a pause is indistinguishable
+       * from the agent being unsure.
+       */
+      gateReason: v.optional(v.string()),
+      question: v.optional(v.string()),
+      options: v.optional(v.array(v.string())),
+      /** What the user picked, or free text. */
+      answer: v.optional(v.string()),
+      createdAt: v.number(),
+    }).index("by_run", ["runId"]),
+
     // Generated sound effects (dog bark, thunder, ...). The prompt hash is the
     // cache key, so a given sound is only ever generated once and is then
     // served straight out of file storage.

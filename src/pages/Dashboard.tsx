@@ -55,6 +55,7 @@ import {
   Headphones,
   Pin,
   Sparkles,
+  Bot,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
@@ -77,6 +78,7 @@ import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
 import { CodePanel } from "@/components/code-panel";
+import { JarvisCodePanel } from "@/components/jarvis-code-panel";
 import { sanitizeForSpeech } from "@/lib/speech";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -690,6 +692,7 @@ export default function Dashboard() {
   const [showMemory, setShowMemory] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showCode, setShowCode] = useState(false);
+  const [showJarvisCode, setShowJarvisCode] = useState(false);
   const [streaming, setStreaming] = useState(false);
   // True while a "continue" call is in flight, so the button cannot be
   // double-pressed into two continuations of the same reply.
@@ -3621,6 +3624,12 @@ export default function Dashboard() {
                     ) : null}
                   </DropdownMenuItem>
                   <DropdownMenuItem
+                    onClick={() => setShowJarvisCode(true)}
+                  >
+                    <Bot className="size-4" />
+                    Jarvis Code
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
                     onClick={() => setShowCode((v) => !v)}
                   >
                     <Code2 className="size-4" />
@@ -4581,6 +4590,16 @@ export default function Dashboard() {
           </AnimatePresence>            {/* ---- Memory panel ---- */}
             <AnimatePresence>
               {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
+            </AnimatePresence>
+
+            {/* ---- Jarvis Code: the agentic surface ---- */}
+            <AnimatePresence>
+              {showJarvisCode ? (
+                <JarvisCodePanel
+                  open={showJarvisCode}
+                  onClose={() => setShowJarvisCode(false)}
+                />
+              ) : null}
             </AnimatePresence>
 
             {/* ---- Code runner panel ---- */}

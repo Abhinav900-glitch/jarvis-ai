@@ -91,8 +91,7 @@ export const PROVIDERS: ProviderSpec[] = [
     reasoningEffort: false,
     maxTokens: 8192,
     timeoutMs: 60_000,
-  },
-  {
+  },  {
     id: "huggingface",
     label: "Hugging Face",
     url: "https://router.huggingface.co/v1/chat/completions",
@@ -104,7 +103,26 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 4096,
     timeoutMs: 45_000,
   },
-  ];
+  {
+    // One key, dozens of free models, OpenAI-shaped — so it drops into the
+    // existing dispatch with no special-casing. `openrouter/free` is a router
+    // slug rather than a model: it picks whichever free model currently suits
+    // the request, which is why it leads the free block below.
+    id: "openrouter",
+    label: "OpenRouter (free)",
+    url: "https://openrouter.ai/api/v1/chat/completions",
+    keyEnv: ["OPENROUTER_API_KEY", "OPENROUTER_KEY"],
+    missing: "OPENROUTER_API_KEY not configured",
+    imageUrlAsString: false,
+    // The free tier is open-weight text models; none of them take an image.
+    textOnly: true,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    // Free models sit behind saturated free-tier providers, so a generous
+    // deadline is the difference between a slow answer and a fallback.
+    timeoutMs: 90_000,
+  },
+];
 
 export interface EngineSpec {
   /** Stable id, `provider/model`, stored on the message for the inspector. */
@@ -297,8 +315,7 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.55,
     context: 131_072,
     bestFor: "a broad second opinion",
-  },
-  {
+  },  {
     id: "huggingface/deepseek-v3",
     provider: "huggingface",
     modelId: "deepseek-ai/DeepSeek-V3-0324",
@@ -311,7 +328,142 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "last-resort reasoning, text only",
   },
 
-  ];
+  // --- OpenRouter free tier ------------------------------------------------
+  // One key reaches all of these, and they cost nothing. Latency and context
+  // figures are from a live sweep of the `:free` roster, not from vendor docs.
+  //
+  // Read this before extending the block: the roster turns over month to month.
+  // DeepSeek R1, Qwen3 Coder 480B, Llama 3.3 70B and Llama 4 Scout were all free
+  // earlier in 2026 and are not any more. `openrouter/free` is first precisely
+  // because it cannot go stale — it re-reads the live roster on every request —
+  // so the named models below are fast paths, not the source of truth. The
+  // panel's roster view reads GET /v1/models to show what is actually free now.
+  //
+  // Deliberately excluded, with the reason, so nobody re-adds them blindly:
+  //  - poolside/laguna-*      answered with an empty body on most of 7 days.
+  //  - thinkingmachines/*     403 unless called from inside their agent tools.
+  //  - nvidia/…-content-safety replied off-topic rather than refusing.
+  {
+    id: "openrouter/free",
+    provider: "openrouter",
+    modelId: "openrouter/free",
+    label: "Free Router",
+    vision: false,
+    reasoning: false,
+    quality: 0.80,
+    speed: 0.72,
+    context: 262_144,
+    bestFor: "any task, auto-picking a free model that fits",
+  },
+  {
+    id: "openrouter/nemotron-ultra",
+    provider: "openrouter",
+    modelId: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    label: "Nemotron 3 Ultra",
+    vision: false,
+    reasoning: false,
+    quality: 0.88,
+    speed: 0.52,
+    context: 1_048_576,
+    bestFor: "the strongest free model, and a 1M window",
+  },
+  {
+    id: "openrouter/nemotron-super",
+    provider: "openrouter",
+    modelId: "nvidia/nemotron-3-super-120b-a12b:free",
+    label: "Nemotron 3 Super",
+    vision: false,
+    reasoning: false,
+    quality: 0.78,
+    speed: 0.88,
+    context: 262_144,
+    bestFor: "a fast free answer that still reads carefully",
+  },
+  {
+    id: "openrouter/nemotron-nano",
+    provider: "openrouter",
+    modelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    label: "Nemotron 3 Nano",
+    vision: false,
+    reasoning: true,
+    quality: 0.72,
+    speed: 0.85,
+    context: 262_144,
+    bestFor: "free reasoning in about a second",
+  },
+  {
+    id: "openrouter/qwen-3-8",
+    provider: "openrouter",
+    modelId: "qwen/qwen3.8-27b:free",
+    label: "Qwen 3.8 27B",
+    vision: false,
+    reasoning: false,
+    quality: 0.80,
+    speed: 0.70,
+    context: 262_144,
+    bestFor: "writing and long structured answers",
+  },
+  {
+    id: "openrouter/north-mini-code",
+    provider: "openrouter",
+    modelId: "cohere/north-mini-code:free",
+    label: "North Mini Code",
+    vision: false,
+    reasoning: false,
+    quality: 0.70,
+    speed: 0.95,
+    context: 262_144,
+    bestFor: "code, in well under a second",
+  },
+  {
+    id: "openrouter/nemotron-lightning",
+    provider: "openrouter",
+    modelId: "nvidia/nemotron-3.5-lightning:free",
+    label: "Nemotron 3.5 Lightning",
+    vision: false,
+    reasoning: false,
+    quality: 0.74,
+    speed: 0.45,
+    context: 1_048_576,
+    bestFor: "a huge window when the prompt itself is enormous",
+  },
+  {
+    id: "openrouter/gemma-4-31b",
+    provider: "openrouter",
+    modelId: "google/gemma-4-31b-it:free",
+    label: "Gemma 4 31B",
+    vision: false,
+    reasoning: false,
+    quality: 0.84,
+    speed: 0.48,
+    context: 262_144,
+    bestFor: "free reasoning over a long document",
+  },
+  {
+    id: "openrouter/gemma-4-26b",
+    provider: "openrouter",
+    modelId: "google/gemma-4-26b-a4b-it:free",
+    label: "Gemma 4 26B",
+    vision: false,
+    reasoning: true,
+    quality: 0.78,
+    speed: 0.58,
+    context: 262_144,
+    bestFor: "a free second opinion on a hard step",
+  },
+  {
+    id: "openrouter/lfm-2-5",
+    provider: "openrouter",
+    modelId: "liquid/lfm-2.5-2.6b:free",
+    label: "LFM2.5 2.6B",
+    vision: false,
+    reasoning: false,
+    quality: 0.42,
+    speed: 0.96,
+    context: 65_536,
+    bestFor: "the cheapest step that still has to run",
+  },
+];
 
 /**
  * Position in the always-safe fallback ladder: provider order, then the order
