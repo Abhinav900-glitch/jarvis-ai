@@ -214,6 +214,107 @@ export async function voyageRerank(
   }
 }
 
+export interface VoyageDiagnosis {
+  configured: boolean;
+  ok: boolean;
+  embedModel: string;
+  rerankModel: string;
+  /** Dimension the endpoint actually returned, if any. */
+  dimension: number | null;
+  detail: string;
+}
+
+/**
+ * Verify the key is a *Voyage* key and that both endpoints work.
+ *
+ * Worth doing explicitly: MongoDB Atlas keys and Voyage keys are both long
+ * opaque strings, and pasting one into the other's variable produces a 403
+ * that reads like a permissions problem rather than a copy-paste one.
+ */
+export async function voyageDiagnose(): Promise<VoyageDiagnosis> {
+  const key = voyageKey();
+  const embedModel = voyageEmbedModel();
+  const rerankModel = voyageRerankModel();
+
+  if (!key) {
+    return {
+      configured: false,
+      ok: false,
+      embedModel,
+      rerankModel,
+      dimension: null,
+      detail: "Add VOYAGE_API_KEY in the Keys tab.",
+    };
+  }
+
+  const post = async (url: string, body: unknown) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+    return { status: res.status, text: await res.text() };
+  };
+
+  try {
+    const emb = await post(EMBED_URL, {
+      input: ["connectivity check"],
+      model: embedModel,
+      input_type: "document",
+      truncation: true,
+      output_dimension: VOYAGE_DIMS,
+    });
+    let dimension: number | null = null;
+    try {
+      const parsed = JSON.parse(emb.text) as {
+        data?: { embedding?: number[] }[];
+      };
+      dimension = parsed.data?.[0]?.embedding?.length ?? null;
+    } catch {
+      // leave null; the status line below carries the reason
+    }
+
+    const rer = await post(RERANK_URL, {
+      query: "what is the capital of France?",
+      documents: ["Paris is the capital of France.", "Berlin is in Germany."],
+      model: rerankModel,
+      top_k: 2,
+      return_documents: false,
+    });
+
+    const clean = (t: string) =>
+      t.slice(0, 200).split(key).join("<redacted>");
+    const embedOk = emb.status === 200;
+    const rerankOk = rer.status === 200;
+
+    return {
+      configured: true,
+      ok: embedOk && rerankOk,
+      embedModel,
+      rerankModel,
+      dimension,
+      detail: embedOk
+        ? rerankOk
+          ? `Connected. ${dimension}-dim embeddings, reranking on.`
+          : `Embeddings work, but reranking failed (${rer.status}): ${clean(rer.text)}`
+        : `Embeddings failed (${emb.status}): ${clean(emb.text)}`,
+    };
+  } catch (err) {
+    return {
+      configured: true,
+      ok: false,
+      embedModel,
+      rerankModel,
+      dimension: null,
+      detail: String(err).slice(0, 160),
+    };
+  }
+}
+
 /**
  * Cosine similarity between two equal-length vectors.
  *

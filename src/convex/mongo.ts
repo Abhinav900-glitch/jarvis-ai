@@ -53,6 +53,104 @@ export function mongoConfigured(): boolean {
   return mongoConfig() !== null;
 }
 
+// ---------------------------------------------------------------------------
+// Diagnosis
+// ---------------------------------------------------------------------------
+
+export interface MongoDiagnosis {
+  configured: boolean;
+  ok: boolean;
+  /**
+   * True when the value looks like a driver connection string rather than a
+   * Data API endpoint. This is by far the most common mistake — Atlas shows
+   * the `mongodb+srv://` string first, so it is the one people paste.
+   */
+  wrongScheme: boolean;
+  /** Host only, never credentials. */
+  endpoint: string | null;
+  database: string;
+  status: number | null;
+  detail: string;
+}
+
+/**
+ * Verify the Data API actually works, without writing anything.
+ *
+ * A plain `GET /v1/<db>` lists the collections in that database, which proves
+ * three separate things at once: the endpoint is reachable, the key is valid,
+ * and the key is scoped to *this* database name. A key scoped elsewhere — the
+ * other silent-failure mode here — comes back 401/404 rather than empty.
+ */
+export async function mongoDiagnose(): Promise<MongoDiagnosis> {
+  const url = process.env.MONGODB_DATA_API_URL?.trim();
+  const apiKey = process.env.MONGODB_API_KEY?.trim();
+
+  if (!url || !apiKey) {
+    return {
+      configured: false,
+      ok: false,
+      wrongScheme: false,
+      endpoint: null,
+      database: DB_NAME,
+      status: null,
+      detail: "Add MONGODB_DATA_API_URL and MONGODB_API_KEY in the Keys tab.",
+    };
+  }
+
+  let host: string | null = null;
+  try {
+    host = new URL(url).host || null;
+  } catch {
+    host = null;
+  }
+
+  if (!/^https?:\/\//i.test(url)) {
+    return {
+      configured: true,
+      ok: false,
+      wrongScheme: true,
+      endpoint: host,
+      database: DB_NAME,
+      status: null,
+      detail:
+        "MONGODB_DATA_API_URL is a database connection string. Set it to the Data API endpoint instead — Atlas → Data API → Endpoint, e.g. https://us-east-1.api.mongodb.com",
+    };
+  }
+
+  try {
+    const res = await fetch(
+      `${url.replace(/\/+$/, "")}/v1/${DB_NAME}`,
+      {
+        method: "GET",
+        headers: { Accept: "application/json", "api-key": apiKey },
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    const text = await res.text();
+    return {
+      configured: true,
+      ok: res.ok,
+      wrongScheme: false,
+      endpoint: host,
+      database: DB_NAME,
+      status: res.status,
+      detail: res.ok
+        ? "Connected."
+        : text.slice(0, 200).replace(new RegExp(apiKey, "g"), "<redacted>"),
+    };
+  } catch (err) {
+    return {
+      configured: true,
+      ok: false,
+      wrongScheme: false,
+      endpoint: host,
+      database: DB_NAME,
+      status: null,
+      detail: String(err).slice(0, 160),
+    };
+  }
+}
+
 export const MEMORY_COLLECTION = "memory";
 export const MEMORY_SETTINGS_COLLECTION = "memory_settings";
 

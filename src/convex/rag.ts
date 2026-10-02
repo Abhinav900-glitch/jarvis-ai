@@ -34,13 +34,14 @@ import {
   mongoCandidates,
   mongoConfigured,
   mongoDeleteMany,
+  mongoDiagnose,
   mongoFind,
   mongoInsertMany,
   mongoUpdateOne,
   type MemoryDoc,
   type MemoryKind,
 } from "./mongo";
-import { cosine, voyageEmbed, voyageRerank } from "./voyage";
+import { cosine, voyageDiagnose, voyageEmbed, voyageRerank } from "./voyage";
 
 // ---------------------------------------------------------------------------
 // Embeddings
@@ -531,3 +532,37 @@ export const clearFactsInMongo = action({
 function factDocId(userId: string, convexId: string): string {
   return `${userId}:${convexId}`;
 }
+
+// ---------------------------------------------------------------------------
+// Verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Actually exercise both integrations and report what came back.
+ *
+ * The status query in `memories.ts` only checks whether the variables are set,
+ * which is not the same as working — and the difference matters, because a
+ * MongoDB connection string pasted where a Data API endpoint belongs, or an
+ * Atlas key pasted as the Voyage key, both leave recall silently returning
+ * nothing while every indicator reads green.
+ *
+ * Authenticated on purpose: it makes live network calls and reports internal
+ * configuration, so it must not be reachable by anonymous callers.
+ */
+export const verifyConnections = action({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const [mongo, voyage] = await Promise.all([mongoDiagnose(), voyageDiagnose()]);
+    return {
+      mongo,
+      voyage,
+      ok: mongo.ok && voyage.ok,
+      /** Nothing configured at all is a different situation from configured
+       *  but broken, and the panel words them differently. */
+      anythingConfigured: mongo.configured || voyage.configured,
+    };
+  },
+});

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Brain,
   Check,
+  CircleAlert,
   Database,
   Loader2,
   Plus,
@@ -19,6 +20,32 @@ const KIND_META: Record<string, { label: string; icon: string }> = {
   preference: { label: "Prefers", icon: "★" },
   note: { label: "Note", icon: "✎" },
 };
+
+function CheckRow({
+  ok,
+  label,
+  detail,
+}: {
+  ok: boolean;
+  label: string;
+  detail: string;
+}) {
+  return (
+    <div className="flex items-start gap-1.5">
+      {ok ? (
+        <Check className="mt-px size-3 shrink-0 text-emerald-500/80" />
+      ) : (
+        <CircleAlert className="mt-px size-3 shrink-0 text-amber-500" />
+      )}
+      <span className="min-w-0">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="block break-words text-muted-foreground/70">
+          {detail}
+        </span>
+      </span>
+    </div>
+  );
+}
 
 function relativeTime(ms: number) {
   const diff = Date.now() - ms;
@@ -41,14 +68,30 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
   const rememberFact = useAction(api.memory.remember);
   const forgetFact = useAction(api.memory.forget);
   const forgetAllFacts = useAction(api.memory.forgetAll);
+  const verifyConnections = useAction(api.rag.verifyConnections);
+  type VerifyReport = Awaited<ReturnType<typeof verifyConnections>>;
 
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [report, setReport] = useState<VerifyReport | null>(null);
 
   const rows = memories ?? [];
+
+  const handleVerify = async () => {
+    if (checking) return;
+    setChecking(true);
+    try {
+      setReport(await verifyConnections({}));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not verify.");
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const handleAdd = async () => {
     const content = draft.trim();
@@ -229,9 +272,12 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
           </ul>
         )}
 
-        {/* Where memory actually lives. Surfaced because the quality of recall
-            depends entirely on it, and a silent fallback looks identical to a
-            working setup from the outside. */}
+        {/* Where memory actually lives, plus a real check that it works.
+            Presence of a key is not proof of a working integration: a driver
+            connection string in the Data API variable, or an Atlas key pasted
+            as the Voyage key, both read as fully configured while recall
+            silently returns nothing. So the Verify button is the only thing
+            here allowed to claim success. */}
         {backend ? (
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground/70">
             <span className="inline-flex items-center gap-1">
@@ -239,15 +285,37 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
               {backend.storeLabel}
             </span>
             <span>{backend.embeddingsLabel}</span>
-            <span>
-              {backend.reranking ? "Reranking on" : "Reranking off"}
-            </span>
-            {backend.fullyConfigured ? null : (
-              <span className="text-amber-500/70">
-                Add VOYAGE_API_KEY + MONGODB_DATA_API_URL + MONGODB_API_KEY for
-                full recall
-              </span>
-            )}
+            <span>{backend.reranking ? "Reranking on" : "Reranking off"}</span>
+            <button
+              onClick={() => void handleVerify()}
+              disabled={checking}
+              className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium uppercase tracking-widest transition-colors hover:text-foreground disabled:opacity-50"
+              title="Send a live test request to MongoDB and Voyage AI"
+            >
+              {checking ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <>
+                  <Check className="size-3" />
+                  Verify
+                </>
+              )}
+            </button>
+          </div>
+        ) : null}
+
+        {report ? (
+          <div className="mt-1.5 space-y-1 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
+            <CheckRow
+              ok={report.mongo.ok}
+              label={`Memory store (${report.mongo.database})`}
+              detail={report.mongo.detail}
+            />
+            <CheckRow
+              ok={report.voyage.ok}
+              label="Embeddings & reranking"
+              detail={report.voyage.detail}
+            />
           </div>
         ) : null}
 
