@@ -3,14 +3,16 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Brain,
   Check,
+  Database,
   Loader2,
   Plus,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 
 const KIND_META: Record<string, { label: string; icon: string }> = {
   fact: { label: "Fact", icon: "◆" },
@@ -32,9 +34,13 @@ function relativeTime(ms: number) {
 
 export function MemoryPanel({ onClose }: { onClose: () => void }) {
   const memories = useQuery(api.memories.list, { limit: 100 });
-  const removeMemory = useMutation(api.memories.remove);
-  const clearMemories = useMutation(api.memories.clear);
-  const addMemory = useMutation(api.memories.add);
+  // These are actions rather than mutations because forgetting has to reach the
+  // MongoDB corpus as well as the Convex row — only the node runtime can do
+  // that, so the panel can no longer call a plain mutation here.
+  const backend = useQuery(api.memories.backend, {});
+  const rememberFact = useAction(api.memory.remember);
+  const forgetFact = useAction(api.memory.forget);
+  const forgetAllFacts = useAction(api.memory.forgetAll);
 
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
@@ -50,7 +56,7 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
     setAdding(true);
     setError(null);
     try {
-      await addMemory({ content });
+      await rememberFact({ content });
       setDraft("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save that.");
@@ -59,10 +65,10 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (id: Id<"memories">) => {
     setError(null);
     try {
-      await removeMemory({ id: id as never });
+      await forgetFact({ id });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not forget that.");
     }
@@ -78,7 +84,7 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
     setConfirmClear(false);
     setError(null);
     try {
-      await clearMemories({});
+      await forgetAllFacts({});
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not clear memory.");
     } finally {
@@ -222,6 +228,28 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
             </AnimatePresence>
           </ul>
         )}
+
+        {/* Where memory actually lives. Surfaced because the quality of recall
+            depends entirely on it, and a silent fallback looks identical to a
+            working setup from the outside. */}
+        {backend ? (
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground/70">
+            <span className="inline-flex items-center gap-1">
+              <Database className="size-3" />
+              {backend.storeLabel}
+            </span>
+            <span>{backend.embeddingsLabel}</span>
+            <span>
+              {backend.reranking ? "Reranking on" : "Reranking off"}
+            </span>
+            {backend.fullyConfigured ? null : (
+              <span className="text-amber-500/70">
+                Add VOYAGE_API_KEY + MONGODB_DATA_API_URL + MONGODB_API_KEY for
+                full recall
+              </span>
+            )}
+          </div>
+        ) : null}
 
         <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground/70">
           <Check className="mt-px size-3 shrink-0" />

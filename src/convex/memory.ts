@@ -5,10 +5,10 @@ import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { type Id, type DataModel } from "./_generated/dataModel";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 
 /** Minimal structural type so this helper works from any action context. */
-type QueryRunner = Pick<GenericActionCtx<DataModel>, "runQuery">;
+type QueryRunner = Pick<GenericActionCtx<DataModel>, "runQuery" | "runAction">;
 
 const MAX_CONTEXT_ITEMS = 12;
 const MAX_EXTRACT = 5;
@@ -67,18 +67,26 @@ function parseMemories(raw: string): { content: string; kind: string }[] {
 /**
  * Builds the "What you know about the user" block that gets prepended to the
  * system prompt. Runs inside actions (no direct db access), so it queries via
- * runQuery. Never throws — memory is a nice-to-have, not a hard dependency.
+ * runQuery/runAction. Never throws — memory is a nice-to-have, not a hard
+ * dependency.
+ *
+ * The user's actual message is passed through so the facts can be ranked
+ * against it. Without that, a preference learned six months ago ("I use Linux")
+ * loses to whatever happened to be stored most recently, which is exactly the
+ * case where being remembered matters.
  */
 export async function memoryContextFor(
   ctx: QueryRunner,
   userId: string,
+  query?: string,
 ): Promise<string> {
   if (!userId) return "";
   try {
-    const rows = (await ctx.runQuery(internal.memories.listForContext, {
+    const rows = (await ctx.runAction(api.rag.recallFacts, {
       userId: userId as Id<"users">,
+      ...(query ? { query } : {}),
       limit: MAX_CONTEXT_ITEMS,
-    })) as { content: string }[];
+    })) as { content: string }[] | null;
     const lines = (rows ?? [])
       .map((r) => (r?.content ?? "").trim())
       .filter((c) => c.length > 0);
@@ -104,7 +112,7 @@ export const extract = action({
     userMessage: v.string(),
     assistantMessage: v.string(),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{ added: number }> => {
     const key = process.env.GROQ_API_KEY;
     if (!key) return { added: 0 };
 
@@ -154,14 +162,106 @@ export const extract = action({
     const items = parseMemories(raw);
     if (items.length === 0) return { added: 0 };
 
+    let stored: { id: Id<"memories">; content: string; kind: string }[] = [];
     try {
-      await ctx.runMutation(internal.memories.addMany, {
+      stored = (await ctx.runMutation(internal.memories.addMany, {
         userId,
         items,
-      });
+      })) as { id: Id<"memories">; content: string; kind: string }[];
     } catch {
       return { added: 0 };
     }
-    return { added: items.length };
+    if (stored.length === 0) return { added: 0 };
+
+    // Mirror into the long-term corpus. Deliberately not awaited: the Convex
+    // write above is the system of record, so a failure here leaves the fact
+    // saved and simply not yet searchable by similarity.
+    void ctx
+      .runAction(api.rag.storeFacts, {
+        items: stored.map((s) => ({
+          id: String(s.id),
+          content: s.content,
+          kind: s.kind,
+        })),
+      })
+      .catch(() => ({ stored: 0 }));
+
+    return { added: stored.length };
+  },
+});
+
+/**
+ * Remember something on purpose ("Remember this" in the panel).
+ *
+ * Writes to the Convex list the panel reads and, when MongoDB is configured,
+ * to the searchable corpus with a Voyage embedding attached.
+ */
+export const remember = action({
+  args: {
+    content: v.string(),
+    kind: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<{ added: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const content = args.content.replace(/\s+/g, " ").trim().slice(0, 280);
+    if (!content) throw new Error("Nothing to remember.");
+
+    const storedId: Id<"memories"> | null = await ctx.runMutation(
+      internal.memories.addOne,
+      { userId, content, kind: args.kind ?? "fact" },
+    );
+    if (!storedId) return { added: 0 };
+
+    void ctx
+      .runAction(api.rag.storeFacts, {
+        items: [{ id: String(storedId), content, kind: args.kind ?? "fact" }],
+      })
+      .catch(() => ({ stored: 0 }));
+
+    return { added: 1 };
+  },
+});
+
+/**
+ * Forget one fact, from both stores.
+ *
+ * A Convex action rather than a mutation because forgetting has to reach
+ * MongoDB as well, and only the node runtime can make that call. A Mongo
+ * failure is swallowed deliberately: the user asked for the fact to be gone,
+ * and it is gone from the list they can see, so reporting an error over a
+ * corpus index would be alarmist.
+ */
+export const forget = action({
+  args: { id: v.id("memories") },
+  handler: async (ctx, args): Promise<{ removed: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const removed: boolean = await ctx.runMutation(internal.memories.removeRow, {
+      id: args.id,
+    });
+    if (!removed) return { removed: 0 };
+
+    void ctx
+      .runAction(api.rag.forgetInMongo, { ids: [`${userId}:${args.id}`] })
+      .catch(() => ({ removed: 0 }));
+    return { removed: 1 };
+  },
+});
+
+/** Forget everything, from both stores. */
+export const forgetAll = action({
+  args: {},
+  handler: async (ctx): Promise<{ removed: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const count: number = await ctx.runMutation(internal.memories.clearRows, {
+      userId,
+    });
+    void ctx.runAction(api.rag.clearFactsInMongo, {}).catch(() => ({ removed: 0 }));
+    return { removed: count };
   },
 });
