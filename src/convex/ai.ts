@@ -33,14 +33,24 @@ interface TurnPart {
 }
 
 /**
- * One turn in a conversation, plain text or multimodal.
+ * One turn in a conversation.
  *
- * Exported so the agent can drive the same dispatch this module uses rather
- * than reimplementing the provider chain.
+ * Wider than plain chat because the agent loop replays a tool transcript
+ * verbatim: an assistant turn that requested tool calls has to go back into
+ * the request exactly as it arrived, and the `tool` turns that answer it have
+ * to carry their `tool_call_id` or providers reject the message. `content`
+ * is optional because a turn that is only tool calls legitimately has none.
  */
 export interface ChatTurn {
-  role: "user" | "assistant" | "system";
-  content: string | TurnPart[];
+  role: "user" | "assistant" | "system" | "tool";
+  content?: string | TurnPart[] | null;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: {
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }[];
 }
 
 export interface LlmResult {
@@ -57,6 +67,12 @@ export interface LlmResult {
   /** Token usage, when the provider reported it. */
   promptTokens?: number;
   completionTokens?: number;
+  /**
+   * Tools the model asked to run. Empty on an ordinary reply, and on a turn
+   * from a provider that does not support calling tools at all — callers must
+   * treat their absence as "nothing to do", not as an error.
+   */
+  toolCalls?: ToolCall[];
 }
 
 /**
@@ -298,19 +314,68 @@ function shapeTurns(turns: ChatTurn[], provider: ProviderSpec): ChatTurn[] {
   });
 }
 
+/**
+ * An OpenAI-shaped function declaration, passed straight to the provider.
+ *
+ * Defined here rather than in the agent so the wire format lives in one place:
+ * the code that sends tools and the code that dispatches the tools they name
+ * cannot drift into two incompatible shapes.
+ */
+export interface ToolSpec {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+/**
+ * A tool the model asked to run.
+ *
+ * `arguments` stays as the raw JSON string rather than being parsed here. Every
+ * provider spells tool arguments slightly differently and some return an
+ * object instead of a string, so parsing is the executor's job — and doing it
+ * in one place means a malformed argument becomes a tool error the model can
+ * see and recover from, rather than a thrown exception that kills the run.
+ */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface CompletionOptions {
+  /**
+   * Function declarations. Omit for ordinary chat, which is every existing
+   * caller — the field is simply absent from the request then, so nothing
+   * changes for the app's normal replies.
+   */
+  tools?: ToolSpec[];
+  /** Lowered by the agent: a model editing code should not be creative. */
+  temperature?: number;
+}
+
 function requestBody(
   provider: ProviderSpec,
   engine: EngineSpec,
   turns: ChatTurn[],
   systemPrompt: string,
   stream: boolean,
+  options: CompletionOptions = {},
 ) {
   return {
     model: engine.modelId,
     messages: [{ role: "system", content: systemPrompt }, ...turns],
-    temperature: 0.6,
+    temperature: options.temperature ?? 0.6,
     max_tokens: provider.maxTokens,
     ...(provider.reasoningEffort ? { reasoning_effort: "low" } : {}),
+    // `tool_choice: auto` is what lets a model answer in prose on some turns and
+    // reach for a tool on others. Forcing it would make the agent call
+    // `write_file` when all the user wanted was an explanation.
+    ...(options.tools?.length
+      ? { tools: options.tools, tool_choice: "auto" as const }
+      : {}),
     // Asks for a final usage frame. Without it a streamed answer reports no
     // token counts at all, which is what the answer inspector reads.
     ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
@@ -329,6 +394,7 @@ async function callProvider(
   engine: EngineSpec,
   turns: ChatTurn[],
   systemPrompt: string,
+  options: CompletionOptions = {},
 ): Promise<LlmResult> {
   const started = Date.now();
   const res = await fetch(provider.url, {
@@ -338,7 +404,14 @@ async function callProvider(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(
-      requestBody(provider, engine, shapeTurns(turns, provider), systemPrompt, false),
+      requestBody(
+        provider,
+        engine,
+        shapeTurns(turns, provider),
+        systemPrompt,
+        false,
+        options,
+      ),
     ),
     signal: AbortSignal.timeout(provider.timeoutMs),
   });
@@ -365,11 +438,27 @@ async function callProvider(
         content?: string | null;
         reasoning?: string | null;
         reasoning_content?: string | null;
+        tool_calls?: {
+          id?: string;
+          type?: string;
+          function?: { name?: string; arguments?: string };
+        }[];
       };
     }[];
     usage?: WireUsage;
   };
   const message = data.choices?.[0]?.message;
+
+  const toolCalls: ToolCall[] = (message?.tool_calls ?? [])
+    .filter((c) => typeof c?.function?.name === "string" && c.function.name)
+    .map((c, i) => ({
+      // Some providers omit the id; the executor echoes it back in the tool
+      // message, so a stable synthetic one keeps the transcript well-formed.
+      id: typeof c.id === "string" && c.id ? c.id : `call_${i}`,
+      name: c.function?.name as string,
+      arguments: typeof c.function?.arguments === "string" ? c.function.arguments : "{}",
+    }));
+
   // Reasoning models can spend the whole token budget thinking and return no
   // content. Falling back to the reasoning text keeps the turn answerable
   // rather than silently empty.
@@ -379,7 +468,11 @@ async function callProvider(
     message?.reasoning_content ??
     ""
   ).trim();
-  if (!text) throw new Error(`${engine.label} (empty response)`);
+  // A tool call legitimately has no content — that is how the protocol works —
+  // so the emptiness check has to account for it or every tool turn dies here.
+  if (!text && toolCalls.length === 0) {
+    throw new Error(`${engine.label} (empty response)`);
+  }
 
   return {
     text,
@@ -389,6 +482,7 @@ async function callProvider(
     latencyMs: Date.now() - started,
     promptTokens: data.usage?.prompt_tokens,
     completionTokens: data.usage?.completion_tokens,
+    toolCalls,
   };
 }
 
@@ -551,6 +645,7 @@ export async function runProviderChain(
   systemPrompt: string = JARVIS_PROMPT,
   failurePrefix = "All models failed automatically.",
   plan: EnginePlan = rankEngines(),
+  options: CompletionOptions = {},
 ): Promise<LlmResult> {
   const failures: string[] = [];
   // Position in the whole plan rather than in one provider's group, so
@@ -566,7 +661,14 @@ export async function runProviderChain(
 
     for (const entry of engines) {
       try {
-        const result = await callProvider(provider, key, entry.engine, turns, systemPrompt);
+        const result = await callProvider(
+          provider,
+          key,
+          entry.engine,
+          turns,
+          systemPrompt,
+          options,
+        );
         return {
           ...result,
           usedFallback: position > 0,

@@ -297,6 +297,19 @@ const schema = defineSchema(
         v.literal("failed"),
         v.literal("cancelled"),
       ),
+      /**
+       * How much the agent may do without asking. Codex's sandbox modes.
+       * `readonly` refuses every write, `ask` proposes each one for approval,
+       * `auto` applies them. Default is `ask` because an agent that can rewrite
+       * files and never shows you the rewrite is not a tool, it is a hazard.
+       */
+      mode: v.union(
+        v.literal("readonly"),
+        v.literal("ask"),
+        v.literal("auto"),
+      ),
+      /** Antigravity's cascade: a cheap model drafts, a strong one refines. */
+      cascade: v.optional(v.boolean()),
       /** How many steps the plan called for, once planned. */
       planned: v.number(),
       /** How many have actually been worked. */
@@ -342,6 +355,62 @@ const schema = defineSchema(
       answer: v.optional(v.string()),
       createdAt: v.number(),
     }).index("by_run", ["runId"]),
+
+    // ---- The agent's workspace -----------------------------------------
+    // What makes Jarvis Code a coding agent rather than a chat panel: it owns
+    // files it can read, edit and run, so a step produces a real change rather
+    // than a snippet in a transcript.
+    //
+    // A path is a normalised, forward-slashed, relative path and is unique per
+    // user. There is deliberately no folder table — a tree is derived by
+    // splitting paths — because a real filesystem model here would be one more
+    // thing that can disagree with the files it claims to contain.
+    workspaceFiles: defineTable({
+      userId: v.id("users"),
+      path: v.string(),
+      content: v.string(),
+      size: v.number(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_path", ["userId", "path"]),
+
+    // A snapshot of one file taken immediately before the agent overwrites it.
+    // `previous` is optional because its absence is meaningful: it records that
+    // the file did not exist, so a rewind deletes rather than restoring.
+    workspaceCheckpoints: defineTable({
+      userId: v.id("users"),
+      path: v.string(),
+      previous: v.optional(v.string()),
+      runId: v.optional(v.id("agentRuns")),
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_time", ["userId", "createdAt"]),
+
+    // An edit the agent wants to make but has not made. In "ask" mode every
+    // write lands here first, as a before/after pair, and the run blocks until
+    // the user approves or rejects it. This is the whole safety story for an
+    // agent that can rewrite files: nothing lands that was not shown.
+    agentProposals: defineTable({
+      runId: v.id("agentRuns"),
+      userId: v.id("users"),
+      path: v.string(),
+      before: v.optional(v.string()),
+      // Optional because a delete proposal has no "after" — and losing that
+      // distinction would mean an approved delete could restore the file.
+      after: v.optional(v.string()),
+      summary: v.optional(v.string()),
+      status: v.union(
+        v.literal("pending"),
+        v.literal("applied"),
+        v.literal("rejected"),
+      ),
+      createdAt: v.number(),
+    })
+      .index("by_run", ["runId"])
+      .index("by_user", ["userId"]),
 
     // Generated sound effects (dog bark, thunder, ...). The prompt hash is the
     // cache key, so a given sound is only ever generated once and is then

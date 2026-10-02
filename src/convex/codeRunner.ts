@@ -1,7 +1,7 @@
 "use node";
 
 import { v } from "convex/values";
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import {
   CODE_LANGUAGES,
@@ -712,21 +712,46 @@ async function runWithOnlineCompiler(
 // The action
 // ---------------------------------------------------------------------------
 
+const runArgs = {
+  /** A JDoodle language slug, e.g. "python3". */
+  language: v.string(),
+  /** Position in that language's version list. Falls back to the pinned default. */
+  versionIndex: v.optional(v.number()),
+  stdin: v.optional(v.string()),
+  sourceCode: v.string(),
+  /** Packages to install before the run, e.g. ["numpy"]. */
+  libs: v.optional(v.array(v.string())),
+};
+
 export const runCode = action({
-  args: {
-    /** A JDoodle language slug, e.g. "python3". */
-    language: v.string(),
-    /** Position in that language's version list. Falls back to the pinned default. */
-    versionIndex: v.optional(v.number()),
-    stdin: v.optional(v.string()),
-    sourceCode: v.string(),
-    /** Packages to install before the run, e.g. ["numpy"]. */
-    libs: v.optional(v.array(v.string())),
-  },
+  args: runArgs,
   handler: async (ctx, args): Promise<CodeRunResult> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to run code.");
+    return runProgram(args);
+  },
+});
 
+/**
+ * The same runner, callable from another action.
+ *
+ * Convex forbids an action calling an action, so the agent's `run_code` tool
+ * needs this rather than `runCode` itself. Both delegate to one function, so the
+ * fallback chain is defined exactly once — an agent running code and a person
+ * running code must not be able to disagree about what happens.
+ */
+export const runProgramInternal = internalAction({
+  args: runArgs,
+  handler: async (_ctx, args): Promise<CodeRunResult> => runProgram(args),
+});
+
+async function runProgram(args: {
+  language: string;
+  versionIndex?: number;
+  stdin?: string;
+  sourceCode: string;
+  libs?: string[];
+}): Promise<CodeRunResult> {
     const startedAt = Date.now();
 
     const language = getCodeLanguage(args.language);
@@ -844,8 +869,7 @@ export const runCode = action({
       }`;
     }
     return failure;
-  },
-});
+}
 
 // ---------------------------------------------------------------------------
 // Diagnostics

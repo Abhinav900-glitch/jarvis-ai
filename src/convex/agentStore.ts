@@ -89,6 +89,12 @@ export const createRun = internalMutation({
     userId: v.id("users"),
     goal: v.string(),
     title: v.string(),
+    mode: v.optional(v.union(
+      v.literal("readonly"),
+      v.literal("ask"),
+      v.literal("auto"),
+    )),
+    cascade: v.optional(v.boolean()),
     now: v.number(),
   },
   handler: async (ctx, args) => {
@@ -97,6 +103,11 @@ export const createRun = internalMutation({
       goal: args.goal,
       title: args.title,
       status: "planning",
+      // "ask" is the default on purpose. An agent that can rewrite files and
+      // never shows you the rewrite is not a tool, it is a hazard — so the
+      // safe mode is what you get without choosing.
+      mode: args.mode ?? "ask",
+      cascade: args.cascade ?? false,
       planned: 0,
       done: 0,
       calls: 0,
@@ -252,6 +263,215 @@ export const deleteRun = internalMutation({
 });
 
 // ---------------------------------------------------------------------------
+// The workspace
+//
+// These are deliberately low-level. The mode check, the checkpoint, the diff
+// and the write all have to happen together or not at all, so the agent action
+// sequences them; giving it a single `writeVerified` here would push the policy
+// into this file and make it untestable from the loop.
+// ---------------------------------------------------------------------------
+
+export const listFiles = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("workspaceFiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+  },
+});
+
+export const getFile = internalQuery({
+  args: { userId: v.id("users"), path: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("workspaceFiles")
+      .withIndex("by_user_path", (q) =>
+        q.eq("userId", args.userId).eq("path", args.path),
+      )
+      .first();
+  },
+});
+
+export const putFile = internalMutation({
+  args: {
+    userId: v.id("users"),
+    path: v.string(),
+    content: v.string(),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("workspaceFiles")
+      .withIndex("by_user_path", (q) =>
+        q.eq("userId", args.userId).eq("path", args.path),
+      )
+      .first();
+    const size = args.content.length;
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        content: args.content,
+        size,
+        updatedAt: args.now,
+      });
+      return { created: false, id: existing._id };
+    }
+    const id = await ctx.db.insert("workspaceFiles", {
+      userId: args.userId,
+      path: args.path,
+      content: args.content,
+      size,
+      createdAt: args.now,
+      updatedAt: args.now,
+    });
+    return { created: true, id };
+  },
+});
+
+export const removeFile = internalMutation({
+  args: { userId: v.id("users"), path: v.string() },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("workspaceFiles")
+      .withIndex("by_user_path", (q) =>
+        q.eq("userId", args.userId).eq("path", args.path),
+      )
+      .first();
+    if (!existing) return { removed: false };
+    await ctx.db.delete(existing._id);
+    return { removed: true };
+  },
+});
+
+/**
+ * Snapshot a file's current contents so a rewind can put it back.
+ *
+ * `previous` being absent is not a bug: it records that the file did not exist
+ * before this write, which is exactly what a rewind needs in order to delete
+ * rather than restore.
+ */
+export const recordCheckpoint = internalMutation({
+  args: {
+    userId: v.id("users"),
+    path: v.string(),
+    previous: v.optional(v.string()),
+    runId: v.optional(v.id("agentRuns")),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("workspaceCheckpoints", {
+      userId: args.userId,
+      path: args.path,
+      previous: args.previous,
+      runId: args.runId,
+      createdAt: args.now,
+    });
+  },
+});
+
+/** Newest first, so "undo the last thing" is `list[0]`. */
+export const listCheckpoints = internalQuery({
+  args: { userId: v.id("users"), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = Math.min(Math.max(args.limit ?? 50, 1), 200);
+    return await ctx.db
+      .query("workspaceCheckpoints")
+      .withIndex("by_user_time", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(limit);
+  },
+});
+
+/** Drop checkpoints older than this, so the table cannot grow without bound. */
+export const pruneCheckpoints = internalMutation({
+  args: { userId: v.id("users"), keep: v.number() },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("workspaceCheckpoints")
+      .withIndex("by_user_time", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .collect();
+    for (const row of rows.slice(args.keep)) await ctx.db.delete(row._id);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Edit proposals
+// ---------------------------------------------------------------------------
+
+export const proposeEdit = internalMutation({
+  args: {
+    runId: v.id("agentRuns"),
+    userId: v.id("users"),
+    path: v.string(),
+    before: v.optional(v.string()),
+    // Optional because a delete proposal has no "after". An approved delete
+    // that restored the file instead would be worse than no approval at all.
+    after: v.optional(v.string()),
+    summary: v.optional(v.string()),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("agentProposals", {
+      runId: args.runId,
+      userId: args.userId,
+      path: args.path,
+      before: args.before,
+      after: args.after,
+      summary: args.summary,
+      status: "pending",
+      createdAt: args.now,
+    });
+  },
+});
+
+export const pendingProposals = internalQuery({
+  args: { runId: v.id("agentRuns"), userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const run = await ctx.db.get(args.runId);
+    assertOwner(run, args.userId);
+    return await ctx.db
+      .query("agentProposals")
+      .withIndex("by_run", (q) => q.eq("runId", args.runId))
+      .collect();
+  },
+});
+
+export const decideProposal = internalMutation({
+  args: {
+    proposalId: v.id("agentProposals"),
+    status: v.union(v.literal("applied"), v.literal("rejected")),
+  },
+  handler: async (ctx, args) => {
+    const proposal = await ctx.db.get(args.proposalId);
+    if (!proposal) throw new Error("That proposal is gone.");
+    await ctx.db.patch(args.proposalId, { status: args.status });
+    return proposal;
+  },
+});
+
+/** One snapshot, for a single rewind. Ownership is checked before it is read. */
+export const getCheckpoint = internalQuery({
+  args: { checkpointId: v.id("workspaceCheckpoints"), userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.checkpointId);
+    if (!row || row.userId !== args.userId) return null;
+    return row;
+  },
+});
+
+/** A spent snapshot is deleted, so a rewind cannot be applied twice. */
+export const dropCheckpoint = internalMutation({
+  args: { checkpointId: v.id("workspaceCheckpoints") },
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.checkpointId);
+    if (!row) return { dropped: false };
+    await ctx.db.delete(args.checkpointId);
+    return { dropped: true };
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Client-facing reads
 // ---------------------------------------------------------------------------
 
@@ -293,5 +513,114 @@ export const recent = query({
       )
       .order("desc")
       .take(limit);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Client-facing workspace reads
+// ---------------------------------------------------------------------------
+
+/** The tree. Contents are excluded — listing a workspace should be cheap. */
+export const workspaceTree = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (identity === null) return [];
+    const rows = await ctx.db
+      .query("workspaceFiles")
+      .withIndex("by_user", (q) =>
+        q.eq("userId", identity.subject as Id<"users">),
+      )
+      .collect();
+    return rows.map((r) => ({
+      path: r.path,
+      size: r.size,
+      updatedAt: r.updatedAt,
+    }));
+  },
+});
+
+export const workspaceFile = query({
+  args: { path: v.string() },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (identity === null) return null;
+    const row = await ctx.db
+      .query("workspaceFiles")
+      .withIndex("by_user_path", (q) =>
+        q.eq("userId", identity.subject as Id<"users">).eq("path", args.path),
+      )
+      .first();
+    return row ?? null;
+  },
+});
+
+/** Edits waiting on the user, oldest first. */
+export const proposals = query({
+  args: { runId: v.id("agentRuns") },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (identity === null) return [];
+    const run = await ctx.db.get(args.runId);
+    if (!run || run.userId !== identity.subject) return [];
+    return await ctx.db
+      .query("agentProposals")
+      .withIndex("by_run", (q) => q.eq("runId", args.runId))
+      .collect();
+  },
+});
+
+export const checkpoints = query({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (identity === null) return [];
+    const limit = Math.min(Math.max(args.limit ?? 20, 1), 100);
+    const rows = await ctx.db
+      .query("workspaceCheckpoints")
+      .withIndex("by_user_time", (q) =>
+        q.eq("userId", identity.subject as Id<"users">),
+      )
+      .order("desc")
+      .take(limit);
+    return rows.map((r) => ({
+      _id: r._id,
+      path: r.path,
+      existed: r.previous !== undefined,
+      bytes: r.previous?.length ?? 0,
+      createdAt: r.createdAt,
+      runId: r.runId ?? null,
+    }));
+  },
+});
+
+/** Seed the workspace so the agent has something real to work on. */
+export const seedWorkspace = internalMutation({
+  args: { userId: v.id("users"), now: v.number() },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("workspaceFiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .first();
+    if (existing) return { seeded: false };
+
+    const readme = `# Workspace
+
+This is Jarvis's working directory. Hand it a task and it reads, edits and
+runs files here.
+
+- Every file is yours. Jarvis proposes changes; you approve them.
+- There is no shell and no real filesystem — only these files.
+- Snapshots are taken before each edit, so a run can be rewound.
+`;
+    await ctx.db.insert("workspaceFiles", {
+      userId: args.userId,
+      path: "README.md",
+      content: readme,
+      size: readme.length,
+      createdAt: args.now,
+      updatedAt: args.now,
+    });
+    return { seeded: true };
   },
 });

@@ -47,13 +47,36 @@ import { internal } from "./_generated/api";
 import { runProviderChain, type ChatTurn } from "./ai";
 import { inferTask, rankEngines, ENGINES, retiringSoon, type RankedEngine } from "./engines";
 import { gateFor } from "../lib/agent-contract";
+import { executeTool, type ExecContext } from "./agentExec";
+import {
+  assistantToolMessage,
+  toolMessage,
+  toolSpecs,
+  type AgentMode,
+} from "../lib/agent-tools";
 
 /** A plan longer than this is not a plan, it is a wish list. */
 const MAX_PLAN_STEPS = 6;
-/** Steps worked per `advance` call, so one action never runs long. */
-const MAX_STEPS_PER_ADVANCE = 3;
+/**
+ * Steps worked per `advance` call.
+ *
+ * Two rather than three, because a step is no longer one request: each may
+ * spend up to {@link MAX_TOOL_ITERATIONS} on tool rounds. Two steps is a worst
+ * case of eight requests per call, which keeps a full run inside the free
+ * tier's daily allowance instead of eating it.
+ */
+const MAX_STEPS_PER_ADVANCE = 2;
 /** Characters of earlier step output carried into the next step's prompt. */
 const CONTEXT_CHARS = 600;
+/**
+ * Model calls one step may spend on tool use.
+ *
+ * Each iteration is a real request, and the free tier allows 50 a day, so this
+ * is the main cost dial. Four is enough for read → edit → run → correct, which
+ * is the shape of most real work; beyond that the loop is thrashing and the
+ * model should summarise what it has instead.
+ */
+const MAX_TOOL_ITERATIONS = 4;
 
 // ---------------------------------------------------------------------------
 // Prompts
@@ -72,9 +95,16 @@ Rules:
 Reply with JSON only, no prose and no code fence:
 {"title":"a four-word name for the run","steps":[{"title":"imperative, under 60 chars","detail":"one sentence"}]}`;
 
-const EXECUTOR_SYSTEM = `You are Jarvis, working one step of a task you planned. You decide how to approach it. You do not ask permission for anything reversible.
+const CODER_SYSTEM = `You are Jarvis, working one step of a task you planned, in a real workspace of files you can read, edit and run.
 
-Reply with JSON only, no prose and no code fence:
+How to work:
+- Use the tools. A step that needs to know what a file says is done by reading it, not by recalling what such a file usually says. You cannot see the workspace otherwise.
+- Read before you write. An edit must match the current text exactly; guessing wastes the attempt and the request.
+- Make one change at a time, then check it. Prefer edit_file over write_file — a full overwrite silently discards whatever you did not read.
+- If a tool tells you it was refused or the edit was only proposed, believe it and adapt. Never claim a file contains something you have not seen.
+- Stop when the step is done. Say so rather than starting the next piece of work.
+
+When the step is finished, reply with JSON only, no prose and no code fence:
 {"output":"the result of this step, in full — this is what the user reads","status":"continue|done|needs_decision|blocked","next":"if continuing, the single next action, phrased concretely; empty otherwise","question":"if needs_decision, the exact question for the user; empty otherwise","options":["if needs_decision, 2-4 concrete options; empty otherwise"],"rationale":"one short clause on how you approached this step"}
 
 Status:
@@ -245,6 +275,7 @@ interface RunRow {
   planned: number;
   done: number;
   calls: number;
+  mode: AgentMode;
 }
 
 interface StepRow {
@@ -260,10 +291,96 @@ const message = (err: unknown) =>
   err instanceof Error ? err.message : String(err).slice(0, 200);
 
 /**
+ * Work one step, letting the model reach for tools until it answers in prose.
+ *
+ * The loop is the part that makes this a coding agent rather than a chat turn:
+ * the model is given functions, calls one, the result goes back, and it
+ * decides again. It ends when the model replies *without* requesting a tool —
+ * which, for a model that ignores tools entirely, is simply the first
+ * iteration, so an engine without tool support degrades to the previous
+ * behaviour rather than breaking.
+ *
+ * Two exits other than "the model answered":
+ *   - a tool proposed an edit in `ask` mode, so the run must pause;
+ *   - the iteration cap, which is reported as-is rather than quietly presented
+ *     as a finished step.
+ */
+async function runStepWithTools(
+  ctx: GenericActionCtx<DataModel>,
+  run: RunRow,
+  step: StepRow,
+  history: StepRow[],
+  ec: ExecContext,
+): Promise<{ env: Envelope | null; proposed: boolean; activity: string[] }> {
+  const brief = history
+    .filter((h) => h.status === "done" && h.output)
+    .slice(-6)
+    .map(
+      (h, i) =>
+        `${i + 1}. ${h.title}\n${(h.output ?? "").slice(0, CONTEXT_CHARS)}`,
+    )
+    .join("\n\n");
+
+  const prompt = [
+    `GOAL\n${run.goal}`,
+    brief ? `\nWHAT YOU HAVE ALREADY DONE\n${brief}` : "",
+    `\nTHIS STEP (${step.position + 1} of ${run.planned || "?"})\n${step.title}\n${step.detail ?? ""}`,
+    "\nUse the tools to find out what you need, then return the JSON envelope.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const messages: ChatTurn[] = [{ role: "user", content: prompt }];
+  const tools = toolSpecs(ec.mode);
+  const activity: string[] = [];
+
+  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const stepText = `${step.title}. ${step.detail ?? ""}`;
+    const plan = agentPlan(stepText, JSON.stringify(messages).length);
+    const result = await runProviderChain(
+      messages,
+      CODER_SYSTEM,
+      "Every engine failed on this step.",
+      plan,
+      // Low temperature: a model rewriting code should not be exploring.
+      { tools, temperature: 0.2 },
+    );
+
+    const calls = result.toolCalls ?? [];
+    if (calls.length === 0) {
+      return { env: parseEnvelope(result.text), proposed: false, activity };
+    }
+
+    messages.push(assistantToolMessage(result.text, calls));
+    for (const call of calls) {
+      const outcome = await executeTool(ec, call);
+      activity.push(`${call.name} → ${outcome.summary}`);
+      messages.push(toolMessage(call.id, call.name, outcome.result));
+      if (outcome.proposed) {
+        return { env: null, proposed: true, activity };
+      }
+    }
+  }
+
+  return {
+    env: {
+      output: `Spent ${MAX_TOOL_ITERATIONS} tool rounds on this step without settling it.`,
+      status: "continue",
+      next: "",
+      question: "",
+      options: [],
+      rationale: "",
+    },
+    proposed: false,
+    activity,
+  };
+}
+
+/**
  * Work steps until the run finishes, blocks, or the per-call budget runs out.
  *
- * Shared by `advance` (the normal case) and `answer` (after the user has
- * unblocked a step) so both resume through identical logic.
+ * Shared by `advance` (the normal case) and `decide` (after the user has
+ * answered a gate or an edit proposal) so both resume through identical logic.
  */
 async function runLoop(
   ctx: GenericActionCtx<DataModel>,
@@ -324,40 +441,20 @@ async function runLoop(
       patch: { status: "running" },
     });
 
-    // --- context: the goal plus what earlier steps produced ---------------
     const history = (await ctx.runQuery(internal.agentStore.runSteps, {
       runId,
       userId,
     })) as StepRow[];
 
-    const brief = history
-      .filter((h) => h.status === "done" && h.output)
-      .slice(-6)
-      .map(
-        (h, i) =>
-          `${i + 1}. ${h.title}\n${(h.output ?? "").slice(0, CONTEXT_CHARS)}`,
-      )
-      .join("\n\n");
-
-    const prompt = [
-      `GOAL\n${run.goal}`,
-      brief ? `\nWHAT YOU HAVE ALREADY DONE\n${brief}` : "",
-      `\nTHIS STEP (${step.position + 1} of ${run.planned || "?"})\n${step.title}\n${step.detail ?? ""}`,
-      "\nReturn the JSON envelope only.",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    // --- run it ------------------------------------------------------------
-    let result;
+    // --- run the step ------------------------------------------------------
+    let outcome;
     try {
-      const plan = agentPlan(stepText, prompt.length);
-      const turns: ChatTurn[] = [{ role: "user", content: prompt }];
-      result = await runProviderChain(
-        turns,
-        EXECUTOR_SYSTEM,
-        "Every engine failed on this step.",
-        plan,
+      outcome = await runStepWithTools(
+        ctx,
+        run,
+        step,
+        history,
+        { ctx, userId, runId, mode: run.mode },
       );
     } catch (err) {
       const detail = message(err);
@@ -374,10 +471,30 @@ async function runLoop(
       return { status: "failed", remaining: budget };
     }
 
-    const env = parseEnvelope(result.text);
-    budget--;
+    // An edit is sitting unapplied. The step is parked as `needs_decision` so
+    // `nextStep` skips it — leaving it `running` would have the very next
+    // iteration pick up the same step and propose the same edit again.
+    if (outcome.proposed) {
+      await ctx.runMutation(internal.agentStore.gateStep, {
+        stepId: step._id,
+        reason: "edit needs your approval",
+        question:
+          "Jarvis wants to change a file. Review the diff below and approve or reject it.",
+        options: [],
+      });
+      await ctx.runMutation(internal.agentStore.setRun, {
+        runId,
+        status: "awaiting_user",
+        now: Date.now(),
+      });
+      return { status: "awaiting_user", remaining: budget };
+    }
 
-    // The model hit a fork. Same treatment as a code gate: stop, and say why.
+    const env = outcome.env as Envelope;
+    const trail = outcome.activity.length
+      ? `\n\n---\nTools: ${outcome.activity.join(" · ")}`
+      : "";
+
     if (env.status === "needs_decision") {
       await ctx.runMutation(internal.agentStore.gateStep, {
         stepId: step._id,
@@ -398,8 +515,7 @@ async function runLoop(
         stepId: step._id,
         patch: {
           status: "failed",
-          output: env.output,
-          engineId: result.engineId,
+          output: `${env.output}${trail}`,
         },
       });
       await ctx.runMutation(internal.agentStore.setRun, {
@@ -415,18 +531,24 @@ async function runLoop(
       stepId: step._id,
       patch: {
         status: "done",
-        output: env.output,
+        output: `${env.output}${trail}`,
         rationale: env.rationale,
-        engineId: result.engineId,
       },
     });
-    await ctx.runMutation(internal.agentStore.bumpRun, { runId, calls: 1 });
+    // Billed per tool round, not per step. A step that read three files and
+    // edited one cost four requests, and showing it as one would hide exactly
+    // the thing the free budget depends on being honest about.
+    await ctx.runMutation(internal.agentStore.bumpRun, {
+      runId,
+      calls: Math.max(1, outcome.activity.length),
+    });
+    budget--;
 
     if (env.status === "done") {
       await ctx.runMutation(internal.agentStore.setRun, {
         runId,
         status: "done",
-        answer: env.output,
+        answer: `${env.output}${trail}`,
         now: Date.now(),
       });
       return { status: "done", remaining: budget };
@@ -462,7 +584,14 @@ async function runLoop(
  * this returns — but the user should see the plan land before any of it runs.
  */
 export const start = action({
-  args: { goal: v.string() },
+  args: {
+    goal: v.string(),
+    mode: v.optional(v.union(
+      v.literal("readonly"),
+      v.literal("ask"),
+      v.literal("auto"),
+    )),
+  },
   handler: async (ctx, args): Promise<{ runId: Id<"agentRuns"> }> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to use Jarvis Code.");
@@ -472,10 +601,15 @@ export const start = action({
     }
 
     const now = Date.now();
+    // A first run against an empty workspace would spend a plan request to
+    // discover there is nothing to read, so seed it before the plan is made.
+    await ctx.runMutation(internal.agentStore.seedWorkspace, { userId, now });
+
     const runId = (await ctx.runMutation(internal.agentStore.createRun, {
       userId,
       goal,
       title: goal.slice(0, 70),
+      mode: args.mode ?? "ask",
       now,
     })) as Id<"agentRuns">;
 
@@ -552,6 +686,146 @@ export const answer = action({
     });
 
     return runLoop(ctx, args.runId, userId);
+  },
+});
+
+/**
+ * Approve or reject one proposed edit, then carry straight on.
+ *
+ * Applying goes through the same checkpoint path the agent's own `auto` mode
+ * uses, so an approved edit is exactly as reversible as an automatic one — the
+ * approval gate changes who decided, not whether it can be undone.
+ */
+export const decideProposal = action({
+  args: {
+    runId: v.id("agentRuns"),
+    proposalId: v.id("agentProposals"),
+    decision: v.union(v.literal("apply"), v.literal("reject")),
+  },
+  handler: async (ctx, args): Promise<{ status: string; remaining: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use Jarvis Code.");
+
+    const rows = (await ctx.runQuery(internal.agentStore.pendingProposals, {
+      runId: args.runId,
+      userId,
+    })) as {
+      _id: Id<"agentProposals">;
+      path: string;
+      before?: string;
+      after?: string;
+      status: string;
+    }[];
+    const proposal = rows.find((r) => r._id === args.proposalId);
+    if (!proposal) throw new Error("That proposal is gone.");
+    if (proposal.status !== "pending") {
+      throw new Error("That edit was already decided.");
+    }
+
+    const now = Date.now();
+    if (args.decision === "apply") {
+      await ctx.runMutation(internal.agentStore.recordCheckpoint, {
+        userId,
+        path: proposal.path,
+        previous: proposal.before,
+        runId: args.runId,
+        now,
+      });
+      if (proposal.after === undefined) {
+        await ctx.runMutation(internal.agentStore.removeFile, {
+          userId,
+          path: proposal.path,
+        });
+      } else {
+        await ctx.runMutation(internal.agentStore.putFile, {
+          userId,
+          path: proposal.path,
+          content: proposal.after,
+          now,
+        });
+      }
+    }
+
+    await ctx.runMutation(internal.agentStore.decideProposal, {
+      proposalId: args.proposalId,
+      status: args.decision === "apply" ? "applied" : "rejected",
+    });
+
+    // The step that asked for approval goes back to `pending` rather than being
+    // marked done. Re-running it is deliberate: the model re-reads the file as
+    // it now actually is, so an approval lands as "the edit is there, carry on"
+    // and a rejection as "that did not happen, find another way". Marking it
+    // done would claim work that never happened.
+    const parked = (await ctx.runQuery(internal.agentStore.gatedStep, {
+      runId: args.runId,
+      userId,
+    })) as StepRow | null;
+    if (parked) {
+      await ctx.runMutation(internal.agentStore.patchStep, {
+        stepId: parked._id,
+        patch: {
+          status: "pending",
+          question: undefined,
+          gateReason: undefined,
+          options: undefined,
+          answer: args.decision === "apply" ? "approved" : "rejected",
+        },
+      });
+    }
+
+    await ctx.runMutation(internal.agentStore.setRun, {
+      runId: args.runId,
+      status: "running",
+      now,
+    });
+
+    // Rejecting several in a row is one decision, not one request each, so the
+    // loop is entered once at the end either way.
+    return runLoop(ctx, args.runId, userId);
+  },
+});
+
+/**
+ * Put one file back the way it was before the agent's last change to it.
+ *
+ * Single-step, not a whole-run undo, because that is the operation someone
+ * actually reaches for: "no, not that file". A `previous` of undefined means
+ * the file did not exist before, so the rewind deletes it rather than leaving
+ * it behind.
+ */
+export const rewind = action({
+  args: { checkpointId: v.id("workspaceCheckpoints") },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ path: string; restored: boolean }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use Jarvis Code.");
+
+    const row = (await ctx.runQuery(internal.agentStore.getCheckpoint, {
+      checkpointId: args.checkpointId,
+      userId,
+    })) as { path: string; previous?: string } | null;
+    if (!row) throw new Error("Nothing to undo there.");
+
+    const now = Date.now();
+    if (row.previous === undefined) {
+      await ctx.runMutation(internal.agentStore.removeFile, {
+        userId,
+        path: row.path,
+      });
+    } else {
+      await ctx.runMutation(internal.agentStore.putFile, {
+        userId,
+        path: row.path,
+        content: row.previous,
+        now,
+      });
+    }
+    await ctx.runMutation(internal.agentStore.dropCheckpoint, {
+      checkpointId: args.checkpointId,
+    });
+    return { path: row.path, restored: true };
   },
 });
 

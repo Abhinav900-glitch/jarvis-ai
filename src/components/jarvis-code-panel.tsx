@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { useAction, useQuery } from "convex/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bot,
@@ -22,16 +22,21 @@ import {
   ChevronRight,
   CircleAlert,
   Cpu,
+  FileCode,
+  Files,
   Gauge,
+  History,
   Loader2,
   Play,
   ShieldQuestion,
   Square,
+  Undo2,
   X,
 } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { GATE_RULES } from "@/lib/agent-contract";
+import { diffLines, diffStats, withContext, type DiffLine } from "@/lib/agent-diff";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { cn } from "@/lib/utils";
 
@@ -56,6 +61,110 @@ const STEP_DOT: Record<string, string> = {
   failed: "bg-[var(--signal-rose)]",
   needs_decision: "bg-[var(--signal-amber)]",
 };
+
+/** One line of a proposed change, coloured by what happened to it. */
+function DiffRow({ line }: { line: DiffLine }) {
+  const tone =
+    line.kind === "add"
+      ? "bg-[var(--signal-green)]/10 text-[var(--signal-green)]"
+      : line.kind === "del"
+        ? "bg-destructive/10 text-destructive"
+        : "text-muted-foreground/70";
+  const mark = line.kind === "add" ? "+" : line.kind === "del" ? "-" : " ";
+  return (
+    <div className={cn("flex gap-2 px-2 py-px font-mono text-[11px] leading-4", tone)}>
+      <span className="w-8 shrink-0 select-none text-right opacity-50">
+        {line.from ?? ""}
+      </span>
+      <span className="w-8 shrink-0 select-none text-right opacity-50">
+        {line.to ?? ""}
+      </span>
+      <span className="w-2 shrink-0 select-none">{mark}</span>
+      <span className="min-w-0 flex-1 whitespace-pre-wrap break-all">{line.text}</span>
+    </div>
+  );
+}
+
+/**
+ * A proposed edit, shown as a diff and nothing else.
+ *
+ * Approving a described change is not reviewing one. This exists so the
+ * decision is made against the actual lines that will land.
+ */
+function ProposalCard({
+  proposal,
+  onDecide,
+  busy,
+}: {
+  proposal: {
+    _id: string;
+    path: string;
+    before?: string;
+    after?: string;
+    summary?: string;
+  };
+  onDecide: (id: string, decision: "apply" | "reject") => void;
+  busy: boolean;
+}) {
+  const before = proposal.before ?? "";
+  const after = proposal.after ?? "";
+  const lines = useMemo(
+    () => withContext(diffLines(before, after)),
+    [before, after],
+  );
+  const stats = useMemo(() => diffStats(lines), [lines]);
+  const isDelete = proposal.after === undefined;
+
+  return (
+    <div className="hud-panel" data-tone="cyan">
+      <div className="flex flex-wrap items-center gap-2 border-b border-primary/20 px-3 py-2">
+        <FileCode className="size-3.5 text-primary" />
+        <span className="hud-readout text-[11px] text-foreground">
+          {proposal.path}
+        </span>
+        <span className="hud-readout text-[10px]">
+          <span className="text-[var(--signal-green)]">+{stats.added}</span>{" "}
+          <span className="text-destructive">−{stats.removed}</span>
+        </span>
+        <span className="hud-label ml-auto" data-tone="cyan">
+          {isDelete ? "Delete proposed" : "Edit proposed"}
+        </span>
+      </div>
+      <div className="max-h-72 overflow-auto py-1">
+        {lines.length === 0 ? (
+          <p className="px-3 py-2 text-[11px] text-muted-foreground/70">
+            No textual difference.
+          </p>
+        ) : (
+          lines.map((line, i) => <DiffRow key={i} line={line} />)
+        )}
+      </div>
+      <div className="flex items-center gap-2 border-t border-border/60 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => onDecide(proposal._id, "apply")}
+          disabled={busy}
+          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity disabled:opacity-40"
+        >
+          <Check className="size-3.5" />
+          Apply
+        </button>
+        <button
+          type="button"
+          onClick={() => onDecide(proposal._id, "reject")}
+          disabled={busy}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border/70 px-2.5 py-1.5 text-xs transition-colors hover:border-foreground/30 hover:text-foreground disabled:opacity-40"
+        >
+          <X className="size-3.5" />
+          Reject
+        </button>
+        <span className="ml-auto text-[10px] text-muted-foreground/60">
+          Rejecting tells Jarvis to try another way.
+        </span>
+      </div>
+    </div>
+  );
+}
 
 function formatContext(n: number): string {
   if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`;
@@ -170,6 +279,8 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
   const startRun = useAction(api.agent.start);
   const advance = useAction(api.agent.advance);
   const answer = useAction(api.agent.answer);
+  const decideProposal = useAction(api.agent.decideProposal);
+  const rewind = useAction(api.agent.rewind);
   const cancel = useAction(api.agent.cancel);
   const loadRoster = useAction(api.agent.freeRoster);
   const loadQuota = useAction(api.agent.quota);
@@ -178,6 +289,16 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
 
   const run = useQuery(api.agentStore.get, runIdArg(runId));
   const steps = useQuery(api.agentStore.steps, runIdArg(runId));
+  const tree = useQuery(api.agentStore.workspaceTree, {});
+  const proposals = useQuery(api.agentStore.proposals, runIdArg(runId));
+  const checkpoints = useQuery(api.agentStore.checkpoints, { limit: 8 });
+
+  const [mode, setMode] = useState<"readonly" | "ask" | "auto">("ask");
+  const [viewing, setViewing] = useState<string | null>(null);
+  const viewingFile = useQuery(
+    api.agentStore.workspaceFile,
+    viewing ? { path: viewing } : "skip",
+  );
 
   // Guards against two concurrent advances. On a 50-requests-a-day budget a
   // double-fired effect is not a cosmetic bug, it is a wasted fifth of the day.
@@ -230,7 +351,7 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
     setOpenStep(null);
     setChoice("");
     try {
-      const { runId: id } = await startRun({ goal: text });
+      const { runId: id } = await startRun({ goal: text, mode });
       setRunId(id);
       setGoal("");
     } catch (err) {
@@ -241,7 +362,12 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
   };
 
   const handleAnswer = async (value: string) => {
-    if (!runId || !value.trim() || busy) return;
+    if (!runId || !value.trim() || busy || driving.current) return;
+    // The answer action resumes the loop itself, and flipping the run back to
+    // `running` is exactly what makes the driver effect want to fire. Claiming
+    // the same guard the driver uses is what stops the two running the same
+    // step twice — which on a 50-a-day budget is not a rounding error.
+    driving.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -249,6 +375,42 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
       setChoice("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not record that.");
+    } finally {
+      driving.current = false;
+      setBusy(false);
+    }
+  };
+
+  const handleDecide = async (
+    proposalId: string,
+    decision: "apply" | "reject",
+  ) => {
+    if (!runId || busy || driving.current) return;
+    driving.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await decideProposal({
+        runId,
+        proposalId: proposalId as Id<"agentProposals">,
+        decision,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not record that.");
+    } finally {
+      driving.current = false;
+      setBusy(false);
+    }
+  };
+
+  const handleRewind = async (checkpointId: string) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await rewind({ checkpointId: checkpointId as Id<"workspaceCheckpoints"> });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not undo that.");
     } finally {
       setBusy(false);
     }
@@ -286,6 +448,8 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
 
   const rows = steps ?? [];
   const gated = rows.find((s) => s.status === "needs_decision");
+  const pending = (proposals ?? []).filter((p) => p.status === "pending");
+  const files = tree ?? [];
   const status = run ? (STATUS_TONE[run.status] ?? STATUS_TONE.running) : null;
   const working = run?.status === "running" || run?.status === "planning";
 
@@ -304,7 +468,7 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
           exit={{ opacity: 0, y: 12, scale: 0.99 }}
           transition={{ duration: 0.18 }}
           onClick={(e) => e.stopPropagation()}
-          className="hud-panel hud-corners w-full max-w-3xl"
+          className="hud-panel hud-corners flex max-h-[86vh] w-full max-w-6xl flex-col"
           role="dialog"
           aria-modal="true"
           aria-label="Jarvis Code"
@@ -342,7 +506,9 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
             </button>
           </div>
 
-          <div className="space-y-4 px-4 py-4">
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto px-4 py-4 lg:grid-cols-[minmax(0,1fr)_300px]">
+            {/* ---- the agent ---- */}
+            <div className="min-w-0 space-y-4">
             {/* ---- handover ---- */}
             <div>
               <label
@@ -395,6 +561,41 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
                 <span className="text-[11px] text-muted-foreground/70">
                   ⌘↵ to start
                 </span>
+                {/* Codex's sandbox modes. Spelled out rather than an
+                    abbreviation because "auto" here means the agent rewrites
+                    your files without showing you, and that should never be a
+                    thing you picked by accident. */}
+                <div className="ml-1 inline-flex overflow-hidden rounded-md border border-border/70">
+                  {(
+                    [
+                      ["readonly", "Read only"],
+                      ["ask", "Ask first"],
+                      ["auto", "Auto"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setMode(value)}
+                      disabled={busy || Boolean(runId)}
+                      title={
+                        value === "readonly"
+                          ? "Jarvis can look but not touch anything"
+                          : value === "ask"
+                            ? "Every edit is shown as a diff and waits for you"
+                            : "Jarvis applies edits itself, rewinding still possible"
+                      }
+                      className={cn(
+                        "px-2 py-1 text-[10px] font-medium uppercase tracking-widest transition-colors disabled:opacity-40",
+                        mode === value
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 <button
                   type="button"
                   onClick={() => void handleRoster()}
@@ -413,8 +614,19 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
               </p>
             ) : null}
 
-            {/* ---- the one moment that needs you ---- */}
-            {gated ? (
+            {/* ---- edits waiting on you ---- */}
+            {pending.map((p) => (
+              <ProposalCard
+                key={p._id}
+                proposal={p}
+                busy={busy}
+                onDecide={(id, decision) => void handleDecide(id, decision)}
+              />
+            ))}
+
+            {/* A pending edit and a pending question are different asks, so they
+                never appear together: the diff is the whole request. */}
+            {gated && pending.length === 0 ? (
               <div className="hud-panel" data-tone="amber">
                 <div className="flex items-center gap-2 border-b border-[var(--signal-amber)]/25 px-3 py-2">
                   <ShieldQuestion className="size-3.5 text-[var(--signal-amber)]" />
@@ -638,6 +850,108 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
                 </li>
               </ul>
             </details>
+            </div>
+
+            {/* ---- the workspace ---- */}
+            <aside className="min-w-0 space-y-3 border-t border-border/60 pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+              <div className="flex items-center gap-2">
+                <Files className="size-3.5 text-primary" />
+                <span className="hud-label" data-tone="cyan">
+                  Workspace
+                </span>
+                <span className="hud-readout ml-auto text-[10px] text-muted-foreground/70">
+                  {files.length} file{files.length === 1 ? "" : "s"}
+                </span>
+              </div>
+
+              <ul className="max-h-40 space-y-px overflow-y-auto lg:max-h-52">
+                {files.length === 0 ? (
+                  <li className="py-2 text-[11px] text-muted-foreground/70">
+                    Empty. Start a run and Jarvis seeds a README.
+                  </li>
+                ) : (
+                  files.map((f) => (
+                    <li key={f.path}>
+                      <button
+                        type="button"
+                        onClick={() => setViewing(f.path)}
+                        className={cn(
+                          "flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent",
+                          viewing === f.path
+                            ? "bg-accent text-foreground"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        <FileCode className="size-3 shrink-0" />
+                        <span className="min-w-0 flex-1 truncate">{f.path}</span>
+                        <span className="hud-readout shrink-0 text-[10px] opacity-60">
+                          {f.size < 1024
+                            ? `${f.size}B`
+                            : `${Math.round(f.size / 102) / 10}k`}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+
+              {viewing && viewingFile ? (
+                <div className="hud-panel">
+                  <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
+                    <span className="hud-readout min-w-0 flex-1 truncate text-[11px]">
+                      {viewing}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setViewing(null)}
+                      className="rounded p-0.5 text-muted-foreground hover:text-foreground"
+                      title="Close file"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                  <pre className="max-h-64 overflow-auto px-2 py-1.5 font-mono text-[10px] leading-4">
+                    {viewingFile.content}
+                  </pre>
+                </div>
+              ) : null}
+
+              {/* Rewind. Single-step, per file, and always available —
+                  an undo that only exists while a run is live is not an undo. */}
+              {(checkpoints ?? []).length > 0 ? (
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <History className="size-3 text-muted-foreground" />
+                    <span className="hud-label">Undo</span>
+                  </div>
+                  <ul className="space-y-px">
+                    {(checkpoints ?? []).map((c) => (
+                      <li key={c._id}>
+                        <button
+                          type="button"
+                          onClick={() => void handleRewind(c._id)}
+                          disabled={busy}
+                          title={
+                            c.existed
+                              ? `Put ${c.path} back the way it was`
+                              : `${c.path} did not exist before, so this deletes it`
+                          }
+                          className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                        >
+                          <Undo2 className="size-3 shrink-0" />
+                          <span className="min-w-0 flex-1 truncate">
+                            {c.path}
+                          </span>
+                          <span className="hud-readout shrink-0 text-[10px] opacity-60">
+                            {c.existed ? "restore" : "delete"}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </aside>
           </div>
         </motion.div>
       </motion.div>
