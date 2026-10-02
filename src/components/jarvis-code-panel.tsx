@@ -274,7 +274,13 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
       setRoster(list);
       setQuota(q);
     } catch {
-      setRoster({ models: [], configured: false, error: "Could not read it." });
+      setRoster({
+        models: [],
+        missing: [],
+        retiring: [],
+        configured: false,
+        error: "Could not read it.",
+      });
     }
   };
 
@@ -543,6 +549,38 @@ export function JarvisCodePanel({ open, onClose }: JarvisCodePanelProps) {
                   <p className="mt-1.5 text-[11px] text-destructive">
                     {roster.error}
                   </p>
+                ) : null}
+
+                {/* Stealth models are withdrawn by design, and free models
+                    lose their free slot without warning. Both are cheap to
+                    say out loud while they are still true, and expensive to
+                    discover the hard way: one wasted request per agent step
+                    out of 50 a day. */}
+                {roster?.retiring?.length ? (
+                  <div className="mt-2 rounded border border-[var(--signal-amber)]/30 bg-[var(--signal-amber)]/5 px-2 py-1.5">
+                    {roster.retiring.map((r) => (
+                      <p key={r.id} className="text-[11px] text-foreground">
+                        <span className="text-[var(--signal-amber)]">
+                          {r.label}
+                        </span>{" "}
+                        <span className="text-muted-foreground">
+                          is withdrawn on {r.on}. The free router takes over
+                          automatically.
+                        </span>
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
+
+                {roster?.missing?.length ? (
+                  <div className="mt-2 rounded border border-border/60 px-2 py-1.5">
+                    <p className="text-[11px] text-muted-foreground">
+                      No longer on the free roster — Jarvis skips these:{" "}
+                      <span className="text-foreground">
+                        {roster.missing.join(", ")}
+                      </span>
+                    </p>
+                  </div>
                 ) : null}
 
                 <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground/80">

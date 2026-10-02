@@ -45,7 +45,7 @@ import type { GenericActionCtx } from "convex/server";
 import type { DataModel, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { runProviderChain, type ChatTurn } from "./ai";
-import { inferTask, rankEngines, type RankedEngine } from "./engines";
+import { inferTask, rankEngines, ENGINES, retiringSoon, type RankedEngine } from "./engines";
 import { gateFor } from "../lib/agent-contract";
 
 /** A plan longer than this is not a plan, it is a wish list. */
@@ -582,22 +582,29 @@ export const freeRoster = action({
   args: {},
   handler: async (): Promise<{
     models: { id: string; label: string; context: number }[];
+    /** Jarvis's own free engines that are no longer on the live roster. */
+    missing: string[];
+    /** Registered free engines with a published withdrawal date ahead of us. */
+    retiring: { id: string; label: string; on: string }[];
     configured: boolean;
     error: string | null;
   }> => {
     const key =
       process.env.OPENROUTER_API_KEY?.trim() || process.env.OPENROUTER_KEY?.trim();
+    const blank = {
+      models: [],
+      missing: [] as string[],
+      retiring: retiringSoon(),
+      configured: Boolean(key),
+      error: null as string | null,
+    };
     try {
       const res = await fetch("https://openrouter.ai/api/v1/models", {
         headers: key ? { Authorization: `Bearer ${key}` } : {},
         signal: AbortSignal.timeout(20_000),
       });
       if (!res.ok) {
-        return {
-          models: [],
-          configured: Boolean(key),
-          error: `Roster (${res.status})`,
-        };
+        return { ...blank, error: `Roster (${res.status})` };
       }
       const data = (await res.json()) as {
         data?: { id?: string; name?: string; context_length?: number }[];
@@ -613,10 +620,24 @@ export const freeRoster = action({
           context: m.context_length ?? 0,
         }))
         .sort((a, b) => b.context - a.context);
-      return { models, configured: Boolean(key), error: null };
+
+      // Cross-check the registry against reality. This is what catches a
+      // withdrawn model without anyone maintaining a list: the moment it leaves
+      // the free roster it is reported here, instead of costing one failed
+      // request per step forever because the chain keeps trying it.
+      const live = new Set(models.map((m) => m.id));
+      const missing = ENGINES.filter(
+        (e) =>
+          e.provider === "openrouter" &&
+          // `openrouter/free` is a router, not a roster entry.
+          !e.modelId.startsWith("openrouter/") &&
+          !live.has(e.modelId),
+      ).map((e) => e.modelId);
+
+      return { models, missing, retiring: retiringSoon(), configured: Boolean(key), error: null };
     } catch (err) {
       return {
-        models: [],
+        ...blank,
         configured: Boolean(key),
         error: message(err).slice(0, 120),
       };

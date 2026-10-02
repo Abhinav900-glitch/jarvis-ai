@@ -114,8 +114,9 @@ export const PROVIDERS: ProviderSpec[] = [
     keyEnv: ["OPENROUTER_API_KEY", "OPENROUTER_KEY"],
     missing: "OPENROUTER_API_KEY not configured",
     imageUrlAsString: false,
-    // The free tier is open-weight text models; none of them take an image.
-    textOnly: true,
+    // Not text-only: Space Bunny Alpha takes native multimodal input, and the
+    // router only sends it an image turn when it picked a vision engine.
+    textOnly: false,
     reasoningEffort: false,
     maxTokens: 8192,
     // Free models sit behind saturated free-tier providers, so a generous
@@ -344,6 +345,31 @@ export const ENGINES: EngineSpec[] = [
   //  - thinkingmachines/*     403 unless called from inside their agent tools.
   //  - nvidia/…-content-safety replied off-topic rather than refusing.
   {
+    // The best free agentic model available right now: tool calling, 1M
+    // context, native multimodal, and ranked #1 by OpenRouter on each of their
+    // free / tool-calling / programming collections.
+    //
+    // Two things to know before relying on it. It is a STEALTH model — an
+    // anonymous preview where the author tests a model under a throwaway name —
+    // so it is scheduled to be withdrawn (see RETIRING below), and the operator
+    // states prompts may be retained by them though not used for training. Do
+    // not route secrets or a user's private data through it. It leads because
+    // it is the strongest option, not because it is dependable: the free
+    // router behind it is what keeps the chain standing when this leaves.
+    id: "openrouter/space-bunny",
+    provider: "openrouter",
+    modelId: "stealth/space-bunny-alpha",
+    label: "Space Bunny Alpha",
+    vision: true,
+    reasoning: false,
+    quality: 0.95,
+    speed: 0.93,
+    context: 1_048_576,
+    bestFor: "agentic work — tools, code, 1M context",
+  },
+  {
+    // The self-healing one. It cannot go stale, which is exactly why it sits
+    // directly behind a model that is about to.
     id: "openrouter/free",
     provider: "openrouter",
     modelId: "openrouter/free",
@@ -354,6 +380,22 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.72,
     context: 262_144,
     bestFor: "any task, auto-picking a free model that fits",
+  },
+  {
+    // Next best on OpenRouter's tool-calling and programming collections, 1M
+    // context, tools supported. Its free status has rotated before — every
+    // DeepSeek model was paid as of July 2026 — so the panel's live roster
+    // check is what tells the truth about it, not this entry.
+    id: "openrouter/deepseek-v4-flash",
+    provider: "openrouter",
+    modelId: "deepseek/deepseek-v4-flash:free",
+    label: "DeepSeek V4 Flash",
+    vision: false,
+    reasoning: true,
+    quality: 0.86,
+    speed: 0.80,
+    context: 1_048_576,
+    bestFor: "long-context tool use when Space Bunny is gone",
   },
   {
     id: "openrouter/nemotron-ultra",
@@ -464,6 +506,35 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "the cheapest step that still has to run",
   },
 ];
+
+/**
+ * Engines with a published end-of-life date, as `engineId → the day it goes`.
+ *
+ * A stealth model is a name an author borrows to test something in public, so
+ * it is withdrawn by design. Recording the date here means the UI can say
+ * "retires in 3 days" while that is still true and still actionable, instead of
+ * the engine quietly 404ing on a day nobody was watching and burning a request
+ * from a 50-a-day budget on every step to find out.
+ *
+ * A date that has passed is not an error — the panel filters those out and the
+ * provider chain falls through on its own — so this table can go stale without
+ * breaking anything, which is the safe direction to be stale in.
+ */
+export const RETIRING: Record<string, string> = {
+  "openrouter/space-bunny": "2026-10-05",
+};
+
+/** Engine ids whose withdrawal is still in the future. */
+export function retiringSoon(): { id: string; label: string; on: string }[] {
+  const now = Date.now();
+  return Object.entries(RETIRING)
+    .filter(([, on]) => Date.parse(on) > now)
+    .map(([id, on]) => ({
+      id,
+      label: engineById(id)?.label ?? id,
+      on,
+    }));
+}
 
 /**
  * Position in the always-safe fallback ladder: provider order, then the order

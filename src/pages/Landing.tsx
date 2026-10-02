@@ -65,7 +65,7 @@ const pillars = [
 ];
 
 const stats = [
-  { value: "23", label: "Routable engines" },
+  { value: "25", label: "Routable engines" },
   { value: "1M", label: "Largest context window" },
   { value: "<800ms", label: "Routing overhead" },
   { value: "∞", label: "Stored conversations" },
@@ -76,7 +76,7 @@ const specs = [
   { label: "Reasoning tier", value: "Mistral Medium · DeepSeek V3" },
   { label: "Fallback tier", value: "Hugging Face · Qwen2.5 / Gemma 2" },
   { label: "Extra provider", value: "Eden AI · Gemma 4" },
-  { label: "Free tier", value: "OpenRouter · 10 free models" },
+  { label: "Free tier", value: "OpenRouter · 12 free models" },
   { label: "Recall pipeline", value: "Embed → retrieve → rerank" },
   { label: "Search layer", value: "Serpstack live web results" },
   { label: "Language layer", value: "apilayer NLP" },
