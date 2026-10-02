@@ -43,6 +43,11 @@ import { cn } from "@/lib/utils";
 export interface AeroTransformGenPanelProps {
   open: boolean;
   onClose: () => void;
+  /**
+   * A run to open on mount, handed over by the overview surface. Null and
+   * undefined are the same thing here — "start fresh".
+   */
+  initialRunId?: Id<"agentRuns"> | null;
 }
 
 const STATUS_TONE: Record<string, { tone: string; label: string }> = {
@@ -264,11 +269,18 @@ function StepCard({
 export function AeroTransformGenPanel({
   open,
   onClose,
+  initialRunId,
 }: AeroTransformGenPanelProps) {
   // State first: the queries below are keyed off runId, so it has to exist
   // before they are declared or the first render reads it in its temporal dead
   // zone.
-  const [runId, setRunId] = useState<Id<"agentRuns"> | null>(null);
+  // Seeded from the prop rather than synced to it by an effect. The panel is
+  // unmounted whenever it is closed, so it re-initialises on every open — which
+  // makes an effect here redundant state synchronisation, and the lint rule is
+  // right that it would be a second source of truth for the same value.
+  const [runId, setRunId] = useState<Id<"agentRuns"> | null>(
+    initialRunId ?? null,
+  );
   const [goal, setGoal] = useState("");
   const [choice, setChoice] = useState("");
   const [busy, setBusy] = useState(false);

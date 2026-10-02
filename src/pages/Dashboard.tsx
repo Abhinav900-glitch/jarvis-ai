@@ -56,6 +56,7 @@ import {
   Pin,
   Sparkles,
   Bot,
+  Gauge,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
@@ -79,6 +80,7 @@ import { MarkdownMessage } from "@/components/markdown-message";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
 import { CodePanel } from "@/components/code-panel";
 import { AeroTransformGenPanel } from "@/components/aerotransformgen-panel";
+import { AeroTransformGenDashboard } from "@/components/aerotransformgen-dashboard";
 import { sanitizeForSpeech } from "@/lib/speech";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -693,6 +695,12 @@ export default function Dashboard() {
   const [showExport, setShowExport] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [showAeroTransform, setShowAeroTransform] = useState(false);
+  // The overview surface. Separate from Dev, like Claude's chat versus its code
+  // view — one drives a run, the other reads the estate.
+  const [showAeroOverview, setShowAeroOverview] = useState(false);
+  const [aeroHandoffRunId, setAeroHandoffRunId] = useState<Id<"agentRuns"> | null>(
+    null,
+  );
   const [streaming, setStreaming] = useState(false);
   // True while a "continue" call is in flight, so the button cannot be
   // double-pressed into two continuations of the same reply.
@@ -3624,6 +3632,12 @@ export default function Dashboard() {
                     ) : null}
                   </DropdownMenuItem>
                   <DropdownMenuItem
+                    onClick={() => setShowAeroOverview(true)}
+                  >
+                    <Gauge className="size-4" />
+                    AeroTransformGen
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
                     onClick={() => setShowAeroTransform(true)}
                   >
                     <Bot className="size-4" />
@@ -4592,11 +4606,26 @@ export default function Dashboard() {
               {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
             </AnimatePresence>
 
+            {/* ---- AeroTransformGen overview: runs + workspace ---- */}
+            <AnimatePresence>
+              {showAeroOverview ? (
+                <AeroTransformGenDashboard
+                  open={showAeroOverview}
+                  onClose={() => setShowAeroOverview(false)}
+                  onOpenRun={(id) => {
+                    setAeroHandoffRunId(id);
+                    setShowAeroTransform(true);
+                  }}
+                />
+              ) : null}
+            </AnimatePresence>
+
             {/* ---- AeroTransformGen Dev: the agentic surface ---- */}
             <AnimatePresence>
               {showAeroTransform ? (
                 <AeroTransformGenPanel
                   open={showAeroTransform}
+                  initialRunId={aeroHandoffRunId}
                   onClose={() => setShowAeroTransform(false)}
                 />
               ) : null}
