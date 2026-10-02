@@ -3758,7 +3758,7 @@ export default function Dashboard() {
           </header>
 
           {/* ---- Region bar ---- */}
-          <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground sm:px-6">
+          <div className="flex items-center justify-between border-b border-primary/15 bg-accent/20 px-4 py-1.5 text-[11px] text-muted-foreground sm:px-6">
             <div className="flex items-center gap-3">
               <span className="inline-flex items-center gap-1">
                 🌐
@@ -3797,17 +3797,26 @@ export default function Dashboard() {
           <div ref={scrollRef} className="flex-1 overflow-y-auto">
             {!messages || messages.length === 0 ? (
               <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-6">
-                <div className="text-muted-foreground/50">
+                <div className="hud-panel hud-corners relative flex size-20 items-center justify-center rounded-full">
+                  <div
+                    aria-hidden
+                    className="absolute inset-0 rounded-full blur-xl"
+                    style={{
+                      background:
+                        "radial-gradient(circle, color-mix(in oklab, var(--signal-cyan) 35%, transparent), transparent 70%)",
+                    }}
+                  />
                   <JarvisOrb size={72} />
                 </div>
-                <h1 className="mt-6 text-2xl font-semibold tracking-tight">
-                  How can I help?
+                <p className="hud-label hud-label-cyan mt-7">Core online</p>
+                <h1 className="mt-3 text-2xl font-semibold tracking-tight">
+                  <span className="hud-glow-text">How can I help?</span>
                 </h1>
                 <p className="mt-2 max-w-md text-center text-sm leading-6 text-muted-foreground">
                   Ask anything — try “solve x² in graph” for a live plot, or /solve
-                  for step-by-step math. Toggle Deep Research for cited web
-                  answers — Groq answers first, Hugging Face takes over
-                  automatically if it fails.
+                  for step-by-step math. Turn on Deep Research for cited web
+                  answers. Every turn is routed to the best engine for the task,
+                  and another one takes over automatically if it fails.
                 </p>
                 <div className="mt-8 grid w-full max-w-md grid-cols-1 gap-2 sm:grid-cols-2">
                   {[
@@ -3822,7 +3831,7 @@ export default function Dashboard() {
                         setInput(s);
                         inputRef.current?.focus();
                       }}
-                      className="rounded-lg border px-4 py-3 text-left text-xs leading-5 text-muted-foreground transition-colors hover:border-foreground/20 hover:bg-accent hover:text-foreground"
+                      className="hud-panel rounded-lg px-4 py-3 text-left text-xs leading-5 text-muted-foreground transition-all hover:-translate-y-0.5 hover:text-foreground"
                     >
                       {s}
                     </button>
@@ -3900,25 +3909,32 @@ export default function Dashboard() {
                       key={m._id}
                       data-message-id={m._id}
                       className={cn(
-                        "transition-colors",
-                        highlight === m._id && "rounded-lg bg-amber-400/10 ring-1 ring-amber-400/40",
-                        listening.currentId === m._id && "rounded-lg bg-cyan-400/5",
+                        "group rounded-lg px-3 py-2 transition-colors",
+                        highlight === m._id && "bg-amber-400/10 ring-1 ring-amber-400/40",
+                        listening.currentId === m._id && "bg-primary/5 ring-1 ring-primary/25",
                       )}
                     >
                       {/* Label row */}
                       <div className="flex items-center gap-2.5">
                         {m.role === "assistant" ? (
-                          <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent">
+                          <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary ring-1 ring-primary/30">
                             <JarvisIcon className="size-3.5" />
                           </div>
                         ) : (
-                          <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent text-[10px] font-medium text-muted-foreground">
+                          <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent text-[10px] font-medium text-muted-foreground ring-1 ring-border">
                             {user?.name?.[0]?.toUpperCase() ||
                               user?.email?.[0]?.toUpperCase() ||
                               "Y"}
                           </div>
                         )}
-                        <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                        <span
+                          className="hud-label"
+                          style={
+                            m.role === "assistant"
+                              ? { color: "var(--signal-cyan)" }
+                              : undefined
+                          }
+                        >
                           {m.role === "user" ? "You" : "Jarvis"}
                         </span>
                         {/* Only when the reply genuinely stopped short, so the
@@ -3996,7 +4012,7 @@ export default function Dashboard() {
                           }
                           className={`rounded p-0.5 transition-colors hover:text-foreground ${
                             listening.currentId === m._id
-                              ? "text-cyan-400"
+                              ? "text-primary"
                               : "text-muted-foreground"
                           }`}
                         >
@@ -4012,7 +4028,7 @@ export default function Dashboard() {
                             m.pinned ? "Unpin this message" : "Pin this message"
                           }
                           className={`rounded p-0.5 transition-colors hover:text-foreground ${
-                            m.pinned ? "text-amber-400" : "text-muted-foreground"
+                            m.pinned ? "text-amber-500" : "text-muted-foreground"
                           }`}
                         >
                           <Pin className="size-3" />
@@ -4042,7 +4058,7 @@ export default function Dashboard() {
                             </button>
                           )}
                         {m.role === "assistant" && m.altMessageId && (
-                          <span className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-cyan-400/90">
+                          <span className="hud-label rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[9px] font-semibold text-primary">
                             2 engines
                           </span>
                         )}
@@ -4055,7 +4071,7 @@ export default function Dashboard() {
                                 setInspecting(inspecting === m._id ? null : m._id)
                               }
                               title="Which engine answered this, and what it cost"
-                              className="rounded px-1 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+                              className="hud-readout rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-primary"
                             >
                               {m.engineId ?? m.model ?? "—"}
                             </button>
@@ -4362,64 +4378,110 @@ export default function Dashboard() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 8 }}
                 transition={{ duration: 0.2 }}
-                className="border-t px-6 py-3"
+                className="border-t border-primary/15 bg-accent/20 px-6 py-4"
               >
                 <div className="mx-auto max-w-2xl">
-                  <div className="mb-2 flex items-center gap-2">
-                    <Search className="size-3.5 text-muted-foreground" />
-                    <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Search conversations</span>
-                    <button onClick={() => { setShowSearch(false); setSearchQuery(""); }} className="ml-auto rounded p-0.5 text-muted-foreground hover:text-foreground">
-                      <X className="size-3" />
-                    </button>
-                  </div>
-                  <input
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search across all chats…"
-                    className="mb-2 w-full rounded-lg border bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/50 focus:border-foreground/30"
-                    autoFocus
-                  />
-                  {searchSessionsQuery && !Array.isArray(searchSessionsQuery) && (
-                    <div className="max-h-48 space-y-2 overflow-y-auto">
-                      {searchSessionsQuery.sessions.length > 0 && (
-                        <div>
-                          <p className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Sessions</p>
-                          <ul className="mt-1 space-y-1">
-                            {searchSessionsQuery.sessions.map((s) => (
-                              <li key={s.id}>
-                                <button
-                                  onClick={() => { setActiveId(s.id); setShowSearch(false); setSearchQuery(""); }}
-                                  className="w-full truncate rounded px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
-                                >
-                                  {s.title}
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {searchSessionsQuery.messages.length > 0 && (
-                        <div>
-                          <p className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Messages</p>
-                          <ul className="mt-1 space-y-1">
-                            {searchSessionsQuery.messages.map((m, i) => (
-                              <li key={i}>
-                                <button
-                                  onClick={() => { setActiveId(m.sessionId); setShowSearch(false); setSearchQuery(""); }}
-                                  className="w-full rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent"
-                                >
-                                  <span className="text-muted-foreground">[{m.role}]</span> {m.content}
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {searchSessionsQuery.sessions.length === 0 && searchSessionsQuery.messages.length === 0 && (
-                        <p className="text-xs text-muted-foreground">No results found.</p>
-                      )}
+                  {/* Search console. The field is the hero: a lit cyan
+                      gradient border, a soft outer bloom, and a live pulse on
+                      the icon while the panel is open. */}
+                  <div className="hud-panel hud-corners overflow-hidden rounded-xl">
+                    <div className="flex items-center gap-3 px-4 py-3">
+                      <span className="relative flex size-4 items-center justify-center">
+                        <span
+                          aria-hidden
+                          className="absolute inset-0 rounded-full bg-primary/40 blur-md"
+                        />
+                        <Search className="relative size-4 text-primary" />
+                      </span>
+                      <input
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search every message across all chats…"
+                        className="hud-focus w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/60"
+                        autoFocus
+                      />
+                      <span className="hud-label hidden shrink-0 sm:inline">
+                        Esc to close
+                      </span>
+                      <button
+                        onClick={() => { setShowSearch(false); setSearchQuery(""); }}
+                        className="hud-focus shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <X className="size-3.5" />
+                      </button>
                     </div>
-                  )}
+
+                    {/* Signal gradient along the bottom edge of the field. */}
+                    <div
+                      aria-hidden
+                      className="h-px w-full"
+                      style={{
+                        background:
+                          "linear-gradient(90deg, transparent, var(--signal-cyan), var(--signal-blue), transparent)",
+                      }}
+                    />
+
+                    {searchSessionsQuery && !Array.isArray(searchSessionsQuery) && (
+                      <div className="max-h-52 space-y-3 overflow-y-auto px-2 py-3">
+                        {searchSessionsQuery.sessions.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-2 px-2">
+                              <span className="hud-dot" data-tone="cyan" data-static="true" />
+                              <p className="hud-label">Sessions · {searchSessionsQuery.sessions.length}</p>
+                            </div>
+                            <ul className="mt-1.5 space-y-0.5">
+                              {searchSessionsQuery.sessions.map((s) => (
+                                <li key={s.id}>
+                                  <button
+                                    onClick={() => { setActiveId(s.id); setShowSearch(false); setSearchQuery(""); }}
+                                    className="w-full truncate rounded-md border-l-2 border-transparent px-3 py-2 text-left text-xs text-foreground transition-colors hover:border-primary hover:bg-accent/60"
+                                  >
+                                    {s.title}
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {searchSessionsQuery.messages.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-2 px-2">
+                              <span className="hud-dot" data-tone="blue" data-static="true" />
+                              <p className="hud-label">Messages · {searchSessionsQuery.messages.length}</p>
+                            </div>
+                            <ul className="mt-1.5 space-y-0.5">
+                              {searchSessionsQuery.messages.map((m, i) => (
+                                <li key={i}>
+                                  <button
+                                    onClick={() => { setActiveId(m.sessionId); setShowSearch(false); setSearchQuery(""); }}
+                                    className="hud-readout w-full rounded-md border-l-2 border-transparent px-3 py-2 text-left text-xs transition-colors hover:border-primary hover:bg-accent/60"
+                                  >
+                                    <span
+                                      className="mr-1.5 text-[10px] uppercase tracking-widest"
+                                      style={{
+                                        color:
+                                          m.role === "user"
+                                            ? "var(--signal-amber)"
+                                            : "var(--signal-cyan)",
+                                      }}
+                                    >
+                                      {m.role === "user" ? "you" : "jarvis"}
+                                    </span>
+                                    <span className="text-foreground/90">{m.content}</span>
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {searchSessionsQuery.sessions.length === 0 && searchSessionsQuery.messages.length === 0 && (
+                          <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                            No results found.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -4606,12 +4668,22 @@ export default function Dashboard() {
                 onDrop={handleDrop}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
-                className={`relative rounded-2xl border bg-card shadow-sm transition-all focus-within:border-foreground/30 focus-within:shadow-md ${
+                className={`hud-panel relative overflow-hidden rounded-2xl transition-all focus-within:border-primary/50 focus-within:shadow-[0_0_0_1px_color-mix(in_oklab,var(--primary)_45%,transparent),0_0_28px_-10px_color-mix(in_oklab,var(--primary)_60%,transparent)] ${
                   dragOver
-                    ? "border-foreground/50 bg-accent/50 ring-2 ring-foreground/10"
+                    ? "border-primary/70 bg-accent/60 ring-2 ring-primary/30"
                     : ""
                 }`}
               >
+                {/* Top signal rail on the composer: lit while the field has
+                    focus, so the input reads as the active instrument. */}
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 top-0 h-px opacity-70"
+                  style={{
+                    background:
+                      "linear-gradient(90deg, transparent, var(--signal-cyan), var(--signal-blue), transparent)",
+                  }}
+                />
                 {dragOver ? (
                   <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 rounded-xl bg-background/80">
                     <ImagePlus className="size-5 text-muted-foreground" />

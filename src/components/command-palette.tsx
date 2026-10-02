@@ -81,7 +81,7 @@ export function CommandPalette({
                   {command.icon}
                   <span>{command.label}</span>
                   {command.shortcut && (
-                    <kbd className="ml-auto font-mono text-[10px] tracking-widest text-muted-foreground">
+                    <kbd className="hud-readout ml-auto rounded border border-primary/25 bg-accent/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                       {command.shortcut}
                     </kbd>
                   )}

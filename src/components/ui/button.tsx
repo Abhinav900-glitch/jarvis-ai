@@ -9,15 +9,18 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        /* Primary is the lit cyan CTA: a subtle vertical lift plus a cyan
+           bloom so the primary action on any screen is unmistakable. */
+        default:
+          "bg-primary text-primary-foreground shadow-[0_0_20px_-6px_color-mix(in_oklab,var(--primary)_70%,transparent)] hover:bg-primary/90 hover:shadow-[0_0_26px_-6px_color-mix(in_oklab,var(--primary)_85%,transparent)]",
         destructive:
           "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60",
         outline:
-          "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50",
+          "border border-primary/25 bg-background/60 shadow-xs hover:border-primary/50 hover:bg-accent hover:text-accent-foreground",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost:
-          "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
+          "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

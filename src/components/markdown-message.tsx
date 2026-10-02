@@ -69,14 +69,18 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   };
 
   return (
-    <div className="my-4 overflow-hidden rounded-md border bg-muted/40">
-      <div className="flex items-center justify-between border-b bg-muted/60 px-3 py-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+    <div className="my-4 overflow-hidden rounded-lg border border-primary/25 bg-muted/40">
+      <div className="flex items-center justify-between border-b border-primary/20 bg-accent/40 px-3 py-1.5">
+        <span className="hud-label inline-flex items-center gap-2">
+          <span
+            className="size-1.5 rounded-full"
+            style={{ background: "var(--signal-cyan)" }}
+          />
           {lang}
         </span>
         <button
           onClick={copy}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="hud-label inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 transition-colors hover:bg-primary/10 hover:text-foreground"
           aria-label="Copy code"
         >
           {copied ? (
@@ -87,6 +91,14 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
+      <div
+        aria-hidden
+        className="h-px w-full"
+        style={{
+          background:
+            "linear-gradient(90deg, var(--signal-cyan), transparent 60%)",
+        }}
+      />
       <pre className="overflow-x-auto p-4 text-[13px] leading-6">
         {children}
       </pre>
@@ -108,7 +120,7 @@ const components: Components = {
           href={safeHref}
           target="_blank"
           rel="noopener noreferrer nofollow"
-          className="mx-px inline-flex h-4 min-w-4 items-center justify-center rounded-sm border px-0.5 align-super text-[10px] leading-none text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+          className="mx-px inline-flex h-4 min-w-4 items-center justify-center rounded-sm border border-primary/40 bg-primary/10 px-0.5 align-super font-mono text-[10px] leading-none text-primary transition-colors hover:bg-primary hover:text-primary-foreground"
         >
           {text}
         </a>
@@ -122,7 +134,7 @@ const components: Components = {
         href={safeHref}
         target="_blank"
         rel="noopener noreferrer nofollow"
-        className="font-medium underline underline-offset-2 hover:text-foreground"
+        className="font-medium text-primary underline decoration-primary/40 underline-offset-2 transition-colors hover:decoration-primary"
       >
         {children}
       </a>
@@ -150,7 +162,7 @@ const components: Components = {
       return <code className={className}>{children}</code>;
     }
     return (
-      <code className="rounded-sm border bg-muted/60 px-1 py-0.5 text-[0.85em] font-medium">
+      <code className="rounded-sm border border-primary/20 bg-primary/8 px-1 py-0.5 text-[0.85em] font-medium text-foreground">
         {children}
       </code>
     );

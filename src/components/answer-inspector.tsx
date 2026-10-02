@@ -70,45 +70,48 @@ export function AnswerInspector(props: AnswerInspectorProps) {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 4 }}
       transition={{ duration: 0.14 }}
-      className="absolute right-0 top-full z-40 mt-1.5 w-72 rounded-xl border bg-popover/95 p-3 text-[11px] shadow-lg backdrop-blur"
+      className="hud-panel hud-corners absolute right-0 top-full z-40 mt-1.5 w-72 rounded-xl p-3 text-[11px]"
     >
       <div className="mb-2 flex items-center gap-2">
-        <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="font-mono text-[11px] font-medium">{engine}</span>
+        <Cpu className="size-3.5 shrink-0 text-primary" />
+        <span className="hud-readout text-[11px] font-medium">{engine}</span>
         {usedFallback ? (
           <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-amber-500/90">
             <AlertTriangle className="size-2.5" />
             fallback
           </span>
-        ) : null}
+        ) : (
+          <span className="hud-dot ml-auto" data-tone="cyan" />
+        )}
       </div>
 
       {decisionReason ? (
         <p className="mb-2 leading-5 text-muted-foreground">{decisionReason}</p>
       ) : null}
 
-      <div className="space-y-1.5 text-muted-foreground">
-        <div className="flex items-center justify-between gap-2">
-          <span className="inline-flex items-center gap-1.5">
+      {/* Telemetry rows: label left, measured value right, hairline between. */}
+      <div className="divide-y divide-border/60 text-muted-foreground">
+        <div className="flex items-center justify-between gap-2 py-1.5">
+          <span className="hud-label inline-flex items-center gap-1.5">
             <Clock3 className="size-3" />
             First token
           </span>
-          <span className="font-mono">{formatLatency(latencyMs ?? NaN)}</span>
+          <span className="hud-readout">{formatLatency(latencyMs ?? NaN)}</span>
         </div>
         {hasUsage ? (
-          <div className="flex items-center justify-between gap-2">
-            <span className="inline-flex items-center gap-1.5">
+          <div className="flex items-center justify-between gap-2 py-1.5">
+            <span className="hud-label inline-flex items-center gap-1.5">
               <Coins className="size-3" />
               Tokens
             </span>
-            <span className="font-mono">
+            <span className="hud-readout">
               {formatTokens(promptTokens ?? 0)} in ·{" "}
               {formatTokens(completionTokens ?? 0)} out
             </span>
           </div>
         ) : null}
         {truncated ? (
-          <p className="pt-1 text-amber-500/90">Stopped early, so these are partial.</p>
+          <p className="pt-1.5 text-amber-500/90">Stopped early, so these are partial.</p>
         ) : null}
       </div>
 
@@ -118,8 +121,8 @@ export function AnswerInspector(props: AnswerInspectorProps) {
           onMouseDown={(e) => e.preventDefault()}
           onClick={onCompare}
           className={cn(
-            "mt-3 flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5",
-            "text-left transition-colors hover:bg-accent hover:text-accent-foreground",
+            "mt-3 flex w-full items-center gap-1.5 rounded-lg border border-primary/25 bg-accent/30 px-2 py-1.5",
+            "text-left transition-colors hover:border-primary/50 hover:bg-primary/10 hover:text-foreground",
           )}
         >
           <GitCompare className="size-3 shrink-0" />

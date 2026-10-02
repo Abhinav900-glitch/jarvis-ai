@@ -1,12 +1,17 @@
 /* DO NOT CHANGE */
 @import "tailwindcss";
 @import "tw-animate-css";
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+@import "./hud.css";
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
 @custom-variant dark (&:is(.dark *));
 
 /* DO NOT CHANGE */
 @theme inline {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Mono is the voice of the machine: HUD labels, readouts, telemetry, code.
+     Headings stay on Inter but get tighter tracking so display type reads as
+     engineered rather than default. */
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -44,74 +49,95 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* Minimalism — near-monochrome, warm paper neutrals, hairline dividers */
+/* -------------------------------------------------------------------------- */
+/* Theme — "Tech HUD". Cool ink-blue surfaces, cyan primary, electric blue     */
+/* secondary. Dark mode is the hero: near-black navy panels with cyan signal  */
+/* text, the way an instrument cluster reads at night. Light mode is a cool    */
+/* "ice" variant of the same hues so the brand holds across both.             */
+/* -------------------------------------------------------------------------- */
+
+/* HUD signal colours — shared by both modes so a status light means the same
+   thing whether the app is light or dark. Referenced directly from CSS rules
+   (glows, scanlines) rather than through Tailwind utilities. */
 :root {
-  --radius: 0.5rem;
-  --background: oklch(0.993 0.001 106);
-  --foreground: oklch(0.182 0.004 106);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.182 0.004 106);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.182 0.004 106);
-  --primary: oklch(0.205 0.004 106);
-  --primary-foreground: oklch(0.985 0.001 106);
-  --secondary: oklch(0.966 0.002 106);
-  --secondary-foreground: oklch(0.205 0.004 106);
-  --muted: oklch(0.966 0.002 106);
-  --muted-foreground: oklch(0.516 0.005 106);
-  --accent: oklch(0.958 0.002 106);
-  --accent-foreground: oklch(0.205 0.004 106);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.002 106);
-  --input: oklch(0.92 0.002 106);
-  --ring: oklch(0.55 0.005 106);
-  --chart-1: oklch(0.45 0.002 106);
-  --chart-2: oklch(0.58 0.002 106);
-  --chart-3: oklch(0.7 0.002 106);
-  --chart-4: oklch(0.8 0.002 106);
-  --chart-5: oklch(0.88 0.002 106);
-  --sidebar: oklch(0.984 0.001 106);
-  --sidebar-foreground: oklch(0.182 0.004 106);
-  --sidebar-primary: oklch(0.205 0.004 106);
-  --sidebar-primary-foreground: oklch(0.985 0.001 106);
-  --sidebar-accent: oklch(0.955 0.002 106);
-  --sidebar-accent-foreground: oklch(0.205 0.004 106);
-  --sidebar-border: oklch(0.92 0.002 106);
-  --sidebar-ring: oklch(0.55 0.005 106);
+  --signal-cyan: oklch(0.72 0.14 205);
+  --signal-blue: oklch(0.6 0.17 255);
+  --signal-violet: oklch(0.62 0.16 295);
+  --signal-amber: oklch(0.78 0.15 75);
+  --signal-green: oklch(0.75 0.16 155);
+  --signal-rose: oklch(0.68 0.19 15);
 }
 
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.986 0.006 245);
+  --foreground: oklch(0.19 0.024 258);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.19 0.024 258);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.19 0.024 258);
+  --primary: oklch(0.55 0.16 246);
+  --primary-foreground: oklch(0.99 0.004 230);
+  --secondary: oklch(0.945 0.018 240);
+  --secondary-foreground: oklch(0.28 0.045 252);
+  --muted: oklch(0.955 0.014 242);
+  --muted-foreground: oklch(0.5 0.032 250);
+  --accent: oklch(0.935 0.035 226);
+  --accent-foreground: oklch(0.3 0.06 248);
+  --destructive: oklch(0.58 0.22 22);
+  --border: oklch(0.9 0.022 240);
+  --input: oklch(0.885 0.024 240);
+  --ring: oklch(0.62 0.15 235);
+  --chart-1: oklch(0.62 0.15 215);
+  --chart-2: oklch(0.58 0.18 262);
+  --chart-3: oklch(0.66 0.14 185);
+  --chart-4: oklch(0.64 0.17 300);
+  --chart-5: oklch(0.7 0.15 70);
+  --sidebar: oklch(0.968 0.012 242);
+  --sidebar-foreground: oklch(0.19 0.024 258);
+  --sidebar-primary: oklch(0.55 0.16 246);
+  --sidebar-primary-foreground: oklch(0.99 0.004 230);
+  --sidebar-accent: oklch(0.925 0.03 230);
+  --sidebar-accent-foreground: oklch(0.28 0.05 250);
+  --sidebar-border: oklch(0.9 0.022 240);
+  --sidebar-ring: oklch(0.62 0.15 235);
+}
+
+/* Dark is the intended hero of this design: navy-black instrument panels,
+   cyan primary, and borders that carry a faint blue rather than pure white so
+   the whole surface reads as one cool system. */
 .dark {
-  --background: oklch(0.145 0.002 106);
-  --foreground: oklch(0.985 0.001 106);
-  --card: oklch(0.178 0.002 106);
-  --card-foreground: oklch(0.985 0.001 106);
-  --popover: oklch(0.178 0.002 106);
-  --popover-foreground: oklch(0.985 0.001 106);
-  --primary: oklch(0.92 0.002 106);
-  --primary-foreground: oklch(0.16 0.002 106);
-  --secondary: oklch(0.24 0.002 106);
-  --secondary-foreground: oklch(0.985 0.001 106);
-  --muted: oklch(0.24 0.002 106);
-  --muted-foreground: oklch(0.68 0.003 106);
-  --accent: oklch(0.27 0.002 106);
-  --accent-foreground: oklch(0.985 0.001 106);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 12%);
-  --input: oklch(1 0 0 / 16%);
-  --ring: oklch(0.6 0.003 106);
-  --chart-1: oklch(0.4 0.002 106);
-  --chart-2: oklch(0.52 0.002 106);
-  --chart-3: oklch(0.64 0.002 106);
-  --chart-4: oklch(0.76 0.002 106);
-  --chart-5: oklch(0.86 0.002 106);
-  --sidebar: oklch(0.178 0.002 106);
-  --sidebar-foreground: oklch(0.985 0.001 106);
-  --sidebar-primary: oklch(0.92 0.002 106);
-  --sidebar-primary-foreground: oklch(0.16 0.002 106);
-  --sidebar-accent: oklch(0.27 0.002 106);
-  --sidebar-accent-foreground: oklch(0.985 0.001 106);
-  --sidebar-border: oklch(1 0 0 / 12%);
-  --sidebar-ring: oklch(0.6 0.003 106);
+  --background: oklch(0.155 0.022 258);
+  --foreground: oklch(0.955 0.008 225);
+  --card: oklch(0.192 0.026 256);
+  --card-foreground: oklch(0.955 0.008 225);
+  --popover: oklch(0.186 0.026 256);
+  --popover-foreground: oklch(0.955 0.008 225);
+  --primary: oklch(0.76 0.13 205);
+  --primary-foreground: oklch(0.17 0.03 255);
+  --secondary: oklch(0.256 0.032 252);
+  --secondary-foreground: oklch(0.93 0.012 228);
+  --muted: oklch(0.25 0.03 252);
+  --muted-foreground: oklch(0.72 0.035 235);
+  --accent: oklch(0.3 0.05 244);
+  --accent-foreground: oklch(0.95 0.02 210);
+  --destructive: oklch(0.68 0.19 20);
+  --border: oklch(0.85 0.06 225 / 16%);
+  --input: oklch(0.85 0.06 225 / 22%);
+  --ring: oklch(0.75 0.13 210);
+  --chart-1: oklch(0.76 0.13 205);
+  --chart-2: oklch(0.68 0.16 262);
+  --chart-3: oklch(0.72 0.13 180);
+  --chart-4: oklch(0.7 0.15 300);
+  --chart-5: oklch(0.8 0.14 75);
+  --sidebar: oklch(0.175 0.026 257);
+  --sidebar-foreground: oklch(0.955 0.008 225);
+  --sidebar-primary: oklch(0.76 0.13 205);
+  --sidebar-primary-foreground: oklch(0.17 0.03 255);
+  --sidebar-accent: oklch(0.28 0.045 246);
+  --sidebar-accent-foreground: oklch(0.95 0.02 210);
+  --sidebar-border: oklch(0.85 0.06 225 / 15%);
+  --sidebar-ring: oklch(0.75 0.13 210);
 }
 
 @layer base {
@@ -122,10 +148,18 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "cv11", "ss01";
     letter-spacing: -0.011em;
+    /* Faint cool tint so large empty areas read as instrument glass rather
+       than flat paper. Two fixed layers: a blueprint grid and a vignette. */
+    background-image:
+      linear-gradient(to right, color-mix(in oklab, var(--primary) 5%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in oklab, var(--primary) 5%, transparent) 1px, transparent 1px),
+      radial-gradient(ellipse 90% 60% at 50% 0%, color-mix(in oklab, var(--primary) 7%, transparent), transparent 70%);
+    background-size: 56px 56px, 56px 56px, 100% 100%;
+    background-attachment: fixed;
   }
   ::selection {
-    background: var(--foreground);
-    color: var(--background);
+    background: color-mix(in oklab, var(--primary) 30%, transparent);
+    color: var(--foreground);
   }
   * {
     scrollbar-width: thin;
@@ -162,8 +196,23 @@
 .md-body h3,
 .md-body h4 {
   font-weight: 600;
-  letter-spacing: -0.01em;
-  margin: 1.4em 0 0.5em;
+  letter-spacing: -0.02em;
+  margin: 1.5em 0 0.55em;
+}
+
+/* Headings get a cyan rule on the left — the model's section breaks read as
+   instrument dividers rather than plain bold text. */
+.md-body h1,
+.md-body h2 {
+  padding-left: 0.7em;
+  border-left: 2px solid color-mix(in oklab, var(--primary) 55%, transparent);
+}
+
+/* Strong text is the model's emphasis: tint it to the signal colour so the
+   key terms in an answer are scannable without changing the wording. */
+.md-body strong {
+  color: color-mix(in oklab, var(--foreground) 88%, var(--primary) 12%);
+  font-weight: 600;
 }
 .md-body h1 {
   font-size: 1.25rem;
@@ -196,7 +245,10 @@
 
 .md-body blockquote {
   margin: 1em 0;
-  border-left: 2px solid var(--border);
+  border-left: 2px solid color-mix(in oklab, var(--primary) 50%, transparent);
+  padding: 0.75em 1em;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: color-mix(in oklab, var(--primary) 6%, transparent);
   padding-left: 1em;
   color: var(--muted-foreground);
 }
@@ -372,7 +424,14 @@
 }
 
 .md-body pre {
-  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+/* Inline code reads as a small terminal chip. */
+.md-body code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /* --------------------------------------------------------------------------
@@ -495,25 +554,24 @@
   /* radius of the cage's orbit rings — the sphere body is 76% of the stage box */
   --sphere-r: calc(var(--sphere-size) * 0.38);
 
-  /* Spectrum accents. Indigo (the old `--accent`) read as one flat colour and
-     fought the orb, which is genuinely multi-hued. These are steps on a real
-     spectrum, and the drift animation below walks every saturated element
-     through all of them — so the HUD and the orb stay the same object. */
-  --spec-1: #ff3d7f;
-  --spec-2: #ff9f43;
-  --spec-3: #ffe14d;
-  --spec-4: #4dff88;
-  --spec-5: #43e0ff;
-  --spec-6: #8b6cff;
-  --spec-7: #ff5ce1;
+  /* Signal accents — the cyan→blue→violet arc that defines the brand. The
+     old rainbow fought the app's own palette and made the HUD read as a toy;
+     restricting it to the cool arc keeps every surface on one system. */
+  --spec-1: #22d3ee;
+  --spec-2: #38bdf8;
+  --spec-3: #60a5fa;
+  --spec-4: #818cf8;
+  --spec-5: #a78bfa;
+  --spec-6: #22d3ee;
+  --spec-7: #2dd4bf;
 
   /* Aurora backdrop. Two drifting colour fields behind the orb, so the stage
      is never a flat black rectangle: the sphere appears to sit inside
      something. Deliberately very low contrast — it has to read as light in a
      dark room, not as a light show competing with the orb for attention. */
   background:
-    radial-gradient(ellipse at 50% 44%, #16162c 0%, #0a0a14 40%, #04050a 80%),
-    linear-gradient(180deg, #05060d 0%, #08091a 55%, #04050b 100%);
+    radial-gradient(ellipse at 50% 44%, #0b1a2e 0%, #070d1a 40%, #03060d 80%),
+    linear-gradient(180deg, #040a14 0%, #061020 55%, #03060d 100%);
 }
 
 /* Two aurora fields on pseudo-elements: gradients cannot be animated directly
@@ -539,17 +597,17 @@
   background:
     radial-gradient(
       38% 30% at 26% 30%,
-      rgba(255, 61, 127, 0.3),
+      rgba(34, 211, 238, 0.3),
       transparent 70%
     ),
     radial-gradient(
       34% 26% at 76% 26%,
-      rgba(67, 224, 255, 0.28),
+      rgba(59, 130, 246, 0.28),
       transparent 70%
     ),
     radial-gradient(
       40% 32% at 50% 82%,
-      rgba(139, 108, 255, 0.26),
+      rgba(129, 140, 248, 0.26),
       transparent 72%
     );
   filter: blur(46px);
@@ -560,12 +618,12 @@
   background:
     radial-gradient(
       30% 24% at 68% 62%,
-      rgba(77, 255, 136, 0.2),
+      rgba(45, 212, 191, 0.2),
       transparent 70%
     ),
     radial-gradient(
       32% 26% at 30% 68%,
-      rgba(255, 159, 67, 0.2),
+      rgba(99, 102, 241, 0.24),
       transparent 72%
     );
   filter: blur(58px);
@@ -644,18 +702,15 @@
   height: 92%;
   border-radius: 50%;
   background: conic-gradient(
-    #ff183d,
-    #ff7a18,
-    #ffe62e,
-    #62ff65,
-    #00f0ce,
-    #168dff,
-    #794cff,
-    #ed42ff,
-    #ff183d
+    #22d3ee,
+    #0ea5e9,
+    #3b82f6,
+    #6366f1,
+    #8b5cf6,
+    #22d3ee
   );
   filter: blur(54px);
-  opacity: 0.22;
+  opacity: 0.3;
   animation: sphere-glow-spin 12s linear infinite;
 }
 
@@ -675,7 +730,7 @@
 }
 
 .sphere-button:focus-visible {
-  outline: 1px solid #fff;
+  outline: 1px solid var(--signal-cyan);
   outline-offset: 20px;
 }
 
@@ -705,29 +760,24 @@
     ),
     conic-gradient(
       from -38deg at 50% 50%,
-      #ff153d 0deg,
-      #ff4024 24deg,
-      #ff7a13 45deg,
-      #ffb51e 65deg,
-      #fff044 83deg,
-      #8bff43 105deg,
-      #2afc86 125deg,
-      #00e9c6 148deg,
-      #11caff 170deg,
-      #2189ff 193deg,
-      #5a56ff 216deg,
-      #963dff 239deg,
-      #d83cff 259deg,
-      #ff36b7 281deg,
-      #ff315f 302deg,
-      #ff7b22 326deg,
-      #ff153d 360deg
+      #0e7490 0deg,
+      #0891b2 30deg,
+      #06b6d4 60deg,
+      #22d3ee 92deg,
+      #0ea5e9 128deg,
+      #3b82f6 166deg,
+      #6366f1 200deg,
+      #8b5cf6 232deg,
+      #a78bfa 262deg,
+      #2dd4bf 296deg,
+      #06b6d4 330deg,
+      #0e7490 360deg
     );
   box-shadow:
-    inset -28px -24px 42px rgba(0, 0, 0, 0.8),
-    inset 12px 9px 24px rgba(255, 255, 255, 0.45),
-    inset 0 0 12px rgba(255, 255, 255, 0.35),
-    0 0 50px rgba(105, 89, 255, 0.16);
+    inset -28px -24px 42px rgba(0, 4, 12, 0.82),
+    inset 12px 9px 24px rgba(255, 255, 255, 0.4),
+    inset 0 0 12px rgba(255, 255, 255, 0.3),
+    0 0 50px rgba(34, 211, 238, 0.22);
   animation: sphere-breathe 7s ease-in-out infinite;
 }
 
@@ -1016,41 +1066,41 @@
 }
 
 .jarvis-hud-prose {
-  color: rgba(243, 244, 255, 0.86);
+  color: rgba(226, 240, 255, 0.88);
 }
 
 .jarvis-hud-prose .md-body a {
-  color: rgba(129, 140, 248, 0.95);
+  color: rgba(34, 211, 238, 0.95);
 }
 
 .jarvis-hud-prose .md-body strong {
-  color: rgba(243, 244, 255, 0.95);
+  color: rgba(240, 250, 255, 0.97);
 }
 
 .jarvis-hud-prose .md-body h1,
 .jarvis-hud-prose .md-body h2,
 .jarvis-hud-prose .md-body h3,
 .jarvis-hud-prose .md-body h4 {
-  color: #f3f4ff;
+  color: #e6f6ff;
 }
 
 .jarvis-hud-prose .md-body code,
 .jarvis-hud-prose .md-body pre {
-  background: rgba(129, 140, 248, 0.12);
-  border-color: rgba(154, 157, 255, 0.25);
-  color: rgba(238, 242, 255, 0.92);
+  background: rgba(34, 211, 238, 0.1);
+  border-color: rgba(34, 211, 238, 0.25);
+  color: rgba(232, 246, 255, 0.94);
 }
 
 .jarvis-hud-prose .md-body blockquote {
-  border-color: rgba(154, 157, 255, 0.4);
-  color: rgba(199, 210, 254, 0.7);
+  border-color: rgba(34, 211, 238, 0.4);
+  color: rgba(186, 230, 253, 0.75);
 }
 
 .jarvis-hud-prose .md-body th,
 .jarvis-hud-prose .md-body td {
-  border-color: rgba(154, 157, 255, 0.22);
+  border-color: rgba(34, 211, 238, 0.22);
 }
 
 .jarvis-hud-prose .md-body hr {
-  border-color: rgba(154, 157, 255, 0.22);
+  border-color: rgba(34, 211, 238, 0.24);
 }

@@ -1,0 +1,283 @@
+/* --------------------------------------------------------------------------
+   Tech HUD utility layer.
+
+   Shared chrome for the whole app so surfaces stay consistent and components
+   can opt into the look with a single className instead of hand-rolling
+   gradients. Everything here is token-driven — it re-themes itself when the
+   light/dark tokens change, and every animation is disabled under
+   prefers-reduced-motion.
+   -------------------------------------------------------------------------- */
+
+/* --- Panel: instrument bezel -------------------------------------------------
+   A surface with a lit edge: faint cyan border, inner top highlight, and a
+   soft outer glow. `data-tone` shifts the accent hue for panels that encode
+   state (amber = warning, rose = error, green = healthy). */
+.hud-panel {
+  position: relative;
+  border: 1px solid color-mix(in oklab, var(--primary) 26%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--card) 92%, var(--primary) 8%),
+      var(--card)
+    );
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in oklab, var(--primary) 14%, transparent),
+    0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
+    0 0 0 1px color-mix(in oklab, var(--background) 40%, transparent),
+    0 12px 32px -18px color-mix(in oklab, var(--primary) 45%, transparent);
+}
+
+.hud-panel[data-tone="blue"] {
+  border-color: color-mix(in oklab, var(--signal-blue) 32%, transparent);
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in oklab, var(--signal-blue) 16%, transparent),
+    0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
+    0 12px 32px -18px color-mix(in oklab, var(--signal-blue) 55%, transparent);
+}
+
+.hud-panel[data-tone="violet"] {
+  border-color: color-mix(in oklab, var(--signal-violet) 32%, transparent);
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in oklab, var(--signal-violet) 16%, transparent),
+    0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
+    0 12px 32px -18px color-mix(in oklab, var(--signal-violet) 55%, transparent);
+}
+
+.hud-panel[data-tone="amber"] {
+  border-color: color-mix(in oklab, var(--signal-amber) 34%, transparent);
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in oklab, var(--signal-amber) 16%, transparent),
+    0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
+    0 12px 32px -18px color-mix(in oklab, var(--signal-amber) 50%, transparent);
+}
+
+.hud-panel[data-tone="green"] {
+  border-color: color-mix(in oklab, var(--signal-green) 34%, transparent);
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in oklab, var(--signal-green) 16%, transparent),
+    0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
+    0 12px 32px -18px color-mix(in oklab, var(--signal-green) 50%, transparent);
+}
+
+/* --- Signal label: the machine's voice ---------------------------------------
+   Small uppercase mono with wide tracking. The workhorse label for panel
+   headers, field names and telemetry captions. */
+.hud-label {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.hud-label[data-tone="cyan"] {
+  color: var(--signal-cyan);
+}
+.hud-label[data-tone="blue"] {
+  color: var(--signal-blue);
+}
+.hud-label[data-tone="green"] {
+  color: var(--signal-green);
+}
+.hud-label[data-tone="amber"] {
+  color: var(--signal-amber);
+}
+.hud-label[data-tone="rose"] {
+  color: var(--signal-rose);
+}
+
+/* Utility form for the common case, so headings can tint a label inline
+   without carrying a data attribute around. */
+.hud-label-cyan {
+  color: var(--signal-cyan);
+}
+.hud-label-blue {
+  color: var(--signal-blue);
+}
+
+/* --- Glow text: for headline accents only -----------------------------------
+   A gradient clipped to the glyphs. Kept off body copy — long glowing text is
+   hard to read. */
+.hud-glow-text {
+  background: linear-gradient(
+    100deg,
+    var(--signal-cyan) 0%,
+    var(--signal-blue) 45%,
+    var(--signal-violet) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* --- Scanlines: the CRT overlay ----------------------------------------------
+   Applied to full-bleed surfaces (landing hero, live HUD). Extremely low
+   contrast — it should register as texture at a glance and disappear on
+   focus. */
+.hud-scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--primary) 6%, transparent) 0px,
+    color-mix(in oklab, var(--primary) 6%, transparent) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+}
+
+/* --- Blueprint grid backdrop --------------------------------------------------
+   Finer and cooler than the body grid, for hero sections. */
+.hud-grid-bg {
+  position: relative;
+  isolation: isolate;
+}
+
+.hud-grid-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklab, var(--primary) 9%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--primary) 9%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 20%, transparent 78%);
+  -webkit-mask-image: radial-gradient(
+    ellipse 70% 60% at 50% 40%,
+    #000 20%,
+    transparent 78%
+  );
+}
+
+/* --- Status light: a small pulsing dot --------------------------------------
+   Health/engine indicators. The pulse is the point — a live dot that sits
+   still reads as broken. */
+.hud-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: var(--signal-green);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--signal-green) 20%, transparent);
+  animation: hud-pulse 2.4s ease-in-out infinite;
+}
+
+.hud-dot[data-tone="cyan"] {
+  background: var(--signal-cyan);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--signal-cyan) 20%, transparent);
+}
+.hud-dot[data-tone="amber"] {
+  background: var(--signal-amber);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--signal-amber) 20%, transparent);
+}
+.hud-dot[data-tone="rose"] {
+  background: var(--signal-rose);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--signal-rose) 20%, transparent);
+}
+.hud-dot[data-tone="blue"] {
+  background: var(--signal-blue);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--signal-blue) 20%, transparent);
+}
+.hud-dot[data-static="true"] {
+  animation: none;
+}
+
+@keyframes hud-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.88);
+  }
+}
+
+/* --- Corner brackets: framing for featured panels ---------------------------
+   Four L-shaped corners drawn with gradients, so no extra DOM is needed. */
+.hud-corners {
+  position: relative;
+}
+
+.hud-corners::before,
+.hud-corners::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  border-color: color-mix(in oklab, var(--primary) 55%, transparent);
+}
+
+.hud-corners::before {
+  top: 6px;
+  left: 6px;
+  border-top: 1.5px solid;
+  border-left: 1.5px solid;
+}
+
+.hud-corners::after {
+  right: 6px;
+  bottom: 6px;
+  border-right: 1.5px solid;
+  border-bottom: 1.5px solid;
+}
+
+/* --- Focus ring: one consistent keyboard-focus treatment --------------------- */
+.hud-focus:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* --- Telemetry row: label/value readout used in spec sheets and HUD stats ---- */
+.hud-readout {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* --- Sweeping highlight for the active/route item --------------------------- */
+.hud-active-edge {
+  position: relative;
+}
+
+.hud-active-edge::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 15%;
+  bottom: 15%;
+  width: 2px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    180deg,
+    var(--signal-cyan),
+    var(--signal-blue)
+  );
+  box-shadow: 0 0 12px 1px color-mix(in oklab, var(--signal-cyan) 60%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-dot {
+    animation: none !important;
+  }
+}

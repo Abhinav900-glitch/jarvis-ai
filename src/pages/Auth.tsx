@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/input-otp";
 
 import { useAuth } from "@/hooks/use-auth";
-import logo from "@/assets/logo.svg";
+import { JarvisIcon } from "@/components/jarvis-icon";
 import { ArrowRight, Loader2, Mail, UserX } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
@@ -110,27 +110,32 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="hud-grid-bg flex min-h-screen flex-col">
 
       
       {/* Auth Content */}
       <div className="flex-1 flex items-center justify-center">
         <div className="flex items-center justify-center h-full flex-col">
-        <Card className="min-w-[350px] pb-0 border shadow-md">
+        <Card className="hud-panel hud-corners min-w-[350px] pb-0">
           {step === "signIn" ? (
             <>
               <CardHeader className="text-center">
               <div className="flex justify-center">
-                    <img
-                      src={logo}
-                      alt="Lock Icon"
-                      width={64}
-                      height={64}
-                      className="rounded-lg mb-4 mt-4 cursor-pointer"
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-label="Back to home"
                       onClick={() => navigate("/")}
-                    />
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") navigate("/");
+                      }}
+                      className="hud-panel hud-corners mb-4 mt-4 flex size-16 cursor-pointer items-center justify-center rounded-2xl"
+                    >
+                      <JarvisIcon className="size-8" animate />
+                      <span className="hud-dot absolute -top-1 -right-1" data-tone="cyan" />
+                    </div>
                   </div>
-                <CardTitle className="text-xl">Get Started</CardTitle>
+                <CardTitle className="text-xl tracking-tight">Get Started</CardTitle>
                 <CardDescription>
                   Enter your email to log in or sign up
                 </CardDescription>
@@ -164,7 +169,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                     </Button>
                   </div>
                   {error && (
-                    <p className="mt-2 text-sm text-red-500">{error}</p>
+                    <p className="mt-2 text-sm text-destructive">{error}</p>
                   )}
                   
                   <div className="mt-4">
@@ -173,7 +178,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                         <span className="w-full border-t" />
                       </div>
                       <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-background px-2 text-muted-foreground">
+                        <span className="hud-label bg-background px-2">
                           Or
                         </span>
                       </div>
