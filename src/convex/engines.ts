@@ -104,24 +104,7 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 4096,
     timeoutMs: 45_000,
   },
-  {
-    id: "anthropic",
-    label: "Anthropic",
-    url: "https://api.anthropic.com/v1/messages",
-    keyEnv: ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
-    missing: "ANTHROPIC_API_KEY not configured",
-    // Claude takes `image_url` as a bare string, like Mistral.
-    imageUrlAsString: true,
-    textOnly: false,
-    reasoningEffort: false,
-    // Claude requires max_tokens on every request and rejects anything above
-    // the model's output ceiling; 8192 is comfortable for all of them.
-    maxTokens: 8192,
-    // Claude thinks before it answers by default, so the first token arrives
-    // later than an un-reasoned model's. The wait is worth the answer.
-    timeoutMs: 120_000,
-  },
-];
+  ];
 
 export interface EngineSpec {
   /** Stable id, `provider/model`, stored on the message for the inspector. */
@@ -328,37 +311,7 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "last-resort reasoning, text only",
   },
 
-  // --- Anthropic ----------------------------------------------------------
-  // The only paid provider in this table, and the reason it is here at all is
-  // the context window: a million tokens is roughly 250x what the free tiers
-  // allow, which changes what recall has to do. A question that needed to be
-  // answered from retrieved excerpts can instead be answered from the material
-  // itself.
-  {
-    id: "anthropic/fable-5",
-    provider: "anthropic",
-    modelId: "claude-fable-5",
-    label: "Claude Fable 5",
-    vision: true,
-    reasoning: true,
-    quality: 0.98,
-    speed: 0.42,
-    context: 1_000_000,
-    bestFor: "the hardest questions, with the whole document in hand",
-  },
-  {
-    id: "anthropic/opus-5",
-    provider: "anthropic",
-    modelId: "claude-opus-5",
-    label: "Claude Opus 5",
-    vision: true,
-    reasoning: true,
-    quality: 0.93,
-    speed: 0.48,
-    context: 1_000_000,
-    bestFor: "long agentic work and careful code, at about half the price",
-  },
-];
+  ];
 
 /**
  * Position in the always-safe fallback ladder: provider order, then the order

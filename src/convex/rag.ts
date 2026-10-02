@@ -3,23 +3,23 @@
 // ---------------------------------------------------------------------------
 // Recall — what Jarvis knows when you ask it something.
 //
-// Three stages, and the third is the one that matters:
+// Two stages, and the second is the one that matters:
 //
-//   1. Candidates. When MongoDB is configured, the long-term corpus lives there
-//      and candidates come back by keyword plus recency. Without it, Convex's
-//      own vector index serves the same role.
+//   1. Candidates. Convex's vector index stores the corpus. Queries are
+//      embedded with a HuggingFace sentence-transformer and matched by cosine.
 //
-//   2. Embedding. Voyage AI embeds the query. When it is not configured the
-//      old HuggingFace sentence-transformer is used instead, so the feature
-//      never simply disappears — it just gets worse.
-//
-//   3. Reranking. Voyage's cross-encoder re-scores the candidates against the
+//   2. Reranking. Voyage's cross-encoder re-scores the candidates against the
 //      actual question. Cosine similarity finds things that look alike; the
 //      reranker decides which of those actually answers it. This is the stage
 //      that was missing before, and it is why recall used to feel arbitrary.
 //
-// Every dependency is optional. No Voyage key, no Mongo, no HuggingFace token:
-// each degrades one stage and the rest still runs. The worst case is an empty
+// The two providers do different jobs and are not interchangeable. Voyage's
+// vectors are 1024-dimensional and Convex's index is fixed at 384, so Voyage
+// embeds and reranks while HuggingFace is what actually writes — a Voyage key
+// upgrades the ranking, and never has to own the storage.
+//
+// Every dependency is optional. No Voyage key or no HuggingFace token: each
+// degrades one stage and the rest still runs. The worst case is an empty
 // context, which is exactly what the app did before memory existed.
 // ---------------------------------------------------------------------------
 
@@ -29,19 +29,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import type { GenericActionCtx } from "convex/server";
 import type { DataModel, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import {
-  MEMORY_COLLECTION,
-  mongoCandidates,
-  mongoConfigured,
-  mongoDeleteMany,
-  mongoDiagnose,
-  mongoFind,
-  mongoInsertMany,
-  mongoUpdateOne,
-  type MemoryDoc,
-  type MemoryKind,
-} from "./mongo";
-import { cosine, voyageDiagnose, voyageEmbed, voyageRerank } from "./voyage";
+import { voyageDiagnose, voyageRerank } from "./voyage";
 
 // ---------------------------------------------------------------------------
 // Embeddings
@@ -50,15 +38,6 @@ import { cosine, voyageDiagnose, voyageEmbed, voyageRerank } from "./voyage";
 /** The existing fallback path, unchanged, for deployments without Voyage. */
 const HF_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2";
 export const EMBED_DIMS = 384;
-
-/**
- * Voyage's dimension, asserted here rather than at each call site.
- *
- * A mismatch would not throw — it would write vectors the retriever cannot
- * read, and recall would quietly return nothing. Keeping the number in one
- * place, next to the check that uses it, is the whole defence.
- */
-export const VOYAGE_VECTOR_DIMS = 1024;
 
 async function hfEmbed(token: string, texts: string[]): Promise<number[][]> {
   // api-inference.huggingface.co is retired — the Inference API lives on the
@@ -85,25 +64,22 @@ async function hfEmbed(token: string, texts: string[]): Promise<number[][]> {
   return vectors;
 }
 
-export type EmbedBackend = "voyage" | "huggingface" | "none";
+export type EmbedBackend = "huggingface" | "none";
 
 /**
- * Embed texts with whichever provider is configured, preferring Voyage.
+ * Embed texts for storage in Convex's vector index.
  *
- * Reports which one it used rather than throwing, because the caller needs to
- * know whether it may write 1024-dim or 384-dim vectors.
+ * HuggingFace only. Voyage produces better vectors but at 1024 dimensions,
+ * and the index is fixed at {@link EMBED_DIMS} — writing them would store
+ * vectors the retriever can never read back. Voyage still earns its keep at
+ * the reranking stage, which works on text and needs no stored vectors at all.
+ *
+ * Reports "none" rather than throwing when the token is missing, so the caller
+ * can skip the write instead of failing a turn that does not need it.
  */
 async function embed(
   texts: string[],
-  inputType: "query" | "document",
 ): Promise<{ vectors: number[][]; backend: EmbedBackend }> {
-  const voyage = await voyageEmbed(texts, { inputType });
-  // Checked rather than trusted: a wrong-width vector set would be written and
-  // then read back by a cosine that silently scores everything near zero.
-  if (voyage.length > 0 && voyage.every((v) => v.length === VOYAGE_VECTOR_DIMS)) {
-    return { vectors: voyage, backend: "voyage" };
-  }
-
   const token = process.env.HUGGING_FACE_TOKEN;
   if (!token || texts.length === 0) return { vectors: [], backend: "none" };
 
@@ -112,7 +88,12 @@ async function embed(
       token,
       texts.map((t) => t.slice(0, 2000)),
     );
-    return { vectors, backend: "huggingface" };
+    // Width-checked rather than trusted: a wrong-width vector would be written
+    // and then read back by a cosine that scores everything near zero.
+    const usable = vectors.every((v) => v.length === EMBED_DIMS);
+    return usable
+      ? { vectors, backend: "huggingface" }
+      : { vectors: [], backend: "none" };
   } catch (err) {
     console.error("[recall] huggingface embed failed:", err);
     return { vectors: [], backend: "none" };
@@ -123,18 +104,13 @@ async function embed(
 // Storing an exchange
 // ---------------------------------------------------------------------------
 
-/** Stable document id, so re-indexing the same exchange is idempotent. */
-function docId(userId: string, messageId: string): string {
-  return `${userId}:${messageId}`;
-}
-
 /**
  * Store embeddings for a set of messages (called after each exchange).
  *
- * Writes to MongoDB when it is configured, and to the Convex vector index
- * otherwise. The two are not written to at once on purpose: keeping one
- * authoritative store means a corpus is never half-updated, and turning the
- * key off falls back to a working store rather than a half-migrated one.
+ * Convex's vector index is the only corpus store, so this is the single write
+ * path. Without a HuggingFace token it reports zero rather than throwing: an
+ * un-indexed exchange degrades future recall slightly, and failing the turn
+ * that triggered the write would be a much worse trade.
  */
 export const indexMessages = action({
   args: {
@@ -157,36 +133,8 @@ export const indexMessages = action({
     if (valid.length === 0) return { indexed: 0, backend: "none" as EmbedBackend };
 
     const texts = valid.map((m) => m.content.slice(0, 2000));
-    const { vectors, backend } = await embed(texts, "document");
+    const { vectors, backend } = await embed(texts);
     if (vectors.length === 0) return { indexed: 0, backend };
-
-    const useMongo = mongoConfigured();
-
-    // Voyage vectors cannot go into the Convex index — its dimension is fixed
-    // at 384 in the schema. So Mongo is the only place they can live, and the
-    // Convex store only accepts the HuggingFace vectors.
-    if (useMongo) {
-      const now = Date.now();
-      const docs: MemoryDoc[] = valid.map((message, i) => ({
-        _id: docId(userId, message.messageId),
-        userId,
-        kind: "exchange" as MemoryKind,
-        content: texts[i],
-        sessionId: args.sessionId,
-        messageId: message.messageId,
-        role: message.role,
-        embedding: vectors[i],
-        createdAt: now,
-      }));
-      await mongoInsertMany(MEMORY_COLLECTION, docs as unknown as Record<string, unknown>[]);
-      return { indexed: docs.length, backend };
-    }
-
-    if (backend !== "huggingface") {
-      // Voyage is keyed but MongoDB is not, so these vectors have nowhere to
-      // go. Saying so beats pretending the exchange was indexed.
-      return { indexed: 0, backend };
-    }
 
     for (let i = 0; i < valid.length; i++) {
       const vec = vectors[i];
@@ -214,10 +162,10 @@ export interface RetrievedContext {
   sessionId: string;
 }
 
-/** A candidate from either store, before the reranker has had its say. */
+/** A candidate before the reranker has had its say. */
 interface Candidate extends RetrievedContext {
   /** Only meaningful for the no-reranker fallback ordering. */
-  source: "mongo" | "convex";
+  source: "convex";
 }
 
 export const retrieveContext = action({
@@ -237,25 +185,12 @@ export const retrieveContext = action({
     const overFetch = Math.min(limit * 6, 40);
 
     try {
-      const mongo = mongoConfigured()
-        ? await retrieveFromMongo(userId, args.query, overFetch)
-        : [];
-
-      // Both stores are consulted, not just the newer one. Exchanges indexed
-      // before MongoDB was configured live only in Convex's vector index, and
-      // returning early on a non-empty Mongo result would silently orphan all
-      // of that existing history.
-      const convex =
-        mongo.length >= overFetch
-          ? []
-          : await retrieveFromConvex(
-              ctx,
-              userId,
-              args.query,
-              overFetch - mongo.length,
-            );
-
-      const candidates = [...mongo, ...convex];
+      const candidates = await retrieveFromConvex(
+        ctx,
+        userId,
+        args.query,
+        overFetch,
+      );
       if (candidates.length === 0) return [];
 
       const reranked = await voyageRerank(
@@ -280,42 +215,7 @@ export const retrieveContext = action({
   },
 });
 
-/**
- * MongoDB path: keyword + recency candidates, then ordered by cosine.
- *
- * The embedding is optional. Without one the candidates are still ordered by
- * keyword overlap and recency and still get reranked, which is meaningfully
- * better than nothing — reranking does not need the vectors at all.
- */
-async function retrieveFromMongo(
-  userId: string,
-  query: string,
-  limit: number,
-): Promise<Candidate[]> {
-  const docs = await mongoCandidates(userId, query, limit);
-  if (docs.length === 0) return [];
-
-  const [queryVec] = await voyageEmbed([query], { inputType: "query" });
-  const ordered =
-    Array.isArray(queryVec) && queryVec.length > 0
-      ? docs
-          .map((doc) => ({
-            doc,
-            score: Array.isArray(doc.embedding) ? cosine(queryVec, doc.embedding) : 0,
-          }))
-          .sort((a, b) => b.score - a.score)
-          .map((s) => s.doc)
-      : docs;
-
-  return ordered.slice(0, limit).map((doc) => ({
-    role: doc.role ?? "assistant",
-    content: doc.content,
-    sessionId: doc.sessionId ?? "",
-    source: "mongo" as const,
-  }));
-}
-
-/** The original Convex vector-index path, kept as a second source. */
+/** Convex's vector index, over-fetched for the reranker. */
 async function retrieveFromConvex(
   ctx: GenericActionCtx<DataModel>,
   userId: Id<"users">,
@@ -325,8 +225,8 @@ async function retrieveFromConvex(
   const token = process.env.HUGGING_FACE_TOKEN;
   if (!token || limit <= 0) return [];
 
-  // Isolated: a failure here must cost only the Convex half of the results,
-  // not the MongoDB candidates that were already retrieved successfully.
+  // Isolated: a failure to embed the query must cost only this stage, not the
+  // turn that asked for recall.
   let queryVec: number[] | undefined;
   try {
     [queryVec] = await hfEmbed(token, [query.slice(0, 2000)]);
@@ -383,168 +283,43 @@ export const recallFacts = action({
   ): Promise<{ content: string; kind: string; createdAt: number }[]> => {
     const limit = Math.min(Math.max(args.limit ?? 12, 1), 50);
 
-    if (mongoConfigured()) {
-      const docs = await mongoFind<MemoryDoc>(
-        MEMORY_COLLECTION,
-        { userId: args.userId, kind: { $ne: "exchange" } },
-        { sort: { createdAt: -1 }, limit: 200 },
-      );
-      const ranked = await rankFacts(docs, args.query ?? "", limit);
-      if (ranked.length > 0) return ranked;
-    }
-
-    // The Convex store stays the fallback, and is also the user-visible list.
-    return (await ctx.runQuery(internal.memories.listForContext, {
+    const rows = (await ctx.runQuery(internal.memories.listForContext, {
       userId: args.userId,
-      limit,
+      limit: 200,
     })) as { content: string; kind: string; createdAt: number }[];
-  },
-});
+    if (rows.length === 0) return [];
 
-async function rankFacts(
-  docs: MemoryDoc[],
-  query: string,
-  limit: number,
-): Promise<{ content: string; kind: string; createdAt: number }[]> {
-  const shape = (d: MemoryDoc) => ({
-    content: d.content,
-    kind: d.kind === "exchange" ? "fact" : d.kind,
-    createdAt: d.createdAt,
-  });
-  if (docs.length === 0) return [];
-  if (!query.trim()) return docs.slice(0, limit).map(shape);
+    // Rerank when there is a query to rerank against. Without one the list is
+    // already newest-first, which is the right order for "what do you know
+    // about me".
+    const query = (args.query ?? "").trim();
+    if (!query || rows.length <= 1) return rows.slice(0, limit);
 
-  const reranked = await voyageRerank(
-    query,
-    docs.map((d) => d.content),
-    limit,
-  );
-  if (reranked.length === 0) return docs.slice(0, limit).map(shape);
-
-  return reranked
-    .map((r) => docs[r.index])
-    .filter((d): d is MemoryDoc => Boolean(d))
-    .slice(0, limit)
-    .map(shape);
-}
-
-/**
- * Write durable facts to whichever store is authoritative.
- *
- * Called after extraction and after a manual "remember this". Embeds with
- * Voyage when it is configured so a later query can rank against them.
- */
-export const storeFacts = action({
-  args: {
-    items: v.array(
-      v.object({
-        content: v.string(),
-        kind: v.optional(v.string()),
-        /** The Convex `memories` row id, so the two stores stay addressable
-         *  as the same fact and forgetting one can find the other. */
-        id: v.string(),
-      }),
-    ),
-  },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null) return { stored: 0 };
-    if (!mongoConfigured()) return { stored: 0 };
-
-    const items = args.items
-      .map((i) => ({
-        id: i.id,
-        content: i.content.trim().slice(0, 280),
-        kind: (i.kind ?? "fact") as MemoryKind,
-      }))
-      .filter((i) => i.content.length > 0);
-    if (items.length === 0) return { stored: 0 };
-
-    const { vectors } = await embed(
-      items.map((i) => i.content),
-      "document",
+    const reranked = await voyageRerank(
+      query,
+      rows.map((r) => r.content),
+      limit,
     );
-    const now = Date.now();
+    if (reranked.length === 0) return rows.slice(0, limit);
 
-    const docs: MemoryDoc[] = items.map((item, i) => ({
-      _id: factDocId(userId, item.id),
-      userId,
-      kind: item.kind,
-      content: item.content,
-      ...(vectors[i] ? { embedding: vectors[i] } : {}),
-      createdAt: now,
-    }));
-
-    // Replace rather than insert: re-extraction can produce the same fact
-    // again, and an upsert is the only way to keep one document per fact
-    // instead of a growing pile of near-duplicates.
-    for (const doc of docs) {
-      await mongoUpdateOne(
-        MEMORY_COLLECTION,
-        { _id: doc._id },
-        {
-          $set: {
-            userId: doc.userId,
-            kind: doc.kind,
-            content: doc.content,
-            ...(doc.embedding ? { embedding: doc.embedding } : {}),
-            createdAt: doc.createdAt,
-          },
-        },
-      );
-    }
-    return { stored: docs.length };
+    return reranked
+      .map((r) => rows[r.index])
+      .filter((d): d is (typeof rows)[number] => Boolean(d))
+      .slice(0, limit);
   },
 });
-
-/** Remove facts from MongoDB by their Convex row ids. Best-effort by design. */
-export const forgetInMongo = action({
-  args: { ids: v.array(v.string()) },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null) return { removed: 0 };
-    if (!mongoConfigured() || args.ids.length === 0) return { removed: 0 };
-
-    const removed = await mongoDeleteMany(MEMORY_COLLECTION, {
-      _id: { $in: args.ids.slice(0, 200).map((id) => factDocId(userId, id)) },
-    });
-    return { removed };
-  },
-});
-
-/** Drop every durable fact for a user, leaving the recall corpus intact. */
-export const clearFactsInMongo = action({
-  args: {},
-  handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null) return { removed: 0 };
-    if (!mongoConfigured()) return { removed: 0 };
-
-    const removed = await mongoDeleteMany(MEMORY_COLLECTION, {
-      userId,
-      kind: { $ne: "exchange" },
-    });
-    return { removed };
-  },
-});
-
-/** The one place the cross-store document id is built. */
-function factDocId(userId: string, convexId: string): string {
-  return `${userId}:${convexId}`;
-}
 
 // ---------------------------------------------------------------------------
 // Verification
 // ---------------------------------------------------------------------------
 
 /**
- * Actually exercise both integrations and report what came back.
+ * Actually exercise the recall integrations and report what came back.
  *
  * The status query in `memories.ts` only checks whether the variables are set,
  * which is not the same as working — and the difference matters, because a
- * MongoDB connection string pasted where a Data API endpoint belongs, or an
- * Atlas key pasted as the Voyage key, both leave recall silently returning
- * nothing while every indicator reads green.
+ * key from the wrong provider still leaves recall silently returning nothing
+ * while every indicator reads green.
  *
  * Authenticated on purpose: it makes live network calls and reports internal
  * configuration, so it must not be reachable by anonymous callers.
@@ -555,14 +330,13 @@ export const verifyConnections = action({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Not signed in.");
 
-    const [mongo, voyage] = await Promise.all([mongoDiagnose(), voyageDiagnose()]);
+    const voyage = await voyageDiagnose();
     return {
-      mongo,
       voyage,
-      ok: mongo.ok && voyage.ok,
+      ok: voyage.ok,
       /** Nothing configured at all is a different situation from configured
        *  but broken, and the panel words them differently. */
-      anythingConfigured: mongo.configured || voyage.configured,
+      anythingConfigured: voyage.configured,
     };
   },
 });

@@ -61,9 +61,8 @@ function relativeTime(ms: number) {
 
 export function MemoryPanel({ onClose }: { onClose: () => void }) {
   const memories = useQuery(api.memories.list, { limit: 100 });
-  // These are actions rather than mutations because forgetting has to reach the
-  // MongoDB corpus as well as the Convex row — only the node runtime can do
-  // that, so the panel can no longer call a plain mutation here.
+  // Actions rather than mutations: forgetting and remembering both run
+  // through the memory module, which owns the write and any recall hooks.
   const backend = useQuery(api.memories.backend, {});
   const rememberFact = useAction(api.memory.remember);
   const forgetFact = useAction(api.memory.forget);
@@ -290,7 +289,7 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
               onClick={() => void handleVerify()}
               disabled={checking}
               className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium uppercase tracking-widest transition-colors hover:text-foreground disabled:opacity-50"
-              title="Send a live test request to MongoDB and Voyage AI"
+              title="Send a live test request to Voyage AI"
             >
               {checking ? (
                 <Loader2 className="size-3 animate-spin" />
@@ -307,13 +306,8 @@ export function MemoryPanel({ onClose }: { onClose: () => void }) {
         {report ? (
           <div className="mt-1.5 space-y-1 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-[11px]">
             <CheckRow
-              ok={report.mongo.ok}
-              label={`Memory store (${report.mongo.database})`}
-              detail={report.mongo.detail}
-            />
-            <CheckRow
               ok={report.voyage.ok}
-              label="Embeddings & reranking"
+              label="Reranking"
               detail={report.voyage.detail}
             />
           </div>

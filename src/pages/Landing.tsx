@@ -2,8 +2,8 @@ import { motion } from "framer-motion";
 import {
   ArrowRight,
   ArrowUpRight,
-  Brain,
   Cpu,
+  Gauge,
   Globe,
   Layers,
   Mic,
@@ -33,10 +33,10 @@ const pillars = [
     body: "Every message is scored across the whole engine registry. Fast models take routine turns; when a task is hard or an engine is down, another picks up the same turn automatically — you never switch anything by hand.",
   },
   {
-    icon: Brain,
+    icon: Gauge,
     tone: "blue",
-    title: "Frontier reasoning",
-    body: "Claude Fable 5 and Opus 5 are wired in alongside Groq and Hugging Face. Long-context reads, careful code and genuinely hard questions get a frontier model instead of the cheapest one that answers.",
+    title: "Task-aware reasoning",
+    body: "Reasoning models are only called in when thinking actually helps — a proof or a debugging question earns the heavy model, while asking for a time zone does not. You get the best answer without paying for the slowest path every time.",
   },
   {
     icon: Radar,
@@ -65,16 +65,17 @@ const pillars = [
 ];
 
 const stats = [
-  { value: "12+", label: "Engine providers" },
-  { value: "1M", label: "Token context window" },
+  { value: "13", label: "Routable engines" },
+  { value: "131k", label: "Largest context window" },
   { value: "<800ms", label: "Routing overhead" },
   { value: "∞", label: "Stored conversations" },
 ];
 
 const specs = [
-  { label: "Reasoning tier", value: "Claude Fable 5 · Opus 5" },
-  { label: "Fast tier", value: "Groq · GPT-OSS 120B → Qwen 3.8" },
+  { label: "Primary tier", value: "Groq · GPT-OSS 120B → Qwen 3.8" },
+  { label: "Reasoning tier", value: "Mistral Medium · DeepSeek V3" },
   { label: "Fallback tier", value: "Hugging Face · Qwen2.5 / Gemma 2" },
+  { label: "Extra provider", value: "Eden AI · Gemma 4" },
   { label: "Recall pipeline", value: "Embed → retrieve → rerank" },
   { label: "Search layer", value: "Serpstack live web results" },
   { label: "Language layer", value: "apilayer NLP" },

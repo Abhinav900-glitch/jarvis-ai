@@ -173,19 +173,6 @@ export const extract = action({
     }
     if (stored.length === 0) return { added: 0 };
 
-    // Mirror into the long-term corpus. Deliberately not awaited: the Convex
-    // write above is the system of record, so a failure here leaves the fact
-    // saved and simply not yet searchable by similarity.
-    void ctx
-      .runAction(api.rag.storeFacts, {
-        items: stored.map((s) => ({
-          id: String(s.id),
-          content: s.content,
-          kind: s.kind,
-        })),
-      })
-      .catch(() => ({ stored: 0 }));
-
     return { added: stored.length };
   },
 });
@@ -193,8 +180,7 @@ export const extract = action({
 /**
  * Remember something on purpose ("Remember this" in the panel).
  *
- * Writes to the Convex list the panel reads and, when MongoDB is configured,
- * to the searchable corpus with a Voyage embedding attached.
+ * Writes to the Convex list the panel reads and that recall ranks against.
  */
 export const remember = action({
   args: {
@@ -214,24 +200,15 @@ export const remember = action({
     );
     if (!storedId) return { added: 0 };
 
-    void ctx
-      .runAction(api.rag.storeFacts, {
-        items: [{ id: String(storedId), content, kind: args.kind ?? "fact" }],
-      })
-      .catch(() => ({ stored: 0 }));
-
     return { added: 1 };
   },
 });
 
 /**
- * Forget one fact, from both stores.
+ * Forget one fact.
  *
- * A Convex action rather than a mutation because forgetting has to reach
- * MongoDB as well, and only the node runtime can make that call. A Mongo
- * failure is swallowed deliberately: the user asked for the fact to be gone,
- * and it is gone from the list they can see, so reporting an error over a
- * corpus index would be alarmist.
+ * The Convex row is the only store, so this is a mutation's worth of work
+ * wrapped in an action purely to keep the panel's calling convention uniform.
  */
 export const forget = action({
   args: { id: v.id("memories") },
@@ -244,14 +221,11 @@ export const forget = action({
     });
     if (!removed) return { removed: 0 };
 
-    void ctx
-      .runAction(api.rag.forgetInMongo, { ids: [`${userId}:${args.id}`] })
-      .catch(() => ({ removed: 0 }));
     return { removed: 1 };
   },
 });
 
-/** Forget everything, from both stores. */
+/** Forget everything. */
 export const forgetAll = action({
   args: {},
   handler: async (ctx): Promise<{ removed: number }> => {
@@ -261,7 +235,6 @@ export const forgetAll = action({
     const count: number = await ctx.runMutation(internal.memories.clearRows, {
       userId,
     });
-    void ctx.runAction(api.rag.clearFactsInMongo, {}).catch(() => ({ removed: 0 }));
     return { removed: count };
   },
 });

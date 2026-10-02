@@ -45,26 +45,23 @@ function looksSensitive(content: string): boolean {
 export const backend = query({
   args: {},
   handler: async () => {
-    const mongo = Boolean(
-      process.env.MONGODB_DATA_API_URL?.trim() && process.env.MONGODB_API_KEY?.trim(),
-    );
     const voyage = Boolean(
       process.env.VOYAGE_API_KEY?.trim() || process.env.VOYAGE_KEY?.trim(),
     );
     const huggingface = Boolean(process.env.HUGGING_FACE_TOKEN?.trim());
 
     return {
-      store: mongo ? "mongodb" : "convex",
-      storeLabel: mongo ? "MongoDB Atlas" : "Convex",
-      embeddings: voyage ? "voyage" : huggingface ? "huggingface" : "none",
-      embeddingsLabel: voyage
-        ? "Voyage AI"
-        : huggingface
-          ? "HuggingFace MiniLM"
-          : "None",
+      store: "convex" as const,
+      storeLabel: "Convex vector index",
+      embeddings: huggingface ? ("huggingface" as const) : ("none" as const),
+      embeddingsLabel: huggingface ? "HuggingFace MiniLM" : "None",
       reranking: voyage,
-      /** False means memory still works, just without the better stages. */
-      fullyConfigured: mongo && voyage,
+      /**
+       * True means both halves are live: something writes vectors, and
+       * something re-ranks what comes back. With only the embedder, recall
+       * still works on cosine alone.
+       */
+      fullyConfigured: huggingface && voyage,
     };
   },
 });
@@ -102,13 +99,16 @@ export const listForContext = internalQuery({
       .query("memories")
       .withIndex("by_user_time", (q) => q.eq("userId", args.userId))
       .order("desc")
-      .take(Math.min(Math.max(args.limit, 1), 50));
+      // Capped generously because recall hands the whole list to the reranker,
+      // which can only choose from what it is given — a 20-item cap here would
+      // silently cap how well it can rank.
+      .take(Math.min(Math.max(args.limit, 1), 200));
     return rows.map((r) => ({ content: r.content, kind: r.kind, createdAt: r.createdAt }));
   },
 });
 
-/** Add a single memory. Kept as a mutation for callers that do not need the
- *  MongoDB mirror — the panel goes through `memory.remember` instead. */
+/** Add a single memory. Kept for callers that do not need the action wrapper
+ *  — the panel goes through `memory.remember` instead. */
 export const add = mutation({
   args: {
     content: v.string(),
@@ -174,9 +174,8 @@ export const addMany = internalMutation({
       });
       inserted.push({ id, content, kind });
     }
-    // The ids come back so the caller can mirror the same rows into the
-    // MongoDB corpus under a matching document id — without them, forgetting a
-    // memory would not be able to find its copy.
+    // The ids come back so the caller can report exactly which rows were
+    // written, rather than only a count it cannot reconcile against the panel.
     return inserted;
   },
 });
@@ -224,10 +223,8 @@ export const clearRows = internalMutation({
 /**
  * Forget one memory.
  *
- * Internal rather than public because forgetting has to touch two stores: the
- * Convex row the Memory panel reads, and the MongoDB copy that recall searches.
- * Only a `"use node"` action can reach both, so the user-facing entry point is
- * `memory.forget`, which calls this and then deletes from Mongo.
+ * Internal rather than public so the user-facing entry point stays
+ * `memory.forget`, which owns the signed-in check and the returned count.
  */
 export const removeRow = internalMutation({
   args: { id: v.id("memories") },

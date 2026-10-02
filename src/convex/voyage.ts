@@ -227,9 +227,9 @@ export interface VoyageDiagnosis {
 /**
  * Verify the key is a *Voyage* key and that both endpoints work.
  *
- * Worth doing explicitly: MongoDB Atlas keys and Voyage keys are both long
- * opaque strings, and pasting one into the other's variable produces a 403
- * that reads like a permissions problem rather than a copy-paste one.
+ * Worth doing explicitly: a key from any other provider is just as long and
+ * just as opaque, and pasting one into this variable produces a 403 that reads
+ * like a permissions problem rather than a copy-paste one.
  */
 export async function voyageDiagnose(): Promise<VoyageDiagnosis> {
   const key = voyageKey();
