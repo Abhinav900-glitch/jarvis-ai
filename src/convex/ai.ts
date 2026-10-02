@@ -10,9 +10,11 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { memoryContextFor } from "./memory";
 import { api, internal } from "./_generated/api";
 import {
+  engineModelId,
   inferTask,
   providerById,
   providerKey,
+  providerUrl,
   rankEngines,
   type EnginePlan,
   type EngineSpec,
@@ -296,7 +298,7 @@ function requestBody(
   stream: boolean,
 ) {
   return {
-    model: engine.modelId,
+    model: engineModelId(engine),
     messages: [{ role: "system", content: systemPrompt }, ...turns],
     temperature: 0.6,
     max_tokens: provider.maxTokens,
@@ -305,6 +307,25 @@ function requestBody(
     // token counts at all, which is what the answer inspector reads.
     ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
   };
+}
+
+/**
+ * Headers for one provider request.
+ *
+ * A self-hosted OpenAI-compatible server normally has no credential, and
+ * sending it a literal `Bearer ` with nothing after it is enough for llama.cpp
+ * and some proxies to reject the request outright. Omitting the header is not
+ * the same thing as sending an empty one, so it has to be conditional.
+ */
+function authHeaders(provider: ProviderSpec, key: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  return headers;
+}
+
+/** False when this provider needs a credential it does not have. */
+function canCall(provider: ProviderSpec, key: string | null): key is string {
+  return Boolean(key) || Boolean(provider.optionalKey);
 }
 
 interface WireUsage {
@@ -321,12 +342,9 @@ async function callProvider(
   systemPrompt: string,
 ): Promise<LlmResult> {
   const started = Date.now();
-  const res = await fetch(provider.url, {
+  const res = await fetch(providerUrl(provider), {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
+    headers: authHeaders(provider, key),
     body: JSON.stringify(
       requestBody(provider, engine, shapeTurns(turns, provider), systemPrompt, false),
     ),
@@ -409,12 +427,9 @@ async function streamProvider(
   onDelta: (delta: string) => Promise<boolean>,
 ): Promise<StreamOutcome> {
   const started = Date.now();
-  const res = await fetch(provider.url, {
+  const res = await fetch(providerUrl(provider), {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
+    headers: authHeaders(provider, key),
     body: JSON.stringify(
       requestBody(provider, engine, shapeTurns(turns, provider), systemPrompt, true),
     ),
@@ -542,7 +557,7 @@ async function runProviderChain(
 
   for (const { provider, engines } of groupByProvider(plan.ranked)) {
     const key = providerKey(provider);
-    if (!key) {
+    if (!canCall(provider, key)) {
       failures.push(`${provider.id}: ${provider.missing}`);
       continue;
     }
@@ -882,7 +897,7 @@ export const askStream = action({
 
     for (const { provider, engines } of groupByProvider(plan.ranked)) {
       const key = providerKey(provider);
-      if (!key) {
+      if (!canCall(provider, key)) {
         failures.push(`${provider.id}: ${provider.missing}`);
         continue;
       }
