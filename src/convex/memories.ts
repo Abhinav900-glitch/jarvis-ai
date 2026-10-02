@@ -45,6 +45,9 @@ function looksSensitive(content: string): boolean {
 export const backend = query({
   args: {},
   handler: async () => {
+    // The accepted env-var names here must stay in step with voyageKey() in
+    // ./voyage; this is a presence check only, the live probe lives in the
+    // Verify button.
     const voyage = Boolean(
       process.env.VOYAGE_API_KEY?.trim() || process.env.VOYAGE_KEY?.trim(),
     );

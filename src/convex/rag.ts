@@ -13,10 +13,11 @@
 //      reranker decides which of those actually answers it. This is the stage
 //      that was missing before, and it is why recall used to feel arbitrary.
 //
-// The two providers do different jobs and are not interchangeable. Voyage's
-// vectors are 1024-dimensional and Convex's index is fixed at 384, so Voyage
-// embeds and reranks while HuggingFace is what actually writes — a Voyage key
-// upgrades the ranking, and never has to own the storage.
+// The two providers do different jobs and are not interchangeable. HuggingFace
+// embeds and is the only thing that writes; Voyage re-scores the text those
+// results come back as. Voyage's vectors are 1024-dimensional while Convex's
+// index is fixed at 384, so a Voyage vector could be written but never read
+// back — a Voyage key upgrades the ranking, and never has to own the storage.
 //
 // Every dependency is optional. No Voyage key or no HuggingFace token: each
 // degrades one stage and the rest still runs. The worst case is an empty
@@ -35,7 +36,7 @@ import { voyageDiagnose, voyageRerank } from "./voyage";
 // Embeddings
 // ---------------------------------------------------------------------------
 
-/** The existing fallback path, unchanged, for deployments without Voyage. */
+/** The only embedder: 384-dim, which is exactly what Convex's index accepts. */
 const HF_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2";
 export const EMBED_DIMS = 384;
 
@@ -71,8 +72,8 @@ export type EmbedBackend = "huggingface" | "none";
  *
  * HuggingFace only. Voyage produces better vectors but at 1024 dimensions,
  * and the index is fixed at {@link EMBED_DIMS} — writing them would store
- * vectors the retriever can never read back. Voyage still earns its keep at
- * the reranking stage, which works on text and needs no stored vectors at all.
+ * vectors the retriever can never read back. Voyage earns its keep at the
+ * reranking stage instead, which works on text and needs no vectors at all.
  *
  * Reports "none" rather than throwing when the token is missing, so the caller
  * can skip the write instead of failing a turn that does not need it.
