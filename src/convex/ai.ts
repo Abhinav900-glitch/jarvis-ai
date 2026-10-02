@@ -10,11 +10,9 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { memoryContextFor } from "./memory";
 import { api, internal } from "./_generated/api";
 import {
-  engineModelId,
   inferTask,
   providerById,
   providerKey,
-  providerUrl,
   rankEngines,
   type EnginePlan,
   type EngineSpec,
@@ -298,7 +296,7 @@ function requestBody(
   stream: boolean,
 ) {
   return {
-    model: engineModelId(engine),
+    model: engine.modelId,
     messages: [{ role: "system", content: systemPrompt }, ...turns],
     temperature: 0.6,
     max_tokens: provider.maxTokens,
@@ -307,25 +305,6 @@ function requestBody(
     // token counts at all, which is what the answer inspector reads.
     ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
   };
-}
-
-/**
- * Headers for one provider request.
- *
- * A self-hosted OpenAI-compatible server normally has no credential, and
- * sending it a literal `Bearer ` with nothing after it is enough for llama.cpp
- * and some proxies to reject the request outright. Omitting the header is not
- * the same thing as sending an empty one, so it has to be conditional.
- */
-function authHeaders(provider: ProviderSpec, key: string): Record<string, string> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (key) headers.Authorization = `Bearer ${key}`;
-  return headers;
-}
-
-/** False when this provider needs a credential it does not have. */
-function canCall(provider: ProviderSpec, key: string | null): key is string {
-  return Boolean(key) || Boolean(provider.optionalKey);
 }
 
 interface WireUsage {
@@ -341,10 +320,19 @@ async function callProvider(
   turns: ChatTurn[],
   systemPrompt: string,
 ): Promise<LlmResult> {
+  // Claude's Messages API is not the OpenAI dialect the rest of this file
+  // speaks — different auth header, different body, different reply shape — so
+  // it gets its own implementation rather than a pile of conditionals in here.
+  if (provider.id === "anthropic") {
+    return callAnthropic(provider, key, engine, turns, systemPrompt);
+  }
   const started = Date.now();
-  const res = await fetch(providerUrl(provider), {
+  const res = await fetch(provider.url, {
     method: "POST",
-    headers: authHeaders(provider, key),
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify(
       requestBody(provider, engine, shapeTurns(turns, provider), systemPrompt, false),
     ),
@@ -426,10 +414,16 @@ async function streamProvider(
   systemPrompt: string,
   onDelta: (delta: string) => Promise<boolean>,
 ): Promise<StreamOutcome> {
+  if (provider.id === "anthropic") {
+    return streamAnthropic(provider, key, engine, turns, systemPrompt, onDelta);
+  }
   const started = Date.now();
-  const res = await fetch(providerUrl(provider), {
+  const res = await fetch(provider.url, {
     method: "POST",
-    headers: authHeaders(provider, key),
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify(
       requestBody(provider, engine, shapeTurns(turns, provider), systemPrompt, true),
     ),
@@ -482,6 +476,258 @@ async function streamProvider(
   } finally {
     // Releases the socket when the user stopped mid-answer. Without this an
     // abandoned stream can hold the connection open until it times out.
+    try {
+      await reader.cancel();
+    } catch {
+      // Already closed.
+    }
+  }
+
+  return {
+    text: full,
+    cancelled,
+    latencyMs: firstTokenMs ?? Date.now() - started,
+    promptTokens,
+    completionTokens,
+    model: `${provider.id}/${engine.label}`,
+    engineId: engine.id,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic — Claude Messages API
+//
+// A separate implementation because none of the request or response shape is
+// shared with the OpenAI-compatible providers: `x-api-key` instead of a bearer
+// token, the system prompt in its own top-level field instead of as the first
+// message, `{type:"image", source:{…}}` instead of `image_url`, and an answer
+// that arrives as a list of typed content blocks rather than one string.
+// ---------------------------------------------------------------------------
+
+type ClaudeBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "url"; url: string } };
+
+interface ClaudeMessage {
+  role: "user" | "assistant";
+  content: ClaudeBlock[];
+}
+
+function claudeHeaders(key: string): Record<string, string> {
+  return {
+    "x-api-key": key,
+    // Pinned rather than "latest": an unpinned API version means a request can
+    // start failing months later with no code change to explain why.
+    "anthropic-version": "2023-06-01",
+    "Content-Type": "application/json",
+  };
+}
+
+/**
+ * Convert the conversation into Claude's turn format.
+ *
+ * Two rules the API enforces strictly and the OpenAI shape does not: there is
+ * no `system` role in the conversation at all, and two turns of the same role
+ * back to back is a 400 rather than something to normalise later.
+ */
+function claudeMessages(turns: ChatTurn[]): ClaudeMessage[] {
+  const out: ClaudeMessage[] = [];
+
+  for (const turn of turns) {
+    const role: "user" | "assistant" =
+      turn.role === "assistant" ? "assistant" : "user";
+
+    const blocks: ClaudeBlock[] =
+      typeof turn.content === "string"
+        ? [{ type: "text", text: turn.content }]
+        : turn.content.map((part): ClaudeBlock => {
+            if (part.type === "image_url") {
+              const url =
+                typeof part.image_url === "string"
+                  ? part.image_url
+                  : (part.image_url?.url ?? "");
+              return { type: "image", source: { type: "url", url } };
+            }
+            return { type: "text", text: part.text ?? "" };
+          });
+
+    // Claude rejects an empty text block, and a vision turn can easily carry
+    // one — an assistant turn with a caption but no words, for instance.
+    const content = blocks.filter(
+      (b) => b.type === "image" || b.text.trim().length > 0,
+    );
+    if (content.length === 0) continue;
+
+    const last = out[out.length - 1];
+    if (last && last.role === role) last.content.push(...content);
+    else out.push({ role, content });
+  }
+
+  // The conversation has to open with a user turn. A leading assistant turn
+  // only happens if history was restored oddly, and dropping it is better than
+  // failing the request.
+  while (out.length > 0 && out[0].role !== "user") out.shift();
+
+  return out;
+}
+
+function claudeBody(
+  provider: ProviderSpec,
+  engine: EngineSpec,
+  turns: ChatTurn[],
+  systemPrompt: string,
+  stream: boolean,
+) {
+  return {
+    model: engine.modelId,
+    // Required on every request, with no default.
+    max_tokens: provider.maxTokens,
+    system: systemPrompt.trim() || "You are a helpful assistant.",
+    messages: claudeMessages(turns),
+    ...(stream ? { stream: true } : {}),
+  };
+}
+
+async function callAnthropic(
+  provider: ProviderSpec,
+  key: string,
+  engine: EngineSpec,
+  turns: ChatTurn[],
+  systemPrompt: string,
+): Promise<LlmResult> {
+  const started = Date.now();
+  const res = await fetch(provider.url, {
+    method: "POST",
+    headers: claudeHeaders(key),
+    body: JSON.stringify(claudeBody(provider, engine, turns, systemPrompt, false)),
+    signal: AbortSignal.timeout(provider.timeoutMs),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    // Claude reports an exhausted balance as a 400 rather than a 402, so the
+    // status code alone will not identify it — and retrying only repeats it.
+    if (/credit balance is too low|insufficient.{0,20}credit/i.test(detail)) {
+      throw new ProviderFatalError(
+        `${provider.label}: credit balance is too low.`,
+      );
+    }
+    throw new Error(
+      `${engine.label} (${res.status}${detail ? `: ${detail.slice(0, 120)}` : ""})`,
+    );
+  }
+
+  const data = (await res.json()) as {
+    content?: { type?: string; text?: string }[];
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+
+  // The answer arrives as a list of typed blocks, and on a reasoning model
+  // those include thinking blocks. Only the text blocks are the reply.
+  const text = (data.content ?? [])
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("")
+    .trim();
+  if (!text) throw new Error(`${engine.label} (empty response)`);
+
+  return {
+    text,
+    model: `${provider.id}/${engine.label}`,
+    engineId: engine.id,
+    usedFallback: false,
+    latencyMs: Date.now() - started,
+    promptTokens: data.usage?.input_tokens,
+    completionTokens: data.usage?.output_tokens,
+  };
+}
+
+async function streamAnthropic(
+  provider: ProviderSpec,
+  key: string,
+  engine: EngineSpec,
+  turns: ChatTurn[],
+  systemPrompt: string,
+  onDelta: (delta: string) => Promise<boolean>,
+): Promise<StreamOutcome> {
+  const started = Date.now();
+  const res = await fetch(provider.url, {
+    method: "POST",
+    headers: claudeHeaders(key),
+    body: JSON.stringify(claudeBody(provider, engine, turns, systemPrompt, true)),
+  });
+
+  if (!res.ok || !res.body) throw new Error(`${engine.label} (${res.status})`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+  let cancelled = false;
+  let firstTokenMs: number | undefined;
+  let promptTokens: number | undefined;
+  let completionTokens: number | undefined;
+
+  const handleLine = async (line: string): Promise<void> => {
+    if (cancelled) return;
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+
+    let event: {
+      type?: string;
+      delta?: { type?: string; text?: string };
+      message?: { usage?: { input_tokens?: number } };
+      usage?: { output_tokens?: number };
+    };
+    try {
+      event = JSON.parse(payload);
+    } catch {
+      // A keep-alive or a half-delivered frame; the next one will parse.
+      return;
+    }
+
+    // Token counts arrive split across two separate events: input tokens with
+    // the opening frame, output tokens with the closing one. Reading only one
+    // leaves half of what the turn actually cost unattributed.
+    if (event.message?.usage?.input_tokens !== undefined) {
+      promptTokens = event.message.usage.input_tokens;
+    }
+    if (event.usage?.output_tokens !== undefined) {
+      completionTokens = event.usage.output_tokens;
+    }
+
+    // Fable and Opus think before they answer, so the stream carries thinking
+    // deltas interleaved with text ones. Only the text deltas are the reply.
+    if (event.type !== "content_block_delta") return;
+    if (event.delta?.type !== "text_delta") return;
+    const delta = event.delta.text ?? "";
+    if (!delta) return;
+
+    if (firstTokenMs === undefined) firstTokenMs = Date.now() - started;
+    full += delta;
+    if (await onDelta(delta)) cancelled = true;
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        await handleLine(line);
+        if (cancelled) break;
+      }
+      if (cancelled) break;
+    }
+    // A stream that ended without a trailing newline leaves a partial frame.
+    if (!cancelled && buffer.trim()) await handleLine(buffer.trim());
+  } finally {
+    // Releases the socket when the user stopped mid-answer.
     try {
       await reader.cancel();
     } catch {
@@ -557,7 +803,7 @@ async function runProviderChain(
 
   for (const { provider, engines } of groupByProvider(plan.ranked)) {
     const key = providerKey(provider);
-    if (!canCall(provider, key)) {
+    if (!key) {
       failures.push(`${provider.id}: ${provider.missing}`);
       continue;
     }
@@ -897,7 +1143,7 @@ export const askStream = action({
 
     for (const { provider, engines } of groupByProvider(plan.ranked)) {
       const key = providerKey(provider);
-      if (!canCall(provider, key)) {
+      if (!key) {
         failures.push(`${provider.id}: ${provider.missing}`);
         continue;
       }

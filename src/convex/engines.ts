@@ -41,21 +41,8 @@ export interface ProviderSpec {
   label: string;
   /** OpenAI-compatible chat completions endpoint. */
   url: string;
-  /**
-   * Env vars holding the base URL, for a provider whose endpoint is not fixed.
-   * A self-hosted llama.cpp / Ollama server lives wherever the operator put it
-   * — behind a tunnel, on a home IP, on a different port — so it cannot be a
-   * constant the way the hosted providers' can.
-   */
-  urlEnv?: string[];
   /** Env vars that may hold this provider's key; the first one set wins. */
   keyEnv: string[];
-  /**
-   * Self-hosted OpenAI-compatible servers usually have no credential at all.
-   * For those, being reachable is decided by the URL being set, not by a key
-   * being present — otherwise a working local model reads as unavailable.
-   */
-  optionalKey?: boolean;
   /** Human-readable "why is this greyed out" for the health strip. */
   missing: string;
   /** Mistral takes `image_url` as a bare string, not `{ url }`. */
@@ -118,25 +105,21 @@ export const PROVIDERS: ProviderSpec[] = [
     timeoutMs: 45_000,
   },
   {
-    // Deliberately last in PROVIDERS. `STABLE_RANK` is built from this order,
-    // so a self-hosted model is the final fallback in the fixed ladder and can
-    // never quietly become the default answer just by being configured.
-    id: "local",
-    label: "Local (self-hosted)",
-    url: "",
-    urlEnv: ["LOCAL_LLM_BASE_URL", "OLLAMA_BASE_URL"],
-    keyEnv: ["LOCAL_LLM_API_KEY", "LOCAL_LLM_TOKEN"],
-    optionalKey: true,
-    missing: "LOCAL_LLM_BASE_URL not configured",
-    imageUrlAsString: false,
+    id: "anthropic",
+    label: "Anthropic",
+    url: "https://api.anthropic.com/v1/messages",
+    keyEnv: ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
+    missing: "ANTHROPIC_API_KEY not configured",
+    // Claude takes `image_url` as a bare string, like Mistral.
+    imageUrlAsString: true,
     textOnly: false,
     reasoningEffort: false,
-    maxTokens: 4096,
-    // Generous: a quantised GGUF on a laptop or a free GPU box is an order of
-    // magnitude slower to first token than a hosted API, and cutting the
-    // request short would waste the whole turn on a machine that is merely
-    // slow rather than broken.
-    timeoutMs: 180_000,
+    // Claude requires max_tokens on every request and rejects anything above
+    // the model's output ceiling; 8192 is comfortable for all of them.
+    maxTokens: 8192,
+    // Claude thinks before it answers by default, so the first token arrives
+    // later than an un-reasoned model's. The wait is worth the answer.
+    timeoutMs: 120_000,
   },
 ];
 
@@ -146,12 +129,6 @@ export interface EngineSpec {
   provider: string;
   /** The id the provider's API expects. */
   modelId: string;
-  /**
-   * Env vars that override `modelId`. Self-hosted servers name models after
-   * whatever file was loaded — `fable-5`, `qwen2.5-coder:7b`, whatever — so
-   * the declared id can only be a default.
-   */
-  modelIdEnv?: string[];
   label: string;
   /** Accepts `image_url` parts. */
   vision: boolean;
@@ -351,27 +328,35 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "last-resort reasoning, text only",
   },
 
-  // --- Local / self-hosted GGUF -------------------------------------------
-  // Scored honestly, which matters more here than anywhere else in this table.
-  // These are community fine-tunes and quantised merges, and a few gigabytes of
-  // weights is nowhere near Anthropic's actual Fable 5 — so the router must not
-  // reach for one of these on quality. What it is genuinely good at is running
-  // when nothing else can, and keeping the conversation off the network.
+  // --- Anthropic ----------------------------------------------------------
+  // The only paid provider in this table, and the reason it is here at all is
+  // the context window: a million tokens is roughly 250x what the free tiers
+  // allow, which changes what recall has to do. A question that needed to be
+  // answered from retrieved excerpts can instead be answered from the material
+  // itself.
   {
-    id: "local/fable-5",
-    provider: "local",
-    modelId: "fable-5",
-    modelIdEnv: ["LOCAL_LLM_MODEL"],
-    label: "Fable 5 (local)",
-    vision: false,
+    id: "anthropic/fable-5",
+    provider: "anthropic",
+    modelId: "claude-fable-5",
+    label: "Claude Fable 5",
+    vision: true,
     reasoning: true,
-    quality: 0.58,
-    // Punished deliberately. A GGUF on consumer hardware generates at single-
-    // digit tokens a second, and a router that treats it as fast will happily
-    // pick it for voice and title generation and make the app feel broken.
-    speed: 0.15,
-    context: 32_768,
-    bestFor: "private, offline answers on your own hardware",
+    quality: 0.98,
+    speed: 0.42,
+    context: 1_000_000,
+    bestFor: "the hardest questions, with the whole document in hand",
+  },
+  {
+    id: "anthropic/opus-5",
+    provider: "anthropic",
+    modelId: "claude-opus-5",
+    label: "Claude Opus 5",
+    vision: true,
+    reasoning: true,
+    quality: 0.93,
+    speed: 0.48,
+    context: 1_000_000,
+    bestFor: "long agentic work and careful code, at about half the price",
   },
 ];
 
@@ -407,48 +392,6 @@ export function providerKey(provider: ProviderSpec): string | null {
   return null;
 }
 
-/**
- * Where this provider's chat-completions endpoint actually is.
- *
- * Returns "" when a variable-URL provider has not been configured, which is
- * the signal every caller wants: "no endpoint" and "an endpoint that 404s" are
- * different problems and deserve different messages.
- */
-export function providerUrl(provider: ProviderSpec): string {
-  for (const name of provider.urlEnv ?? []) {
-    const value = process.env[name];
-    if (typeof value === "string" && value.trim()) {
-      // Operators paste either the server root or the full completions path,
-      // from a README, a docker command, or a model card. Accepting both is
-      // cheaper than making them read the error and come back.
-      const base = value.trim().replace(/\/+$/, "");
-      return base.endsWith("/chat/completions") ? base : `${base}/v1/chat/completions`;
-    }
-  }
-  return provider.url;
-}
-
-/**
- * Can this provider be called right now?
- *
- * Availability is deliberately not the same question as "does it have a key":
- * a local llama.cpp server has no credential to have, and treating that as
- * unconfigured would make the whole engine invisible for being unauthenticated.
- */
-export function providerReady(provider: ProviderSpec): boolean {
-  if (!providerUrl(provider)) return false;
-  return provider.optionalKey ? true : Boolean(providerKey(provider));
-}
-
-/** The model name to put on the wire, honouring a per-deployment override. */
-export function engineModelId(engine: EngineSpec): string {
-  for (const name of engine.modelIdEnv ?? []) {
-    const value = process.env[name];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return engine.modelId;
-}
-
 export interface ProviderStatus {
   id: string;
   label: string;
@@ -465,7 +408,7 @@ export function providerStatuses(): ProviderStatus[] {
     const engines = ENGINES.filter((e) => e.provider === provider.id)
       .sort((a, b) => b.quality - a.quality)
       .map((e) => ({ id: e.id, label: e.label, available: true }));
-    const configured = providerReady(provider);
+    const configured = Boolean(providerKey(provider));
     return {
       id: provider.id,
       label: provider.label,
@@ -550,7 +493,7 @@ export function rankEngines(request: RouteRequest = {}): EnginePlan {
     if (wantImages && !engine.vision) continue;
 
     const provider = providerById(engine.provider);
-    const available = provider ? providerReady(provider) : false;
+    const available = provider ? Boolean(providerKey(provider)) : false;
 
     let score = smart
       ? engine.quality * weights.quality +

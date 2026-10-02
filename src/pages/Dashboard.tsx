@@ -12,7 +12,6 @@ import {
   CameraOff,
   Check,
   Code2,
-  Cpu,
   Download,
   FileText,
   Equal,
@@ -117,7 +116,6 @@ import {
 import { Radio } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
-import { ModelVaultPanel } from "@/components/model-vault";
 import { ExportPanel } from "@/components/export-panel";
 import { useCamera } from "@/hooks/use-camera";
 import { useLiveTranslation } from "@/hooks/use-live-translation";
@@ -690,7 +688,6 @@ export default function Dashboard() {
   const [pdfBusy, setPdfBusy] = useState(false);
   // --- Feature panels: memory, export, camera, live translation ---
   const [showMemory, setShowMemory] = useState(false);
-  const [showVault, setShowVault] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -3624,15 +3621,6 @@ export default function Dashboard() {
                     ) : null}
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => setShowVault((v) => !v)}
-                  >
-                    <Cpu className="size-4" />
-                    Model vault
-                    {showVault ? (
-                      <Check className="ml-auto size-4" />
-                    ) : null}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
                     onClick={() => setShowCode((v) => !v)}
                   >
                     <Code2 className="size-4" />
@@ -4531,13 +4519,6 @@ export default function Dashboard() {
           </AnimatePresence>            {/* ---- Memory panel ---- */}
             <AnimatePresence>
               {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
-            </AnimatePresence>
-
-            {/* ---- Model vault panel ---- */}
-            <AnimatePresence>
-              {showVault && (
-                <ModelVaultPanel onClose={() => setShowVault(false)} />
-              )}
             </AnimatePresence>
 
             {/* ---- Code runner panel ---- */}
