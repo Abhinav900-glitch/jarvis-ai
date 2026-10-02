@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useAction } from "convex/react";
+import { useConvex, useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { AnimatePresence, motion } from "framer-motion";
@@ -43,6 +43,7 @@ import {
   AudioLines,
   VolumeX,
   Wand2,
+  Waves,
   X,
   Zap,
   Home,
@@ -50,6 +51,9 @@ import {
   Bookmark,
   AlarmClock,
   GitBranch,
+  GitCompare,
+  Headphones,
+  Pin,
   Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -125,6 +129,21 @@ import { PersonaPicker } from "@/components/persona-picker";
 import { TasksPanel } from "@/components/tasks-panel";
 import { ProjectSidebar } from "@/components/project-sidebar";
 import { BranchBar, BranchMenu } from "@/components/branch-bar";
+import { cn } from "@/lib/utils";
+import { AnswerInspector } from "@/components/answer-inspector";
+import { PinnedPanel } from "@/components/pinned-panel";
+import { SlashMenu } from "@/components/slash-menu";
+import { BranchCompare, type CompareSide } from "@/components/branch-compare";
+import { ProviderHealth } from "@/components/provider-health";
+import { LiveTuning } from "@/components/live-tuning";
+import { EnginePanel } from "@/components/engine-panel";
+import { LiveSessionPanel } from "@/live/live-session-panel";
+import { useListeningQueue } from "@/hooks/use-listening-queue";
+import {
+  filterSlashCommands,
+  matchSlashCommand,
+  type SlashCommand,
+} from "@/lib/slash-commands";
 
 /** An uploaded document waiting on the composer, not yet sent. */
 interface PendingFile {
@@ -549,6 +568,20 @@ export default function Dashboard() {
   const perchanceKeys = useQuery(api.imageKeys.getPerchanceKeys);
 
   const [input, setInput] = useState("");
+  /**
+   * The `/token` being typed, when the whole message so far is a command.
+   *
+   * Deliberately anchored to the start and to "no whitespace yet": a slash
+   * halfway through a sentence is prose, and hijacking it would be worse than
+   * having no menu at all.
+   */
+  const slashToken = useMemo(() => {
+    const trimmed = input.trimStart();
+    if (!trimmed.startsWith("/")) return "";
+    if (/\s/.test(trimmed.slice(1))) return "";
+    return trimmed;
+  }, [input]);
+  const slashOpen = slashToken.length > 0;
   const [sending, setSending] = useState(false);
   const [deepResearch, setDeepResearch] = useState(false);
   // Composer mode chips — arm News/Analyze for the next send (Gemini-style)
@@ -574,6 +607,15 @@ export default function Dashboard() {
   const [panelNews, setPanelNews] = useState<NewsItem[] | null>(null);
   const [panelBusy, setPanelBusy] = useState<"nlp" | "news" | null>(null);
   const [panelVoice, setPanelVoice] = useState<VoiceNoteResult | null>(null);
+  /**
+   * How the last Deep Research run went, beyond the answer itself.
+   *
+   * A second search round only happens when the first left a real gap, so
+   * reporting it is how the user learns the research looked for more than the
+   * first page of results.
+   */
+  const [researchRounds, setResearchRounds] = useState(0);
+  const [researchFollowUp, setResearchFollowUp] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendingImages, setPendingImages] = useState<
@@ -918,6 +960,280 @@ export default function Dashboard() {
   // --- Voice output ---
   const player = useVoicePlayer();
 
+  // --- Engine routing, pins, comparison, listening -----------------------
+  const setPin = useMutation(api.chats.setPin);
+  const setAlternative = useMutation(api.chats.setAlternative);
+  const appendToBranch = useMutation(api.branches.appendToBranch);
+  const convex = useConvex();
+  const alternativeAnswer = useAction(api.ai.alternativeAnswer);
+  const engineSettings = useQuery(api.workspace.getEngineSettings);
+
+  const [showPins, setShowPins] = useState(false);
+  const [showEngines, setShowEngines] = useState(false);
+  const [showTuning, setShowTuning] = useState(false);
+  const [showLivePanel, setShowLivePanel] = useState(false);
+  /** Which reply's provenance card is open, if any. */
+  const [inspecting, setInspecting] = useState<Id<"chatMessages"> | null>(null);
+  /** A pinned message the transcript has just jumped to. */
+  const [highlight, setHighlight] = useState<Id<"chatMessages"> | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [compareState, setCompareState] = useState<{
+    left: CompareSide;
+    right: CompareSide;
+  } | null>(null);
+  const [comparingId, setComparingId] = useState<Id<"chatMessages"> | null>(null);
+
+  /**
+   * Read a whole thread aloud from any message.
+   *
+   * Shares the TTS action and voice preferences with the per-message play
+   * button, so switching between the two cannot change which voice answers.
+   */
+  const listening = useListeningQueue({
+    items: (messages ?? []).map((m) => ({
+      id: m._id,
+      role: m.role,
+      content: m.content,
+    })),
+    speak: async (text) => {
+      const { audio } = await speakAction({
+        text,
+        langTag: getCountry(countryCode).langTag,
+        ...(voicePref.speaker ? { speaker: voicePref.speaker } : {}),
+        ...(voicePref.voice ? { voice: voicePref.voice } : {}),
+        ...(voicePref.pace !== 1 ? { pace: voicePref.pace } : {}),
+      });
+      return audio;
+    },
+    langTag: getCountry(countryCode).langTag,
+  });
+
+  // Pulled out of the hook result so the global key handler can depend on the
+  // two things it actually reads. The object itself is new on every render, so
+  // depending on it would re-register the listener on every keystroke.
+  const listeningActive = listening.active;
+  const stopListening = listening.stop;
+
+  /** Jump to a pinned message: switch chat, scroll to it, flash it. */
+  const openPinned = (
+    sessionId: Id<"chatSessions">,
+    messageId: Id<"chatMessages">,
+  ) => {
+    setShowPins(false);
+    if (sessionId !== activeId) {
+      setActiveId(sessionId);
+      setActiveBranchId(null);
+    }
+    setHighlight(messageId);
+    // A newly-opened chat renders its transcript a tick later, so the delay is
+    // for that render rather than for any network work.
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLElement>(`[data-message-id="${messageId}"]`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 400);
+    window.setTimeout(() => setHighlight(null), 2400);
+  };
+
+  const togglePin = useCallback(
+    async (messageId: Id<"chatMessages">, pinned: boolean) => {
+      try {
+        await setPin({ messageId, pinned });
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not pin that message.",
+        );
+      }
+    },
+    [setPin],
+  );
+
+  /**
+   * Ask the same question again with the best *different* engine, and park the
+   * result on its own branch.
+   *
+   * Forking at the original reply copies everything before it — the whole
+   * question — and then adds nothing but the alternative answer. That is the
+   * shape the compare view wants: two columns, one question, two answers.
+   *
+   * `getMessagesByIds` is not called here because the branch was just created
+   * and the transcript has not caught up; the sides are handed over directly
+   * instead. The badge on the reply reopens it through a query once the
+   * transcript does know about the alternative.
+   */
+  const createDecisionBranch = useCallback(
+    async (assistantId: Id<"chatMessages">) => {
+      if (!activeId || comparingId) return;
+      const list = messages ?? [];
+      const index = list.findIndex((m) => m._id === assistantId);
+      if (index < 0) return;
+      const original = list[index];
+      const question = [...list.slice(0, index)]
+        .reverse()
+        .find((m) => m.role === "user");
+      if (!question || original.role !== "assistant") return;
+
+      const images =
+        original.images && original.images.length > 0
+          ? original.images.map((i) => i.url)
+          : original.imageUrl
+            ? [original.imageUrl]
+            : [];
+      const history = list
+        .slice(0, index)
+        .slice(-12)
+        .map((m) => ({ role: m.role, content: m.content }));
+
+      setComparingId(assistantId);
+      try {
+        const result = await alternativeAnswer({
+          prompt: question.content,
+          ...(original.engineId
+            ? { excludeEngineId: original.engineId }
+            : {}),
+          history,
+          ...(images.length > 0 ? { imageUrls: images } : {}),
+          ...(activePersonaId ? { personaId: activePersonaId } : {}),
+        });
+
+        if (!result.available || !result.text) {
+          toast.error(
+            result.reason ?? "No second engine is configured for this turn.",
+          );
+          return;
+        }
+
+        const branchId = await forkBranch({
+          sessionId: activeId,
+          atMessageId: assistantId,
+          name: `Engine: ${result.model}`,
+        });
+        const { messageId: altId } = await appendToBranch({
+          sessionId: activeId,
+          branchId,
+          role: "assistant",
+          content: result.text,
+          model: result.model,
+          engineId: result.engineId,
+          decisionReason: result.reason,
+          latencyMs: result.latencyMs,
+          isDecisionBranch: true,
+        });
+        await setAlternative({
+          messageId: assistantId,
+          altMessageId: altId,
+          altBranchId: branchId,
+        });
+
+        setCompareState({
+          left: {
+            label: "Original",
+            prompt: question.content,
+            content: original.content,
+            model: original.model,
+            engineId: original.engineId,
+            decisionReason: original.decisionReason,
+            latencyMs: original.latencyMs,
+          },
+          right: {
+            label: result.model ?? "Alternative",
+            prompt: question.content,
+            content: result.text,
+            model: result.model,
+            engineId: result.engineId,
+            decisionReason: result.reason,
+            latencyMs: result.latencyMs,
+          },
+        });
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not compare engines.",
+        );
+      } finally {
+        setComparingId(null);
+      }
+    },
+    [
+      activeId,
+      activePersonaId,
+      alternativeAnswer,
+      appendToBranch,
+      comparingId,
+      forkBranch,
+      messages,
+      setAlternative,
+      setCompareState,
+    ],
+  );
+
+  /**
+   * Reopen a comparison that already exists.
+   *
+   * The alternative lives on another branch, so it has to be fetched by id —
+   * the transcript on screen will never contain it.
+   */
+  const openCompare = async (assistantId: Id<"chatMessages">) => {
+    const list = messages ?? [];
+    const original = list.find((m) => m._id === assistantId);
+    if (!original?.altMessageId) return;
+    const index = list.findIndex((m) => m._id === assistantId);
+    const question = [...list.slice(0, index)]
+      .reverse()
+      .find((m) => m.role === "user");
+
+    // A one-off read rather than a live query: the alternative only needs
+    // reading when the user asks to compare, and a subscription would
+    // re-read a message nobody is looking at.
+    const found = await convex
+      .query(api.chats.getMessagesByIds, { ids: [original.altMessageId] })
+      .catch(() => null);
+    const alt = found?.[0];
+    if (!alt) {
+      toast.error("That comparison is no longer available.");
+      return;
+    }
+
+    setCompareState({
+      left: {
+        label: "Original",
+        prompt: question?.content ?? null,
+        content: original.content,
+        model: original.model,
+        engineId: original.engineId,
+        decisionReason: original.decisionReason,
+        latencyMs: original.latencyMs,
+      },
+      right: {
+        label: alt.isDecisionBranch
+          ? (alt.engineId ?? alt.model ?? "Alternative")
+          : "Alternative",
+        prompt: question?.content ?? null,
+        content: alt.content,
+        model: alt.model,
+        engineId: alt.engineId,
+        decisionReason: alt.decisionReason,
+        latencyMs: alt.latencyMs,
+      },
+    });
+  };
+
+  /**
+   * Answer the same question with the best different engine, when the user has
+   * asked for that.
+   *
+   * Called from the send path rather than from an effect. An effect keyed on
+   * the transcript would re-fire when the branch it just created shows up as a
+   * message, and would have to be fenced off with a ref; calling it where the
+   * reply is finished is both honest and impossible to loop.
+   */
+  const autoBranchAfter = useCallback(
+    (messageId: Id<"chatMessages"> | null) => {
+      if (!messageId || !engineSettings?.autoBranch) return;
+      void createDecisionBranch(messageId);
+    },
+    [createDecisionBranch, engineSettings?.autoBranch],
+  );
+
   const handleRecording = async (blob: Blob) => {
     setTranscribing(true);
     setAssistantError(null);
@@ -1228,6 +1544,13 @@ export default function Dashboard() {
       // behind it, so this is deliberately last and checked against live mode,
       // which installs its own Escape handler and owns the key while it is up.
       if (e.key === "Escape") {
+        // Reading a thread is the one thing running that has no visible
+        // "stop" affordance in the transcript, so Escape has to cover it.
+        if (listeningActive) {
+          e.preventDefault();
+          stopListening();
+          return;
+        }
         if (!live.active && streamingRef.current) {
           e.preventDefault();
           void stopRef.current();
@@ -1252,7 +1575,7 @@ export default function Dashboard() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [live.active]);
+  }, [live.active, listeningActive, stopListening]);
 
   // Refresh displayed time every second
   useEffect(() => {
@@ -1325,6 +1648,11 @@ export default function Dashboard() {
         role: "assistant",
         content: answer.text,
         model: answer.model,
+        engineId: answer.engineId,
+        decisionReason: answer.reason,
+        latencyMs: answer.latencyMs,
+        promptTokens: answer.promptTokens,
+        completionTokens: answer.completionTokens,
         usedFallback: answer.usedFallback,
         usedSearch: false,
       });
@@ -1891,18 +2219,27 @@ export default function Dashboard() {
 
       let answerText = "";
       if (deepResearch) {
-        const { answer, sources } = await runDeepResearch(
+        const { answer, sources, rounds, followUp } = await runDeepResearch(
           sessionId,
           text,
           history,
         );
         answerText = extractFollowUps(answer.text);
+        // The gap-filling round is only worth reporting when it happened:
+        // showing "2 searches" on a run that only made one would be a lie.
+        setResearchRounds(rounds);
+        setResearchFollowUp(followUp);
         const msgId = await appendMessage({
           sessionId,
           branchId: runBranchId,
           role: "assistant",
           content: answerText,
           model: answer.model,
+          engineId: answer.engineId,
+          decisionReason: answer.reason,
+          latencyMs: answer.latencyMs,
+          promptTokens: answer.promptTokens,
+          completionTokens: answer.completionTokens,
           usedFallback: answer.usedFallback,
           usedSearch: true,
           sources,
@@ -1933,6 +2270,7 @@ export default function Dashboard() {
               content: answerText,
             }).catch(() => {});
           }
+          autoBranchAfter(streamedMessageIdRef.current);
           void indexForRag(
             sessionId,
             userMsgId,
@@ -1958,9 +2296,15 @@ export default function Dashboard() {
             role: "assistant",
             content: answerText,
             model: answer.model,
+            engineId: answer.engineId,
+            decisionReason: answer.reason,
+            latencyMs: answer.latencyMs,
+            promptTokens: answer.promptTokens,
+            completionTokens: answer.completionTokens,
             usedFallback: answer.usedFallback,
             usedSearch: false,
           });
+          autoBranchAfter(msgId);
           void indexForRag(sessionId, userMsgId, msgId, messageContent, answerText).catch(() => {});
         }
         extractMemories(messageContent, answerText);
@@ -2044,6 +2388,7 @@ export default function Dashboard() {
         history,
         personaId: activePersonaId,
         ...(imageUrls && imageUrls.length > 0 ? { imageUrls } : {}),
+        ...(live.active ? { task: "live" as const } : {}),
       });
     } catch (err) {
       // The placeholder would otherwise stay blank forever — write the error
@@ -2153,6 +2498,9 @@ export default function Dashboard() {
       history,
       imageUrls,
       personaId: activePersonaId,
+      // Live voice trades a little depth for time to first word, so the router
+      // is told to weight responsiveness here rather than guessing.
+      ...(live.active ? { task: "live" as const } : {}),
     });
   };
 
@@ -2654,17 +3002,41 @@ export default function Dashboard() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // While the autocomplete is open, the arrow keys and Enter belong to it
+    // rather than to the textarea: otherwise choosing a command with Enter
+    // would also send whatever half-typed text is in the box.
+    if (slashOpen) {
+      const options = filterSlashCommands(slashToken);
+      if (options.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSlashIndex((i) => (i + 1) % options.length);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSlashIndex((i) => (i - 1 + options.length) % options.length);
+          return;
+        }
+        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+          const picked = options[Math.min(slashIndex, options.length - 1)];
+          if (picked) {
+            e.preventDefault();
+            applySlashCommand(picked);
+            return;
+          }
+        }
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setInput("");
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       const text = input.trim();
-      // Check for slash commands
-      const slashMatch = text.match(/^\/(time|weather|currency|country)\s*(.*)/i);
-      if (slashMatch) {
-        const [, cmd, arg] = slashMatch;
-        setInput("");
-        void handleRegionCommand(cmd.toLowerCase(), arg.trim());
-        return;
-      }
       // /solve — structured step-by-step math solution
       const solveMatch = text.match(/^\/(solve|math)\s+([\s\S]+)/i);
       if (solveMatch) {
@@ -2704,7 +3076,99 @@ export default function Dashboard() {
         void handleGenerateImageWithText(prompt);
         return;
       }
+
+      // Everything else in the registry.
+      const match = matchSlashCommand(text);
+      if (match) {
+        // A command that needs an argument and was given none is a typo, not
+        // an instruction to send the literal text as a message.
+        if (match.command.needsArg && !match.args) {
+          setInput(`/${match.command.name} `);
+          inputRef.current?.focus();
+          return;
+        }
+        setInput("");
+        void runSlashCommand(match.command, match.args);
+        return;
+      }
+
       void runSend();
+    }
+  };
+
+  /**
+   * Fill the composer from a picked command.
+   *
+   * Commands that take an argument are only written into the box — the user
+   * still has to say what they want. The rest run immediately, because arriving
+   * at this function is not the same as having decided to.
+   */
+  const applySlashCommand = (command: SlashCommand) => {
+    setSlashIndex(0);
+    if (command.needsArg) {
+      setInput(`/${command.name} `);
+      inputRef.current?.focus();
+      return;
+    }
+    setInput("");
+    void runSlashCommand(command, "");
+  };
+
+  /** The single executor behind both Enter and the autocomplete. */
+  const runSlashCommand = async (command: SlashCommand, args: string) => {
+    switch (command.name) {
+      case "time":
+      case "weather":
+      case "currency":
+      case "country":
+        await handleRegionCommand(command.name, args);
+        return;
+      case "news": {
+        setAssistantError(null);
+        setPanelNews(null);
+        setPanelBusy("news");
+        try {
+          const items = await newsAction({ keywords: args });
+          setPanelNews(items as NewsItem[]);
+        } catch (err) {
+          setAssistantError(
+            err instanceof Error ? err.message : "Could not load the news.",
+          );
+        } finally {
+          setPanelBusy(null);
+        }
+        return;
+      }
+      case "research":
+        setDeepResearch(true);
+        if (args) {
+          setInput(args);
+          inputRef.current?.focus();
+        }
+        return;
+      case "listen": {
+        const from = lastMsg?._id ?? messages?.[0]?._id;
+        if (!from) {
+          toast.error("Nothing to read yet.");
+          return;
+        }
+        listening.start(from);
+        return;
+      }
+      case "pinned":
+        setShowPins(true);
+        return;
+      case "export":
+        setShowExport(true);
+        return;
+      case "new":
+        setActiveId(null);
+        return;
+      default:
+        // /image, /plot and /solve never reach here: the block above owns the
+        // long prompts they need.
+        setInput(`/${command.name} ${args}`.trimEnd());
+        inputRef.current?.focus();
     }
   };
 
@@ -2749,6 +3213,44 @@ export default function Dashboard() {
         icon: <GitBranch className="size-4" />,
         disabled: !activeId || !(messages ?? []).some((m) => m.role === "user"),
         run: () => void handleForkLatest(),
+      },
+      {
+        id: "engines",
+        label: "Engines — smart routing and pinned models",
+        group: "Chat",
+        icon: <Brain className="size-4" />,
+        run: () => setShowEngines(true),
+      },
+      {
+        id: "pinned",
+        label: "Pinned messages",
+        group: "Chat",
+        icon: <Bookmark className="size-4" />,
+        run: () => setShowPins(true),
+      },
+      {
+        id: "listen-thread",
+        label: "Read this conversation aloud",
+        group: "Chat",
+        icon: <Headphones className="size-4" />,
+        disabled: !messages || messages.length === 0,
+        run: () => {
+          const from = lastMsg?._id ?? messages?.[0]?._id;
+          if (from) listening.start(from);
+        },
+      },
+      {
+        id: "compare-engines",
+        label: "Compare the last answer with another engine",
+        group: "Chat",
+        icon: <GitCompare className="size-4" />,
+        disabled: !lastMsg || lastMsg.role !== "assistant" || Boolean(lastMsg.altMessageId),
+        run: () => {
+          if (lastMsg && lastMsg.role === "assistant") {
+            if (lastMsg.altMessageId) void openCompare(lastMsg._id);
+            else void createDecisionBranch(lastMsg._id);
+          }
+        },
       },
       {
         id: "regenerate",
@@ -3016,6 +3518,39 @@ export default function Dashboard() {
                 onClick={() => setShowShortcuts(true)}
               >
                 <Keyboard className="size-4" />
+              </Button>
+
+              {/* Which model answers each turn, and why. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Engines — smart routing and pinned models"
+                onClick={() => setShowEngines(true)}
+              >
+                <Brain className="size-4" />
+              </Button>
+
+              {/* Pinned messages from every chat. */}
+              <div className="relative">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="Pinned messages"
+                  onClick={() => setShowPins((v) => !v)}
+                >
+                  <Bookmark className="size-4" />
+                </Button>
+              </div>
+
+              {/* The local WebSocket live pipeline, which is a different thing
+                  from the in-app live mode and is not otherwise reachable. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Local live session (WebSocket pipeline)"
+                onClick={() => setShowLivePanel(true)}
+              >
+                <Waves className="size-4" />
               </Button>
 
               {/* Tools menu */}
@@ -3361,7 +3896,15 @@ export default function Dashboard() {
                 ) : null}
                 <ul className="space-y-8">
                   {messages.map((m) => (
-                    <li key={m._id}>
+                    <li
+                      key={m._id}
+                      data-message-id={m._id}
+                      className={cn(
+                        "transition-colors",
+                        highlight === m._id && "rounded-lg bg-amber-400/10 ring-1 ring-amber-400/40",
+                        listening.currentId === m._id && "rounded-lg bg-cyan-400/5",
+                      )}
+                    >
                       {/* Label row */}
                       <div className="flex items-center gap-2.5">
                         {m.role === "assistant" ? (
@@ -3441,6 +3984,105 @@ export default function Dashboard() {
                           <BranchMenu sessionId={activeId} messageId={m._id} />
                         ) : null}
                         <button
+                          onClick={() =>
+                            listening.active && listening.currentId === m._id
+                              ? listening.stop()
+                              : listening.start(m._id)
+                          }
+                          title={
+                            listening.active && listening.currentId === m._id
+                              ? "Stop reading"
+                              : "Read the conversation aloud from here"
+                          }
+                          className={`rounded p-0.5 transition-colors hover:text-foreground ${
+                            listening.currentId === m._id
+                              ? "text-cyan-400"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          {listening.active && listening.currentId === m._id ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Headphones className="size-3" />
+                          )}
+                        </button>
+                        <button
+                          onClick={() => void togglePin(m._id, !m.pinned)}
+                          title={
+                            m.pinned ? "Unpin this message" : "Pin this message"
+                          }
+                          className={`rounded p-0.5 transition-colors hover:text-foreground ${
+                            m.pinned ? "text-amber-400" : "text-muted-foreground"
+                          }`}
+                        >
+                          <Pin className="size-3" />
+                        </button>
+                        {m.role === "assistant" &&
+                          m._id === lastMsg?._id &&
+                          !sending && (
+                            <button
+                              onClick={() =>
+                                m.altMessageId
+                                  ? void openCompare(m._id)
+                                  : void createDecisionBranch(m._id)
+                              }
+                              disabled={comparingId === m._id}
+                              title={
+                                m.altMessageId
+                                  ? "Compare this answer with the one from the other engine"
+                                  : "Ask the best different engine the same question"
+                              }
+                              className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+                            >
+                              {comparingId === m._id ? (
+                                <Loader2 className="size-3 animate-spin" />
+                              ) : (
+                                <GitCompare className="size-3" />
+                              )}
+                            </button>
+                          )}
+                        {m.role === "assistant" && m.altMessageId && (
+                          <span className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-cyan-400/90">
+                            2 engines
+                          </span>
+                        )}
+                        {m.role === "assistant" && (
+                          <span className="relative">
+                            <button
+                              onMouseEnter={() => setInspecting(m._id)}
+                              onMouseLeave={() => setInspecting(null)}
+                              onClick={() =>
+                                setInspecting(inspecting === m._id ? null : m._id)
+                              }
+                              title="Which engine answered this, and what it cost"
+                              className="rounded px-1 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+                            >
+                              {m.engineId ?? m.model ?? "—"}
+                            </button>
+                            {inspecting === m._id ? (
+                              <AnswerInspector
+                                model={m.model}
+                                engineId={m.engineId}
+                                decisionReason={m.decisionReason}
+                                latencyMs={m.latencyMs}
+                                promptTokens={m.promptTokens}
+                                completionTokens={m.completionTokens}
+                                usedFallback={m.usedFallback}
+                                truncated={m.truncated}
+                                {...(m.altMessageId
+                                  ? {
+                                      onCompare: () => {
+                                        setInspecting(null);
+                                        void openCompare(m._id);
+                                      },
+                                      compareLabel: "Compare both answers",
+                                    }
+                                  : {})}
+                              />
+                            ) : null}
+                          </span>
+                        )}
+                        <button
                           onClick={() => setConfirmDelete(m._id)}
                           title="Delete this message and everything after it"
                           className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
@@ -3458,8 +4100,6 @@ export default function Dashboard() {
                                   <RotateCcw className="size-3" />
                                 )}
                                 {m.usedSearch ? "web" : "fallback"}
-                                {" · "}
-                                {m.model?.split("/")[0]}
                               </span>
                             ) : null}
                             <button
@@ -3640,6 +4280,16 @@ export default function Dashboard() {
                       m.sources &&
                       m.sources.length > 0 ? (
                         <div className="ml-8.5">
+                          {m._id === lastMsg?._id && researchRounds > 1 ? (
+                            <p className="mb-2 text-[10px] leading-4 text-muted-foreground/80">
+                              Searched twice — the first round came back thin, so
+                              Jarvis searched again for{" "}
+                              <span className="font-mono">
+                                {researchFollowUp ?? "a missing angle"}
+                              </span>
+                              .
+                            </p>
+                          ) : null}
                           <SourceList sources={m.sources} />
                         </div>
                       ) : null}
@@ -4208,10 +4858,22 @@ export default function Dashboard() {
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
+                  <SlashMenu
+                    open={slashOpen}
+                    token={slashToken}
+                    activeIndex={slashIndex}
+                    onHover={setSlashIndex}
+                    onSelect={applySlashCommand}
+                  />
                   <textarea
                     ref={inputRef}
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
+                    onChange={(e) => {
+                      setInput(e.target.value);
+                      // Any edit invalidates the highlighted row: keeping the
+                      // old index would move the selection under the user.
+                      setSlashIndex(0);
+                    }}
                     onKeyDown={handleKeyDown}
                     placeholder={
                       recorder.recording
@@ -4220,7 +4882,7 @@ export default function Dashboard() {
                           ? "Edit your message and press Enter…"
                           : deepResearch
                             ? "Research anything on the live web…"
-                            : "Message Jarvis…"
+                            : "Message Jarvis… or / for commands"
                     }
                     rows={1}
                     className="max-h-40 w-full resize-none bg-transparent pl-12 pr-28 py-3 text-sm outline-none placeholder:text-muted-foreground/70"
@@ -4842,6 +5504,13 @@ export default function Dashboard() {
         }
         pace={voicePref.pace}
         onPaceChange={(pace) => setVoicePref((p) => ({ ...p, pace }))}
+        providerHealth={<ProviderHealth />}
+        onOpenTuning={() => setShowTuning(true)}
+      />
+      <LiveTuning
+        live={live}
+        open={live.active && showTuning}
+        onClose={() => setShowTuning(false)}
       />
 
       {/* ---- New surfaces: palette, instructions, schedules ---- */}
@@ -4852,6 +5521,38 @@ export default function Dashboard() {
       />
       <PersonaPanel open={showPersona} onOpenChange={setShowPersona} />
       <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
+      <EnginePanel open={showEngines} onClose={() => setShowEngines(false)} />
+      <PinnedPanel
+        open={showPins}
+        onClose={() => setShowPins(false)}
+        onOpenMessage={openPinned}
+      />
+      {compareState ? (
+        <BranchCompare
+          open
+          left={compareState.left}
+          right={compareState.right}
+          onClose={() => setCompareState(null)}
+        />
+      ) : null}
+      {listening.active ? (
+        <button
+          type="button"
+          onClick={listening.stop}
+          className="fixed bottom-24 left-1/2 z-40 inline-flex -translate-x-1/2 items-center gap-2 rounded-full border border-cyan-500/40 bg-background/90 px-3 py-1.5 text-[11px] text-cyan-300 shadow-lg backdrop-blur transition-colors hover:bg-cyan-500/10"
+        >
+          <Loader2 className="size-3 animate-spin" />
+          Reading the conversation
+          <span className="text-muted-foreground">
+            {listening.remaining} left
+          </span>
+          <span className="text-muted-foreground/70">stop</span>
+        </button>
+      ) : null}
+      <LiveSessionPanel
+        open={showLivePanel}
+        onClose={() => setShowLivePanel(false)}
+      />
 
       <AlertDialog
         open={confirmDelete !== null}

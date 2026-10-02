@@ -1,5 +1,12 @@
+import { v } from "convex/values";
 import { query } from "./_generated/server";
 import { ELEVENLABS_TTS_VOICES, GROQ_TTS_VOICES } from "./voice";
+import {
+  ENGINES,
+  providerStatuses,
+  rankEngines,
+  type EngineTask,
+} from "./engines";
 
 // -------------------------------------------------------------------
 // Public client config. Only items that are SAFE to expose in the browser
@@ -41,6 +48,66 @@ export const getConfig = query({
  * Reports capability flags only — never key material, and nothing
  * user-specific — so it needs no auth.
  */
+/**
+ * Which providers are actually usable right now, for the HUD health strip.
+ *
+ * Key presence only — no key material, nothing user-specific — so it needs no
+ * auth. It reads the same registry the router reads, which is the point: a
+ * strip that reported health separately could disagree with the engine that
+ * really gets called.
+ *
+ * Each provider also carries the engines it would contribute, so the strip can
+ * say what Jarvis is choosing between rather than only whether it is plugged in.
+ */
+export const providerHealth = query({
+  args: {},
+  handler: async () => {
+    return { providers: providerStatuses() };
+  },
+});
+
+/**
+ * The engine registry as the settings UI needs it: every model, whether it is
+ * reachable, and what the router would do with a given kind of turn.
+ *
+ * `preview` is the interesting part — it lets the picker answer "what would this
+ * pick for a maths question?" without sending one.
+ */
+export const engineOptions = query({
+  args: { task: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const task = (
+      ["chat", "vision", "reason", "research", "summarize", "title", "live"] as EngineTask[]
+    ).includes(args.task as EngineTask)
+      ? (args.task as EngineTask)
+      : "chat";
+
+    const plan = rankEngines({ task, order: "smart" });
+    const byId = new Map(plan.ranked.map((r) => [r.engine.id, r]));
+
+    return {
+      engines: ENGINES.map((engine) => {
+        const ranked = byId.get(engine.id);
+        return {
+          id: engine.id,
+          label: engine.label,
+          provider: engine.provider,
+          vision: engine.vision,
+          reasoning: engine.reasoning,
+          context: engine.context,
+          bestFor: engine.bestFor,
+          available: ranked?.available ?? false,
+          because: ranked?.because ?? engine.bestFor,
+          /** 1-based rank for this task, or null when it cannot serve it. */
+          rank: ranked ? plan.ranked.filter((r) => r.engine.id === engine.id).length : null,
+        };
+      }),
+      task,
+      reason: plan.reason,
+    };
+  },
+});
+
 export const voiceOptions = query({
   args: {},
   handler: async () => {

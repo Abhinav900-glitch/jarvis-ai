@@ -74,6 +74,13 @@ export interface LiveMode {
   /** Active noise cancellation: spectral subtraction across the mic signal. */
   noiseCancel: boolean;
   setNoiseCancel: (on: boolean) => void;
+  /**
+   * How hard the suppressor pulls, 0..1. Scaled live on the audio thread, so
+   * turning it up does not drop the conversation the way reopening the
+   * microphone would.
+   */
+  noiseStrength: number;
+  setNoiseStrength: (value: number) => void;
   /** True when the browser and the suppressor are both doing their part. */
   echoCancelling: boolean;
 }
@@ -202,6 +209,8 @@ export function useLiveMode(
   const [paused, setPaused] = useState(false);
   // Active noise cancellation, on top of the browser's own suppression.
   const [noiseCancel, setNoiseCancel] = useState(true);
+  const [noiseStrength, setNoiseStrength] = useState(0.8);
+  const noiseStrengthRef = useRef(0.8);
   const noiseCancelRef = useRef(true);
   const autoRestartRef = useRef(true);
   // Whether the audio path actually has echo cancellation engaged. Reported so
@@ -862,7 +871,11 @@ export function useLiveMode(
             numberOfInputs: 1,
             numberOfOutputs: 1,
             outputChannelCount: [1],
-            processorOptions: { sampleRate: ctx.sampleRate, enabled: true },
+            processorOptions: {
+              sampleRate: ctx.sampleRate,
+              enabled: true,
+              strength: noiseStrengthRef.current,
+            },
           });
           suppressorRef.current = suppressor;
           suppressorPortRef.current = suppressor.port;
@@ -983,6 +996,22 @@ export function useLiveMode(
     }
   }, []);
 
+  /**
+   * Re-tune the running suppressor. Posts straight to the worklet so the new
+   * setting applies to the next audio block rather than the next session — a
+   * slider that required restarting the mic would be unusable mid-call.
+   */
+  const setNoiseStrengthValue = useCallback((value: number) => {
+    const clamped = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0.8;
+    setNoiseStrength(clamped);
+    noiseStrengthRef.current = clamped;
+    try {
+      suppressorPortRef.current?.postMessage({ strength: clamped });
+    } catch {
+      // No worklet this session; the value is remembered for the next start.
+    }
+  }, []);
+
   // Keep the key handlers pointed at the current callbacks.
   useEffect(() => {
     interruptRef.current = () => {
@@ -1076,6 +1105,8 @@ export function useLiveMode(
     paused,
     noiseCancel,
     setNoiseCancel: setNoiseCancellation,
+    noiseStrength,
+    setNoiseStrength: setNoiseStrengthValue,
     echoCancelling,
   };
 }

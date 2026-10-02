@@ -45,6 +45,25 @@ const GROUPS: {
     ],
   },
   {
+    title: "Slash commands",
+    hint: "Type / in the composer",
+    items: [
+      { keys: ["/"], label: "Open the command list" },
+      { keys: ["↑", "↓"], label: "Move through the list" },
+      { keys: ["Tab"], label: "Fill in the highlighted command" },
+      { keys: ["↵"], label: "Fill in and send" },
+      { keys: ["Esc"], label: "Dismiss the list" },
+    ],
+  },
+  {
+    title: "Listening",
+    hint: "While a thread is being read aloud",
+    items: [
+      { keys: ["Click", "stop"], label: "Stop reading" },
+      { keys: ["Esc"], label: "Stop reading" },
+    ],
+  },
+  {
     title: "While a reply is streaming",
     items: [
       { keys: ["Esc"], label: "Stop generating" },

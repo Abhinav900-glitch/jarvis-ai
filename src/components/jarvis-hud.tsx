@@ -27,6 +27,7 @@ import {
   Pause,
   Play,
   ChevronDown,
+  Sliders,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownMessage } from "@/components/markdown-message";
@@ -92,6 +93,11 @@ export interface JarvisHudProps {
   /** Speaking rate, and the setter for it. */
   pace?: number;
   onPaceChange?: (pace: number) => void;
+
+  /** Slot for the provider-health strip, rendered in the header row. */
+  providerHealth?: React.ReactNode;
+  /** Open the microphone tuning panel. */
+  onOpenTuning?: () => void;
 }
 
 /** Shape returned by `config.voiceOptions`. */
@@ -384,6 +390,8 @@ export function JarvisHud({
   onVoiceChange,
   pace = 1.05,
   onPaceChange,
+  providerHealth = null,
+  onOpenTuning,
 }: JarvisHudProps) {
   const [boost, setBoost] = useState(false);
   // The Three.js orb replaces the CSS sphere. Optimistic: it mounts and tries
@@ -600,6 +608,18 @@ export function JarvisHud({
                 Noise
               </Pill>
             )}
+            {onOpenTuning ? (
+              <Pill
+                on={false}
+                onClick={onOpenTuning}
+                accent="var(--spec-3)"
+                title="Microphone tuning — suppression strength, interrupt hold, echo cancellation"
+              >
+                <Sliders className="size-3" />
+                Tuning
+              </Pill>
+            ) : null}
+            {providerHealth}
             {onVoiceChange && onPaceChange && (
               <VoiceControls
                 options={voiceOptions}

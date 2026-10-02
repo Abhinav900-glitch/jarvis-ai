@@ -9,21 +9,66 @@ import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { memoryContextFor } from "./memory";
 import { api, internal } from "./_generated/api";
+import {
+  inferTask,
+  providerById,
+  providerKey,
+  rankEngines,
+  type EnginePlan,
+  type EngineSpec,
+  type EngineTask,
+  type ProviderSpec,
+  type RankedEngine,
+} from "./engines";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/** One part of a multimodal turn. `image_url` is a bare string for Mistral. */
+interface TurnPart {
+  type: string;
+  text?: string;
+  image_url?: { url: string } | string;
+}
+
 interface ChatTurn {
   role: "user" | "assistant" | "system";
-  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+  content: string | TurnPart[];
 }
 
 export interface LlmResult {
   text: string;
   model: string;
+  /** True when the answer did NOT come from the engine the router asked for. */
   usedFallback: boolean;
+  /** `provider/model` from the engine registry, for the answer inspector. */
+  engineId?: string;
+  /** Why that engine was chosen, in one short clause. */
+  reason?: string;
+  /** Milliseconds to the first token, or to the whole reply when not streamed. */
+  latencyMs?: number;
+  /** Token usage, when the provider reported it. */
+  promptTokens?: number;
+  completionTokens?: number;
 }
+
+/**
+ * Optional task hint from the caller. The router infers one from the wording
+ * when this is absent, so nothing has to pass it for the smart router to work
+ * — live voice passes "live" because "answer quickly" is the point there.
+ */
+const taskValidator = v.optional(
+  v.union(
+    v.literal("chat"),
+    v.literal("vision"),
+    v.literal("reason"),
+    v.literal("research"),
+    v.literal("summarize"),
+    v.literal("title"),
+    v.literal("live"),
+  ),
+);
 
 export interface Source {
   title: string;
@@ -32,7 +77,7 @@ export interface Source {
 }
 
 // ---------------------------------------------------------------------------
-// Provider plumbing — Groq (primary), Hugging Face (automatic fallback)
+// Provider plumbing — engine registry in ./engines, one call implementation here
 // ---------------------------------------------------------------------------
 
 /**
@@ -172,12 +217,12 @@ const JARVIS_PROMPT =
 function buildUserContent(
   text: string,
   imageUrls?: string[],
-): string | Array<{ type: string; text?: string; image_url?: { url: string } }> {
+): string | TurnPart[] {
   if (!imageUrls || imageUrls.length === 0) {
     return text;
   }
 
-  const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  const parts: TurnPart[] = [];
 
   // Add the text prompt
   if (text) {
@@ -197,400 +242,333 @@ function buildUserContent(
   return parts;
 }
 
-/**
- * First non-empty value among `names` in the environment. An unset var and a
- * blank one are treated the same — a blank key is never a working key.
- */
-function envKey(...names: string[]): string | null {
-  for (const name of names) {
-    const value = process.env[name];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-}
+// ---------------------------------------------------------------------------
+// Provider calls
+//
+// One implementation, four providers. Every endpoint in the registry is
+// OpenAI-compatible for chat completions, so the only real differences are the
+// image-part shape and a couple of request knobs — both columns on the provider
+// row rather than branches inside the call.
+//
+// Routing lives above this layer: `rankEngines` decides which model should
+// answer, and `runProviderChain` walks that ranking as a resilience ladder.
+// ---------------------------------------------------------------------------
 
 /**
- * Mistral's key, under either of the names it is likely to have been saved as.
+ * Raised when retrying cannot help, so the ladder skips the rest of the
+ * provider instead of spending another identical request.
  */
-function mistralApiKey(): string | null {
-  return envKey("MISTRAL_API_KEY", "MISTRAL_KEY");
-}
+class ProviderFatalError extends Error {}
 
-/**
- * Eden AI's key. Several spellings, because a gateway key is easy to save under
- * the vendor's own name rather than ours.
- */
-function edenApiKey(): string | null {
-  return envKey(
-    "EDEN_AI_API_KEY",
-    "EDENAI_API_KEY",
-    "EDEN_API_KEY",
-    "EDEN_AI_TOKEN",
-  );
-}
-
-async function callGroq(
-  key: string,
-  turns: ChatTurn[],
-  systemPrompt: string = JARVIS_PROMPT,
-): Promise<LlmResult> {
-  // Model availability is verified live against this Groq key:
-  //  - qwen3.8-27b: the ONLY vision-capable model (accepts image_url parts)
-  //  - gpt-oss-120b / gpt-oss-20b: strongest text models (no image support)
-  // Reasoning models spend part of the token budget thinking, so the cap is
-  // generous — and if `content` is empty we surface `reasoning` as a fallback.
-  const hasImages = turns.some((t) => Array.isArray(t.content));
-  const models = hasImages
-    ? [{ id: "qwen/qwen3.8-27b", label: "qwen3.8-27b" }]
-    : [
-        { id: "openai/gpt-oss-120b", label: "gpt-oss-120b" },
-        { id: "qwen/qwen3.8-27b", label: "qwen3.8-27b" },
-        { id: "openai/gpt-oss-20b", label: "gpt-oss-20b" },
-      ];
-
-  const failures: string[] = [];
-  for (const m of models) {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: m.id,
-        messages: [{ role: "system", content: systemPrompt }, ...turns],
-        temperature: 0.6,
-        max_tokens: 8192,
-        reasoning_effort: "low",
-      }),
-    });
-    if (!res.ok) {
-      failures.push(`${m.label} (${res.status})`);
-      continue;
+/** Rewrite the turns into the shape one provider expects. */
+function shapeTurns(turns: ChatTurn[], provider: ProviderSpec): ChatTurn[] {
+  return turns.map((turn) => {
+    if (!Array.isArray(turn.content)) return turn;
+    if (provider.textOnly) {
+      // A text-only model cannot see the picture. Dropping the part keeps the
+      // request valid, and the surrounding text still carries the question.
+      return {
+        ...turn,
+        content: turn.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text ?? "")
+          .join(""),
+      };
     }
-    const data = (await res.json()) as {
-      choices?: {
-        message?: {
-          content?: string;
-          reasoning?: string;
-        };
-      }[];
+    if (!provider.imageUrlAsString) return turn;
+    return {
+      ...turn,
+      // Mistral rejects the OpenAI `{ url }` object shape with a 400.
+      content: turn.content.map((part) =>
+        part.type === "image_url" && typeof part.image_url === "object"
+          ? { type: "image_url", image_url: part.image_url.url }
+          : part,
+      ),
     };
-    const message = data.choices?.[0]?.message;
-    const text = message?.content?.trim() || message?.reasoning?.trim() || "";
-    if (!text) {
-      failures.push(`${m.label} (empty response)`);
-      continue;
-    }
-    return { text, model: `groq/${m.label}`, usedFallback: false };
-  }
-  throw new Error(`Groq failed: ${failures.join(", ")}`);
+  });
 }
 
-/**
- * Mistral, for text and image understanding.
- *
- * Two things make this more than a copy of the Groq call:
- *
- *  1. `image_url` is a plain STRING here, not the `{ url }` object OpenAI and
- *     Groq use. Sending the object shape to Mistral returns a 400, so the
- *     parts are rewritten on the way out rather than trusted to be compatible.
- *
- *  2. Model availability is per account, and the free Experiment tier is much
- *     narrower than the paid one. Verified against this deployment's own key:
- *     `mistral-large-latest` returns 403 "not available in your subscription
- *     tier", `pixtral-large-latest` is not offered at all (400 invalid model),
- *     and `mistral-medium` / `mistral-small` answer 429 rate-limited every
- *     time. What actually answers is the Ministral family, and `ministral-3b`
- *     additionally takes an image — it correctly named a landmark from a photo.
- *
- *     So the usable models lead, and the richer ones follow for anyone who later
- *     upgrades. Leading with the model most likely to fail would burn a request
- *     per turn for nothing, and with vision that would break image analysis
- *     entirely rather than merely slow it down.
- */
-async function callMistral(
-  key: string,
+function requestBody(
+  provider: ProviderSpec,
+  engine: EngineSpec,
   turns: ChatTurn[],
-  systemPrompt: string = JARVIS_PROMPT,
-): Promise<LlmResult> {
-  const hasImages = turns.some((t) => Array.isArray(t.content));
-  const models = hasImages
-    ? [
-        { id: "ministral-3b-latest", label: "ministral-3b" },
-        { id: "mistral-small-latest", label: "mistral-small" },
-        { id: "mistral-medium-latest", label: "mistral-medium" },
-      ]
-    : [
-        { id: "ministral-14b-latest", label: "ministral-14b" },
-        { id: "ministral-8b-latest", label: "ministral-8b" },
-        { id: "ministral-3b-latest", label: "ministral-3b" },
-        { id: "mistral-medium-latest", label: "mistral-medium" },
-        { id: "mistral-small-latest", label: "mistral-small" },
-      ];
-
-  // Rewrite the OpenAI-shaped image parts into Mistral's shape.
-  const mistralTurns = turns.map((t) => ({
-    ...t,
-    content: Array.isArray(t.content)
-      ? t.content.map((p) =>
-          p.type === "image_url" && typeof p.image_url === "object"
-            ? { type: "image_url", image_url: p.image_url.url }
-            : p,
-        )
-      : t.content,
-  }));
-
-  const failures: string[] = [];
-  for (const m of models) {
-    const res = await fetch("https://api.mistral.ai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: m.id,
-        messages: [{ role: "system", content: systemPrompt }, ...mistralTurns],
-        temperature: 0.6,
-        max_tokens: 8192,
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
-
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      failures.push(`${m.label} (${res.status}${detail ? `: ${detail.slice(0, 120)}` : ""})`);
-      continue;
-    }
-
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const text = data.choices?.[0]?.message?.content?.trim() || "";
-    if (!text) {
-      failures.push(`${m.label} (empty response)`);
-      continue;
-    }
-    return { text, model: `mistral/${m.label}`, usedFallback: false };
-  }
-
-  throw new Error(`Mistral failed: ${failures.join(", ")}`);
+  systemPrompt: string,
+  stream: boolean,
+) {
+  return {
+    model: engine.modelId,
+    messages: [{ role: "system", content: systemPrompt }, ...turns],
+    temperature: 0.6,
+    max_tokens: provider.maxTokens,
+    ...(provider.reasoningEffort ? { reasoning_effort: "low" } : {}),
+    // Asks for a final usage frame. Without it a streamed answer reports no
+    // token counts at all, which is what the answer inspector reads.
+    ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
+  };
 }
 
-/**
- * Eden AI — an aggregator gateway, used as a fallback.
- *
- * Their v3 endpoint is OpenAI-compatible down to the `image_url` object shape,
- * so the turns are forwarded untouched — no translation needed, unlike Mistral.
- *
- * Only the two Gemma 4 models are used, because only those are free. This was
- * verified rather than assumed: this deployment's account reports
- * `balance: null`, so any model that answers here is free by definition, and
- * both Gemma models returned 200 with `cost: 0`. Every other candidate —
- * Gemini Flash, GPT, Claude, and Mistral-small — came back 402 "insufficient
- * credit". Restricting the list to the free pair means an unfunded account
- * still gets a working fallback instead of a silent skip.
- *
- * Both Gemma models are multimodal, so the same pair serves image turns; each
- * correctly named a landmark from a photo, again at zero cost.
- *
- * A 402 is handled explicitly rather than as a generic failure: it means the
- * account has no credit, which does not change between attempts, so trying the
- * remaining models would only repeat the same rejection.
- */
-const EDEN_FREE_MODELS: Array<{ id: string; label: string }> = [
-  { id: "google/gemma-4-31b-it", label: "gemma-4-31b" },
-  { id: "google/gemma-4-26b-a4b-it", label: "gemma-4-26b" },
-];
+interface WireUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
 
-async function callEden(
+/** One non-streaming completion from one engine. */
+async function callProvider(
+  provider: ProviderSpec,
   key: string,
+  engine: EngineSpec,
   turns: ChatTurn[],
-  systemPrompt: string = JARVIS_PROMPT,
+  systemPrompt: string,
 ): Promise<LlmResult> {
-  const failures: string[] = [];
-  for (const m of EDEN_FREE_MODELS) {
-    const res = await fetch("https://api.edenai.run/v3/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: m.id,
-        messages: [{ role: "system", content: systemPrompt }, ...turns],
-        temperature: 0.6,
-        max_tokens: 8192,
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
+  const started = Date.now();
+  const res = await fetch(provider.url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(
+      requestBody(provider, engine, shapeTurns(turns, provider), systemPrompt, false),
+    ),
+    signal: AbortSignal.timeout(provider.timeoutMs),
+  });
 
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    // 402 means the gateway account has no credit. That will not change on a
+    // retry, so the rest of this provider is skipped rather than re-tried.
     if (res.status === 402) {
-      const detail = await res.text().catch(() => "");
-      let message = "Eden AI has no credit on this account.";
-      try {
-        const parsed = JSON.parse(detail) as { error?: { message?: string } };
-        if (parsed.error?.message) message = `Eden AI: ${parsed.error.message}`;
-      } catch {
-        /* keep the plain message */
-      }
-      failures.push(message);
-      break;
+      throw new ProviderFatalError(
+        detail
+          ? `${provider.label}: ${detail.slice(0, 120)}`
+          : `${provider.label} has no credit on this account.`,
+      );
     }
-
-    if (!res.ok) {
-      failures.push(`${m.label} (${res.status})`);
-      continue;
-    }
-
-    const data = (await res.json()) as {
-      choices?: {
-        message?: { content?: string | null; reasoning_content?: string | null };
-      }[];
-    };
-    const message = data.choices?.[0]?.message;
-    // Gemma 4 is a reasoning model: with a tight token budget it can spend the
-    // whole allowance thinking and return `content: null`. Falling back to the
-    // reasoning text keeps the turn answerable instead of silently empty.
-    const text = (message?.content ?? message?.reasoning_content ?? "").trim();
-    if (!text) {
-      failures.push(`${m.label} (empty response)`);
-      continue;
-    }
-    return { text, model: `eden/${m.label}`, usedFallback: true };
+    throw new Error(
+      `${engine.label} (${res.status}${detail ? `: ${detail.slice(0, 120)}` : ""})`,
+    );
   }
 
-  throw new Error(`Eden AI failed: ${failures.join(", ")}`);
+  const data = (await res.json()) as {
+    choices?: {
+      message?: {
+        content?: string | null;
+        reasoning?: string | null;
+        reasoning_content?: string | null;
+      };
+    }[];
+    usage?: WireUsage;
+  };
+  const message = data.choices?.[0]?.message;
+  // Reasoning models can spend the whole token budget thinking and return no
+  // content. Falling back to the reasoning text keeps the turn answerable
+  // rather than silently empty.
+  const text = (
+    message?.content ??
+    message?.reasoning ??
+    message?.reasoning_content ??
+    ""
+  ).trim();
+  if (!text) throw new Error(`${engine.label} (empty response)`);
+
+  return {
+    text,
+    model: `${provider.id}/${engine.label}`,
+    engineId: engine.id,
+    usedFallback: false,
+    latencyMs: Date.now() - started,
+    promptTokens: data.usage?.prompt_tokens,
+    completionTokens: data.usage?.completion_tokens,
+  };
 }
 
-async function callHuggingFace(
-  token: string,
-  turns: ChatTurn[],
-  systemPrompt: string = JARVIS_PROMPT,
-): Promise<LlmResult> {
-  // Model availability verified live against the router for this token.
-  // (Qwen2.5-7B-1M / gemma-2-2b-it are NOT served for this account.)
-  const models = [
-    { id: "meta-llama/Llama-3.1-8B-Instruct", label: "Llama-3.1-8B" },
-    { id: "Qwen/Qwen2.5-72B-Instruct", label: "Qwen2.5-72B" },
-    { id: "deepseek-ai/DeepSeek-V3-0324", label: "DeepSeek-V3" },
-  ];
-
-  const failures: string[] = [];
-  for (const m of models) {
-    // HF doesn't support image content, so convert to text-only
-    const textTurns = turns.map((t) => ({
-      ...t,
-      content: typeof t.content === "string"
-        ? t.content
-        : t.content
-            .filter((p) => p.type === "text")
-            .map((p) => p.text ?? "")
-            .join(""),
-    }));
-
-    const res = await fetch("https://router.huggingface.co/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: m.id,
-        messages: [{ role: "system", content: systemPrompt }, ...textTurns],
-        temperature: 0.6,
-        max_tokens: 4096,
-      }),
-      signal: AbortSignal.timeout(45_000),
-    });
-    if (!res.ok) {
-      failures.push(`${m.label} (${res.status})`);
-      continue;
-    }
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const text = data.choices?.[0]?.message?.content?.trim();
-    if (!text) {
-      failures.push(`${m.label} (empty response)`);
-      continue;
-    }
-    return { text, model: `huggingface/${m.label}`, usedFallback: true };
-  }
-  throw new Error(`Hugging Face failed: ${failures.join(", ")}`);
+export interface StreamOutcome {
+  text: string;
+  cancelled: boolean;
+  /** Milliseconds to the first token, or to the whole reply if none arrived. */
+  latencyMs: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  model: string;
+  engineId: string;
 }
 
 /**
- * Run a prompt down the provider chain until one answers. Every AI entry point
- * goes through here, so a turn never behaves differently because of which
- * action happened to be serving it.
+ * One streamed completion from one engine, pushing each delta to `onDelta`.
  *
- * Order: Mistral, Groq, Eden AI, HuggingFace.
+ * `onDelta` returning true means the user pressed Stop. Threading that signal
+ * out to here is the whole point: the read loop stops at the next delta rather
+ * than finishing the answer the user just cancelled.
+ */
+async function streamProvider(
+  provider: ProviderSpec,
+  key: string,
+  engine: EngineSpec,
+  turns: ChatTurn[],
+  systemPrompt: string,
+  onDelta: (delta: string) => Promise<boolean>,
+): Promise<StreamOutcome> {
+  const started = Date.now();
+  const res = await fetch(provider.url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(
+      requestBody(provider, engine, shapeTurns(turns, provider), systemPrompt, true),
+    ),
+  });
+
+  if (!res.ok || !res.body) throw new Error(`${engine.label} (${res.status})`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+  let cancelled = false;
+  let firstTokenMs: number | undefined;
+  let promptTokens: number | undefined;
+  let completionTokens: number | undefined;
+
+  const handleLine = async (line: string): Promise<void> => {
+    if (cancelled) return;
+    const frame = parseSseFrame(line);
+    if (!frame) return;
+    const delta = frame.choices?.[0]?.delta?.content ?? "";
+    if (delta) {
+      if (firstTokenMs === undefined) firstTokenMs = Date.now() - started;
+      full += delta;
+      if (await onDelta(delta)) cancelled = true;
+    }
+    if (frame.usage) {
+      promptTokens = frame.usage.prompt_tokens ?? promptTokens;
+      completionTokens = frame.usage.completion_tokens ?? completionTokens;
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        await handleLine(line);
+        if (cancelled) break;
+      }
+      if (cancelled) break;
+    }
+    // A stream that ended without a trailing newline leaves a partial frame.
+    if (!cancelled && buffer.trim()) await handleLine(buffer.trim());
+  } finally {
+    // Releases the socket when the user stopped mid-answer. Without this an
+    // abandoned stream can hold the connection open until it times out.
+    try {
+      await reader.cancel();
+    } catch {
+      // Already closed.
+    }
+  }
+
+  return {
+    text: full,
+    cancelled,
+    latencyMs: firstTokenMs ?? Date.now() - started,
+    promptTokens,
+    completionTokens,
+    model: `${provider.id}/${engine.label}`,
+    engineId: engine.id,
+  };
+}
+
+/**
+ * The ranked plan as provider groups, ordered by each provider's best engine.
  *
- * Mistral leads because its free Experiment tier answers reliably here and
- * is the only provider verified to handle both text and images on a free
- * key. Groq follows as the stronger text model. Eden AI is third because it
- * is the last provider that still answers on a completely free key — it
- * routes to models that cost this account nothing — so an outage at either
- * of the first two still leaves a working, unfunded-independent path.
- * HuggingFace is last: it is text-only, so by that point an image turn is
- * already a lost cause and a text answer is the best that is left.
+ * Grouping is what preserves the old resilience. If the strongest Groq model
+ * rejects a request, the next Groq model is tried before falling through to a
+ * weaker provider that happens to rank second overall — which is exactly how
+ * the hand-written ladder behaved, but with the order chosen per turn.
+ */
+function groupByProvider(ranked: RankedEngine[]): Array<{
+  provider: ProviderSpec;
+  engines: RankedEngine[];
+}> {
+  const groups: Array<{ provider: ProviderSpec; engines: RankedEngine[] }> = [];
+  for (const entry of ranked) {
+    if (!entry.available) continue;
+    const provider = providerById(entry.engine.provider);
+    if (!provider) continue;
+    const existing = groups.find((g) => g.provider.id === provider.id);
+    if (existing) existing.engines.push(entry);
+    else groups.push({ provider, engines: [entry] });
+  }
+  return groups;
+}
+
+
+      
+
+  
+
+
+
+
+
+/**
+ * Run a prompt down the ranked plan until one engine answers.
  *
- * A provider that is not configured is recorded and skipped rather than
- * aborting, so the error the user eventually sees lists every reason.
+ * Every AI entry point goes through here, so a turn never behaves differently
+ * because of which action happened to be serving it. `plan` is supplied by
+ * `routingFor` in the calling action; the default is the fixed provider ladder,
+ * which is what runs when no user is signed in or the router is switched off.
+ *
+ * A provider with no key is recorded and skipped rather than aborting, so the
+ * error the user eventually sees lists every reason.
  */
 async function runProviderChain(
   turns: ChatTurn[],
   systemPrompt: string = JARVIS_PROMPT,
   failurePrefix = "All models failed automatically.",
+  plan: EnginePlan = rankEngines(),
 ): Promise<LlmResult> {
-  const providers: Array<{
-    name: string;
-    missing: string;
-    key: string | null;
-    call: (
-      key: string,
-      turns: ChatTurn[],
-      systemPrompt: string,
-    ) => Promise<LlmResult>;
-  }> = [
-    {
-      name: "mistral",
-      missing: "MISTRAL_API_KEY not configured",
-      key: mistralApiKey(),
-      call: callMistral,
-    },
-    {
-      name: "groq",
-      missing: "GROQ_API_KEY not configured",
-      key: envKey("GROQ_API_KEY"),
-      call: callGroq,
-    },
-    {
-      name: "eden",
-      missing: "EDEN_AI_API_KEY not configured",
-      key: edenApiKey(),
-      call: callEden,
-    },
-    {
-      name: "huggingface",
-      missing: "HUGGING_FACE_TOKEN not configured",
-      key: envKey("HUGGING_FACE_TOKEN"),
-      call: callHuggingFace,
-    },
-  ];
-
   const failures: string[] = [];
+  // Position in the whole plan rather than in one provider's group, so
+  // "fell back" keeps meaning "not the engine the router asked for".
+  let position = 0;
 
-  for (const p of providers) {
-    if (!p.key) {
-      failures.push(`${p.name}: ${p.missing}`);
+  for (const { provider, engines } of groupByProvider(plan.ranked)) {
+    const key = providerKey(provider);
+    if (!key) {
+      failures.push(`${provider.id}: ${provider.missing}`);
       continue;
     }
-    try {
-      return await p.call(p.key, turns, systemPrompt);
-    } catch (err) {
-      failures.push(
-        `${p.name}: ${err instanceof Error ? err.message : "unknown error"}`,
-      );
+
+    for (const entry of engines) {
+      try {
+        const result = await callProvider(provider, key, entry.engine, turns, systemPrompt);
+        return {
+          ...result,
+          usedFallback: position > 0,
+          reason:
+            position === 0
+              ? plan.reason
+              : `${plan.reason} → fell back to ${entry.engine.label}`,
+        };
+      } catch (err) {
+        if (err instanceof ProviderFatalError) {
+          // Account-level rejection: no retry of another model will change it.
+          failures.push(`${provider.id}: ${err.message}`);
+          break;
+        }
+        failures.push(
+          `${provider.id}: ${err instanceof Error ? err.message : "unknown error"}`,
+        );
+      }
+      position++;
     }
   }
 
@@ -657,6 +635,8 @@ export const ask = action({
     ),
     imageUrls: v.optional(v.array(v.string())),
     personaId: v.optional(v.id("personas")),
+    /** Overrides the router's own guess about what this turn needs. */
+    task: taskValidator,
   },
   handler: async (ctx, args): Promise<LlmResult> => {
     const userId = await getAuthUserId(ctx);
@@ -717,9 +697,17 @@ export const ask = action({
       args.prompt,
     );
 
+    const plan = await routingFor(ctx, userId, {
+      task: args.task,
+      hasImages: (args.imageUrls ?? []).length > 0,
+      prompt: args.prompt,
+    });
+
     return await runProviderChain(
       [...history, { role: "user", content: userContent }],
       systemPrompt,
+      "All models failed automatically.",
+      plan,
     );
   },
 });
@@ -732,32 +720,84 @@ export const ask = action({
 const STREAM_FLUSH_MS = 90;
 
 /**
- * Parse one SSE `data:` line from Groq and return the incremental text, or
- * null when the line carries no content (keep-alives, finish reasons, errors).
+ * Parse one SSE `data:` frame into its JSON, or null when the line carries no
+ * payload (keep-alives, comments, finish reasons).
+ *
+ * The whole frame is returned rather than just the delta because the final
+ * frame of a stream carries the usage counts and nothing else — reading only
+ * the delta would mean streamed answers reported no token counts at all.
  */
-function parseSseDelta(line: string): string | null {
+function parseSseFrame(line: string): {
+  choices?: { delta?: { content?: string } }[];
+  usage?: WireUsage;
+} | null {
   if (!line.startsWith("data:")) return null;
   const payload = line.slice(5).trim();
   if (!payload || payload === "[DONE]") return null;
   try {
-    const json = JSON.parse(payload) as {
+    return JSON.parse(payload) as {
       choices?: { delta?: { content?: string } }[];
+      usage?: WireUsage;
     };
-    return json.choices?.[0]?.delta?.content ?? null;
   } catch {
     return null;
   }
 }
 
 /**
- * Ask Groq for a streamed completion, writing each delta straight into an
- * assistant message the caller has already created. The client's
- * `useQuery(listMessages)` then renders the reply as it grows — no polling and
- * no HTTP streaming endpoint needed.
+ * The engine plan for one turn, honouring the user's router preference.
  *
- * Falls back to the non-streaming provider chain (`ask`'s helpers) if the
- * account or model refuses `stream: true`, so streaming is never a hard
- * dependency.
+ * `smartEngine` decides between routing per turn and the fixed ladder; a pinned
+ * engine wins over both. The settings read is best-effort — a transient read
+ * failure must cost the user their routing preference, not their reply — and
+ * the key presence that decides availability is read fresh here rather than
+ * cached, so adding a key in the Keys tab takes effect on the next message.
+ */
+async function routingFor(
+  ctx: { runQuery: (fn: FunctionReference<"query", "internal">, args: unknown) => Promise<unknown> },
+  userId: Id<"users">,
+  request: {
+    task?: EngineTask;
+    hasImages: boolean;
+    prompt: string;
+    excludeEngineId?: string | null;
+  },
+): Promise<EnginePlan> {
+  let order: "smart" | "stable" = "smart";
+  let preferEngineId: string | null = null;
+  try {
+    const prefs = (await ctx.runQuery(internal.workspace.enginePrefs, {
+      userId,
+    })) as { smartEngine: boolean; pinnedEngineId: string | null };
+    order = prefs.smartEngine ? "smart" : "stable";
+    preferEngineId = prefs.pinnedEngineId ?? null;
+  } catch {
+    // Keep the smart default; routing is a nicety, not a requirement.
+  }
+
+  return rankEngines({
+    task: request.task ?? inferTask(request.prompt, request.hasImages),
+    hasImages: request.hasImages,
+    promptChars: request.prompt.length,
+    preferEngineId,
+    excludeEngineId: request.excludeEngineId ?? null,
+    order,
+  });
+}
+
+/**
+ * Stream a reply from whichever engine the router ranked first, writing each
+ * delta straight into an assistant message the caller has already created. The
+ * client's `useQuery(listMessages)` then renders the reply as it grows — no
+ * polling and no HTTP streaming endpoint needed.
+ *
+ * Every provider in the registry speaks the same OpenAI SSE dialect, so the
+ * router is not restricted to whichever vendor happens to stream: an image
+ * question can be answered by whichever vision model the router picked, and a
+ * maths question by whichever model reasons best.
+ *
+ * Falls back to the non-streaming chain if every engine refuses `stream: true`,
+ * so streaming is never a hard dependency.
  */
 export const askStream = action({
   args: {
@@ -771,6 +811,8 @@ export const askStream = action({
     ),
     imageUrls: v.optional(v.array(v.string())),
     personaId: v.optional(v.id("personas")),
+    /** Overrides the router's own guess about what this turn needs. */
+    task: taskValidator,
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -821,143 +863,126 @@ export const askStream = action({
     if (ragContext) prompt = `${prompt}\n\n---${ragContext}`;
     if (memoryContext) prompt = `${prompt}\n\n---${memoryContext}`;
 
-    const groqKey = process.env.GROQ_API_KEY;
     const hasImages = (args.imageUrls ?? []).length > 0;
-    const models = hasImages
-      ? [{ id: "qwen/qwen3.8-27b", label: "qwen3.8-27b" }]
-      : [
-          { id: "openai/gpt-oss-120b", label: "gpt-oss-120b" },
-          { id: "qwen/qwen3.8-27b", label: "qwen3.8-27b" },
-          { id: "openai/gpt-oss-20b", label: "gpt-oss-20b" },
-        ];
+    const plan = await routingFor(ctx, userId, {
+      task: args.task,
+      hasImages,
+      prompt: args.prompt,
+    });
 
     const failures: string[] = [];
 
-    // Hoisted out of the model loop: the user pressing Stop has to end the
-    // whole attempt, not just the current model's stream, and the decision is
-    // acted on after the loop as well as inside it.
+    // Hoisted out of the engine loop: pressing Stop has to end the whole
+    // attempt, not just the current model's stream, and the decision is acted
+    // on after the loop as well as inside it.
     let cancelled = false;
     let cancelledText = "";
+    // Position in the whole plan, so "fell back" keeps its original meaning.
+    let position = 0;
 
-    for (const m of models) {
-      if (!groqKey) break;
-      let res: Response;
-      try {
-        res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${groqKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: m.id,
-            messages: [
-              { role: "system", content: systemPrompt },
+    for (const { provider, engines } of groupByProvider(plan.ranked)) {
+      const key = providerKey(provider);
+      if (!key) {
+        failures.push(`${provider.id}: ${provider.missing}`);
+        continue;
+      }
+
+      for (const entry of engines) {
+        let pending = "";
+        let lastFlush = Date.now();
+
+        const flush = async (): Promise<boolean> => {
+          lastFlush = Date.now();
+          if (!pending) return false;
+          const delta = pending;
+          pending = "";
+          try {
+            const res = await ctx.runMutation(internal.chats.appendStreamDelta, {
+              messageId: args.messageId,
+              delta,
+            });
+            if (res.cancelled) {
+              cancelled = true;
+              return true;
+            }
+          } catch {
+            // A dropped flush shouldn't abort generation; the final write
+            // below still lands the complete text.
+          }
+          return false;
+        };
+
+        let outcome: StreamOutcome | null = null;
+        try {
+          outcome = await streamProvider(
+            provider,
+            key,
+            entry.engine,
+            [
               ...history,
               { role: "user", content: buildUserContent(prompt, args.imageUrls) },
             ],
-            temperature: 0.6,
-            max_tokens: 8192,
-            reasoning_effort: "low",
-            stream: true,
-          }),
-        });
-      } catch (err) {
-        failures.push(
-          `${m.label} (${err instanceof Error ? err.message : "network error"})`,
-        );
-        continue;
-      }
-
-      if (!res.ok || !res.body) {
-        failures.push(`${m.label} (${res.status})`);
-        continue;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let full = "";
-      let pending = "";
-      let lastFlush = Date.now();
-
-      const flush = async (): Promise<boolean> => {
-        lastFlush = Date.now();
-        if (!pending) return false;
-        const delta = pending;
-        pending = "";
-        try {
-          const res = await ctx.runMutation(internal.chats.appendStreamDelta, {
-            messageId: args.messageId,
-            delta,
-          });
-          if (res.cancelled) {
-            cancelled = true;
-            return true;
-          }
-        } catch {
-          // A dropped flush shouldn't abort generation; the final write below
-          // still lands the complete text.
-        }
-        return false;
-      };
-
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-
-          let nl: number;
-          while ((nl = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.slice(0, nl).trim();
-            buffer = buffer.slice(nl + 1);
-            const delta = parseSseDelta(line);
-            if (delta) {
-              full += delta;
+            systemPrompt,
+            // Deltas accumulate and are written on a throttle: frequent enough
+            // to look live, rare enough that a 4000-token answer isn't 4000
+            // mutations. Reading the cancel flag on that same write is what
+            // makes stopping free.
+            async (delta) => {
               pending += delta;
-            }
-          }
-
-          // Throttle database writes: frequent enough to look live, rare
-          // enough that a 4000-token answer isn't 4000 mutations.
-          if (Date.now() - lastFlush >= STREAM_FLUSH_MS) {
-            if (await flush()) break;
-          }
-          if (cancelled) break;
+              return Date.now() - lastFlush >= STREAM_FLUSH_MS ? flush() : false;
+            },
+          );
+          await flush();
+        } catch (err) {
+          failures.push(
+            `${entry.engine.label} stream (${err instanceof Error ? err.message : "read error"})`,
+          );
         }
-        await flush();
-      } catch (err) {
-        failures.push(
-          `${m.label} stream (${err instanceof Error ? err.message : "read error"})`,
-        );
+
+        if (outcome?.text.trim()) {
+          const reason =
+            position === 0
+              ? plan.reason
+              : `${plan.reason} → fell back to ${entry.engine.label}`;
+          await ctx.runMutation(internal.chats.finalizeStream, {
+            messageId: args.messageId,
+            content: outcome.text,
+            model: outcome.model,
+            engineId: outcome.engineId,
+            decisionReason: reason,
+            latencyMs: outcome.latencyMs,
+            promptTokens: outcome.promptTokens,
+            completionTokens: outcome.completionTokens,
+            usedFallback: position > 0,
+            truncated: outcome.cancelled || undefined,
+          });
+          return {
+            text: outcome.text,
+            model: outcome.model,
+            engineId: outcome.engineId,
+            reason,
+            latencyMs: outcome.latencyMs,
+            promptTokens: outcome.promptTokens,
+            completionTokens: outcome.completionTokens,
+            usedFallback: position > 0,
+            truncated: outcome.cancelled,
+          };
+        }
+
+        // Stopped before a single token landed. Returning here matters: without
+        // it the loop would try the next engine and finally the non-streaming
+        // chain, so pressing Stop could produce a complete answer instead — the
+        // exact opposite of what was asked for.
+        if (cancelled) {
+          cancelledText = outcome?.text ?? "";
+          break;
+        }
+        position++;
       }
 
-      if (full.trim()) {
-        await ctx.runMutation(internal.chats.finalizeStream, {
-          messageId: args.messageId,
-          content: full,
-          model: `groq/${m.label}`,
-          usedFallback: false,
-          truncated: cancelled || undefined,
-        });
-        return {
-          text: full,
-          model: `groq/${m.label}`,
-          usedFallback: false,
-          truncated: cancelled,
-        };
-      }
-
-      // Stopped before a single token landed. Returning here matters: without
-      // it the loop would try the next model and finally the non-streaming
-      // chain, so pressing Stop could produce a complete answer instead — the
-      // exact opposite of what was asked for.
-      if (cancelled) {
-        cancelledText = full;
-        break;
-      }
+      if (cancelled) break;
     }
+        
 
     // Streaming unavailable or produced nothing — fall back to the plain
     // provider chain so the user still gets an answer. The chain (not Groq
@@ -983,11 +1008,18 @@ export const askStream = action({
           { role: "user", content: buildUserContent(prompt, args.imageUrls) },
         ],
         systemPrompt,
+        "All models failed automatically.",
+        plan,
       );
       await ctx.runMutation(internal.chats.finalizeStream, {
         messageId: args.messageId,
         content: result.text,
         model: result.model,
+        engineId: result.engineId,
+        decisionReason: result.reason,
+        latencyMs: result.latencyMs,
+        promptTokens: result.promptTokens,
+        completionTokens: result.completionTokens,
         usedFallback: result.usedFallback,
       });
       return result;
@@ -1037,7 +1069,7 @@ export const continueReply = action({
   handler: async (
     ctx,
     args,
-  ): Promise<{ text: string; model: string; usedFallback: boolean }> => {
+  ): Promise<LlmResult> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to continue a reply.");
 
@@ -1061,6 +1093,14 @@ export const continueReply = action({
         },
       ],
       await systemPromptFor(ctx, userId),
+      "All models failed automatically.",
+      // Reasoning first: carrying on mid-thought is exactly the task where a
+      // model that plans before it writes beats one that does not.
+      await routingFor(ctx, userId, {
+        task: "reason",
+        hasImages: false,
+        prompt: existing,
+      }),
     );
 
     // A blank line at the seam, so two runs of prose do not run together.
@@ -1071,21 +1111,218 @@ export const continueReply = action({
     await ctx.runMutation(internal.chats.finalizeStream, {
       messageId: args.messageId,
       model: result.model,
+      engineId: result.engineId,
+      decisionReason: result.reason,
+      latencyMs: result.latencyMs,
+      promptTokens: result.promptTokens,
+      completionTokens: result.completionTokens,
       usedFallback: result.usedFallback,
       truncated: false,
     });
 
-    return {
-      text: result.text,
-      model: result.model,
-      usedFallback: result.usedFallback,
-    };
+    return result;
+  },
+});
+
+/**
+ * The same question again, answered by a genuinely different engine.
+ *
+ * This is the second half of the smart-engine system. When the router picks a
+ * model for a turn it is making a bet on which model suits that turn; this
+ * action takes the other side of that bet so the user can see both answers side
+ * by side instead of having to trust the pick.
+ *
+ * The engine that already answered is excluded from the plan, so "a different
+ * engine" really means different — a rerun that silently picked the same model
+ * would show two copies of the same answer and teach the user nothing.
+ *
+ * Returns text only. The caller forks a branch and stores the answer, because
+ * branching is a mutation and this is an action — keeping the split that way
+ * means one place decides what a "decision branch" is.
+ */
+export const alternativeAnswer = action({
+  args: {
+    prompt: v.string(),
+    /** The engine that already answered, which this run must avoid. */
+    excludeEngineId: v.optional(v.string()),
+    history: v.optional(
+      v.array(v.object({ role: v.string(), content: v.string() })),
+    ),
+    imageUrls: v.optional(v.array(v.string())),
+    personaId: v.optional(v.id("personas")),
+    task: taskValidator,
+  },
+  handler: async (ctx, args): Promise<LlmResult & { available: boolean }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to compare engines.");
+
+    const hasImages = (args.imageUrls ?? []).length > 0;
+    const plan = await routingFor(ctx, userId, {
+      task: args.task,
+      hasImages,
+      prompt: args.prompt,
+      excludeEngineId: args.excludeEngineId ?? null,
+    });
+
+    if (!plan.primary) {
+      return {
+        text: "",
+        model: "none",
+        usedFallback: true,
+        available: false,
+        reason: "No second engine is configured for this deployment.",
+      };
+    }
+
+    const history = (args.history ?? [])
+      .slice(-12)
+      .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
+
+    const result = await runProviderChain(
+      [...history, { role: "user", content: buildUserContent(args.prompt, args.imageUrls) }],
+      await systemPromptFor(ctx, userId, args.personaId),
+      "All models failed automatically.",
+      plan,
+    );
+
+    // Always reads as a comparison, never as the primary answer.
+    return { ...result, available: true, reason: `Second opinion from ${result.model}` };
   },
 });
 
 // ---------------------------------------------------------------------------
-// Deep Research — serpstack web search, summarized by the LLM with fallback
+// Deep Research — web search, a gap-filling second pass, then synthesis
 // ---------------------------------------------------------------------------
+
+/** Never more than this many sources reach the model, in any research run. */
+const MAX_RESEARCH_SOURCES = 12;
+
+export interface DeepResearchResult {
+  answer: LlmResult;
+  sources: Source[];
+  /** How many searches actually ran. 2 means the gap analysis found something. */
+  rounds: number;
+  /** The second query, when there was one. Shown so the search is inspectable. */
+  followUp: string | null;
+  /** Search-provider complaints. Non-fatal — the run continues without them. */
+  errors: string[];
+}
+
+/**
+ * One web search across both providers, serpstack first and SerApi second.
+ *
+ * Errors are returned rather than thrown: a research run that already has
+ * sources must not fail because a second provider is unhappy, and a round-two
+ * search that fails should quietly leave round one's material intact.
+ */
+async function webSearch(
+  query: string,
+): Promise<{ sources: Source[]; errors: string[] }> {
+  const errors: string[] = [];
+  let sources: Source[] = [];
+
+  const serpstackKey = process.env.SERPSTACK_API_KEY;
+  if (serpstackKey) {
+    try {
+      const data = (await serpstackSearch(serpstackKey, query)) as {
+        error?: { info?: string };
+        organic_results?: { title?: string; url?: string; snippet?: string; domain?: string }[];
+      };
+      if (data.error) {
+        const msg = data.error.info ?? "search failed";
+        console.error("[deep-research] serpstack error:", msg);
+        errors.push(`serpstack: ${msg}`);
+      } else {
+        sources = (data.organic_results ?? [])
+          .slice(0, 8)
+          .map((r) => ({
+            title: r.title ?? "Untitled result",
+            url: r.url ?? "",
+            domain: r.domain,
+          }))
+          .filter((s) => s.url);
+        console.log(`[deep-research] serpstack returned ${sources.length} results`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "failed";
+      console.error("[deep-research] serpstack exception:", msg);
+      errors.push(`serpstack: ${msg}`);
+    }
+  } else {
+    errors.push("serpstack: SERPSTACK_API_KEY not configured");
+  }
+
+  // Fallback: SerApi (serpapi.com) Google results
+  if (sources.length === 0) {
+    const serpApiKey = process.env.SERPAPI_API_KEY;
+    if (serpApiKey) {
+      try {
+        sources = await serpApiSearch(serpApiKey, query);
+        console.log(`[deep-research] serpapi fallback returned ${sources.length} results`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "failed";
+        console.error("[deep-research] serpapi exception:", msg);
+        errors.push(`serpapi: ${msg}`);
+      }
+    } else {
+      errors.push("serpapi: SERPAPI_API_KEY not configured");
+    }
+  }
+
+  return { sources, errors };
+}
+
+/**
+ * Ask the model what the material is still missing, as one search query.
+ *
+ * Returns null when it says there is nothing left to look for, when it answers
+ * with something unusable, or when the call fails at all. Every one of those
+ * cases means the run continues with what round one found, which is exactly
+ * what happened before this existed.
+ */
+async function followUpQuery(
+  plan: EnginePlan,
+  question: string,
+  sources: Source[],
+): Promise<string | null> {
+  const primary = plan.primary;
+  if (!primary) return null;
+  const provider = providerById(primary.engine.provider);
+  const key = provider ? providerKey(provider) : null;
+  if (!provider || !key) return null;
+
+  const context = sources
+    .slice(0, 8)
+    .map((s, i) => `[${i + 1}] ${s.title} (${s.domain ?? ""})`)
+    .join("\n");
+
+  try {
+    const result = await callProvider(
+      provider,
+      key,
+      primary.engine,
+      [
+        {
+          role: "user",
+          content:
+            `You are planning the next web search for a research answer.\n\n` +
+            `Question: ${question}\n\nResults already found:\n${context}\n\n` +
+            `Name the ONE most useful missing search that would add something new to ` +
+            `this material. Reply with the search query only — no quotes, no ` +
+            `explanation, under 12 words. If the material is already enough, reply ` +
+            `exactly: DONE`,
+        },
+      ],
+      "You output a single web search query, or the word DONE. Nothing else.",
+    );
+
+    const answer = result.text.trim().replace(/^["'`]|["'`]$/g, "").replace(/\s+/g, " ");
+    if (!answer || /^done\b/i.test(answer)) return null;
+    return answer.slice(0, 120);
+  } catch {
+    return null;
+  }
+}
 
 export const deepResearch = action({
   args: {
@@ -1096,63 +1333,27 @@ export const deepResearch = action({
       ),
     ),
   },
-  handler: async (_ctx, args): Promise<{ answer: LlmResult; sources: Source[] }> => {
+  handler: async (_ctx, args): Promise<DeepResearchResult> => {
     const userId = await getAuthUserId(_ctx);
     if (userId === null) {
       throw new Error("Sign in to use Deep Research.");
     }
 
+    const plan = await routingFor(_ctx, userId, {
+      task: "research",
+      hasImages: false,
+      prompt: args.query,
+    });
+
     // 1) Search the live web: serpstack primary → SerApi fallback.
     const searchErrors: string[] = [];
     let sources: Source[] = [];
+    let rounds = 0;
 
-    const serpstackKey = process.env.SERPSTACK_API_KEY;
-    if (serpstackKey) {
-      try {
-        const data = (await serpstackSearch(serpstackKey, args.query)) as {
-          error?: { info?: string };
-          organic_results?: { title?: string; url?: string; snippet?: string; domain?: string }[];
-        };
-        if (data.error) {
-          const msg = data.error.info ?? "search failed";
-          console.error("[deep-research] serpstack error:", msg);
-          searchErrors.push(`serpstack: ${msg}`);
-        } else {
-          sources = (data.organic_results ?? [])
-            .slice(0, 8)
-            .map((r) => ({
-              title: r.title ?? "Untitled result",
-              url: r.url ?? "",
-              domain: r.domain,
-            }))
-            .filter((s) => s.url);
-          console.log(`[deep-research] serpstack returned ${sources.length} results`);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "failed";
-        console.error("[deep-research] serpstack exception:", msg);
-        searchErrors.push(`serpstack: ${msg}`);
-      }
-    } else {
-      searchErrors.push("serpstack: SERPSTACK_API_KEY not configured");
-    }
-
-    // Fallback: SerApi (serpapi.com) Google results
-    if (sources.length === 0) {
-      const serpApiKey = process.env.SERPAPI_API_KEY;
-      if (serpApiKey) {
-        try {
-          sources = await serpApiSearch(serpApiKey, args.query);
-          console.log(`[deep-research] serpapi fallback returned ${sources.length} results`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "failed";
-          console.error("[deep-research] serpapi exception:", msg);
-          searchErrors.push(`serpapi: ${msg}`);
-        }
-      } else {
-        searchErrors.push("serpapi: SERPAPI_API_KEY not configured");
-      }
-    }
+    const first = await webSearch(args.query);
+    sources = first.sources;
+    searchErrors.push(...first.errors);
+    rounds = 1;
 
     if (sources.length === 0) {
       throw new Error(
@@ -1160,24 +1361,60 @@ export const deepResearch = action({
       );
     }
 
+    // 2) Gap analysis. One keyword search routinely returns eight near-identical
+    // results and misses the single page that actually answers the question.
+    // Asking the model what is still missing and searching for exactly that is
+    // the cheapest real improvement available — one extra search and one short
+    // call, which is what separates a summary of search results from research.
+    //
+    // Skipped when round one already filled the budget; there is nothing left
+    // to add to, and a pointless second search costs a real API call.
+    let followUp: string | null = null;
+    if (sources.length < MAX_RESEARCH_SOURCES) {
+      followUp = await followUpQuery(plan, args.query, sources);
+      if (followUp) {
+        const second = await webSearch(followUp);
+        searchErrors.push(...second.errors);
+        const fresh = second.sources.filter(
+          (s) => !sources.some((existing) => existing.url === s.url),
+        );
+        if (fresh.length > 0) {
+          // De-duplicated by URL: the same page often ranks for both queries,
+          // and citing it twice would make the source list look richer than it
+          // is.
+          sources = [...sources, ...fresh].slice(0, MAX_RESEARCH_SOURCES);
+          rounds = 2;
+        } else {
+          // Nothing new came back, so the second query is not reported as a
+          // round — it did not happen, as far as the answer is concerned.
+          followUp = null;
+        }
+      }
+    }
+
     const context = sources
       .map((s, i) => `[${i + 1}] ${s.title} (${s.domain ?? ""})\n${s.url}`)
       .join("\n\n");
 
-    // 2) Have the LLM (with automatic fallback) synthesize the answer.
+    // 3) Synthesize, with the same router every other entry point uses — a
+    // research turn is exactly the case where reasoning matters most.
     const history = (args.history ?? [])
       .slice(-12)
       .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
 
-    const prompt = `Research this topic using the web results below. Answer in a clear, structured summary and cite sources inline as [1], [2], etc.\n\nWeb results:\n${context}\n\nTopic: ${args.query}`;
+    const prompt = `Research this topic using the web results below. Answer in a clear, structured summary and cite sources inline as [1], [2], etc. Say plainly when the results do not actually settle the question, rather than filling the gap from memory.\n\nWeb results:\n${context}\n\nTopic: ${args.query}`;
 
     return {
       answer: await runProviderChain(
         [...history, { role: "user", content: prompt }],
         JARVIS_PROMPT,
         `Search succeeded (${sources.length} sources) but all AI models failed:`,
+        plan,
       ),
       sources,
+      rounds,
+      followUp,
+      errors: searchErrors,
     };
   },
 });

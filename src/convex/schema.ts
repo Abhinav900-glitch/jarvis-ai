@@ -67,6 +67,18 @@ const schema = defineSchema(
       userId: v.id("users"),
       customInstructions: v.optional(v.string()),
       activePersonaId: v.optional(v.id("personas")),
+      /**
+       * Let the engine router choose a model per turn instead of walking a
+       * fixed provider order. On by default; the pin in Settings overrides it.
+       */
+      smartEngine: v.optional(v.boolean()),
+      /** `provider/model` the user pinned, which outranks the router. */
+      pinnedEngineId: v.optional(v.string()),
+      /**
+       * After a reply, also answer with the best *different* engine on a new
+       * branch. Off by default because it costs a second full generation.
+       */
+      autoBranch: v.optional(v.boolean()),
       updatedAt: v.optional(v.number()),
     }).index("by_user", ["userId"]),
 
@@ -153,6 +165,25 @@ const schema = defineSchema(
       model: v.optional(v.string()),
       usedFallback: v.optional(v.boolean()),
       usedSearch: v.optional(v.boolean()),
+      /** Kept by the user as one of the things worth finding again. */
+      pinned: v.optional(v.boolean()),
+      /** `provider/model` from the engine registry, for the answer inspector. */
+      engineId: v.optional(v.string()),
+      /** Why the router picked that engine, in one short clause. */
+      decisionReason: v.optional(v.string()),
+      /** Wall-clock time to the first token, ms. */
+      latencyMs: v.optional(v.number()),
+      /** Token usage, when the provider reported it. */
+      promptTokens: v.optional(v.number()),
+      completionTokens: v.optional(v.number()),
+      /**
+       * The alternative answer on a decision branch, and the branch it lives
+       * on. Both are set together, and only by the smart-engine second answer.
+       */
+      altMessageId: v.optional(v.id("chatMessages")),
+      altBranchId: v.optional(v.id("chatBranches")),
+      /** Marks the second answer as machine-generated, not the user's own. */
+      isDecisionBranch: v.optional(v.boolean()),
       /**
        * Set by the user pressing Stop. Read by the streaming loop on every
        * flush, which is where the check costs nothing — the flush was already
@@ -203,7 +234,9 @@ const schema = defineSchema(
       createdAt: v.number(),
     })
       .index("by_session", ["sessionId"])
-      .index("by_branch", ["branchId"]),
+      .index("by_branch", ["branchId"])
+      // Backs the pinned list, which spans every session at once.
+      .index("by_user", ["userId"]),
 
     // RAG: embeddings of past chat messages for semantic retrieval.
     // Embeddings use HuggingFace feature-extraction (384-dim all-MiniLM-L6-v2).

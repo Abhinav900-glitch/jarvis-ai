@@ -51,6 +51,12 @@ const SPEECH_DECAY = 0.02;
 
 const MAX_ATTENUATION = 0.85; // deepest cut applied to any one band
 
+/** Clamp to 0..1. A worklet cannot rely on Math.min's argument order here. */
+function clamp01(value) {
+  if (!Number.isFinite(value)) return 1;
+  return value < 0 ? 0 : value > 1 ? 1 : value;
+}
+
 /** Periodic Hann, used on both analysis and synthesis. */
 const WINDOW = new Float32Array(FRAME);
 for (let i = 0; i < FRAME; i++) {
@@ -75,6 +81,15 @@ class NoiseSuppressor extends AudioWorkletProcessor {
     const opts = options?.processorOptions ?? {};
     this.rate = opts.sampleRate || 24000;
     this.enabled = opts.enabled !== false;
+    /**
+     * How hard the suppressor pulls, 0..1, scaling the deepest per-band cut.
+     *
+     * A single fixed aggressiveness is wrong for everyone: in a quiet room 0.85
+     * costs clarity for nothing, and next to a road the same setting leaves too
+     * much. The slider in the live tuning panel posts a new value straight to
+     * this thread, so it takes effect mid-sentence.
+     */
+    this.strength = typeof opts.strength === "number" ? clamp01(opts.strength) : 1;
 
     // Input assembly. Sized generously: at 48 kHz a 128-sample quantum is
     // ~2.7 ms, so the pending buffer never approaches FRAME * 4 between frames.
@@ -105,7 +120,12 @@ class NoiseSuppressor extends AudioWorkletProcessor {
 
     this.port.onmessage = (event) => {
       const data = event.data;
-      if (!data || typeof data.enabled !== "boolean") return;
+      if (!data) return;
+      if (typeof data.strength === "number") {
+        this.strength = clamp01(data.strength);
+        return;
+      }
+      if (typeof data.enabled !== "boolean") return;
       this.enabled = data.enabled;
       if (!this.enabled) {
         // Forget the room. A stale estimate applied to a changed environment is
@@ -191,7 +211,7 @@ class NoiseSuppressor extends AudioWorkletProcessor {
         const excess = Math.max(0, mag[k] - n);
         const snr = Math.min(6, excess / Math.max(n, NOISE_ABS_MIN));
         const wiener = snr / (1 + snr);
-        g = 1 - MAX_ATTENUATION * (1 - wiener);
+        g = 1 - MAX_ATTENUATION * this.strength * (1 - wiener);
       }
       re[k] *= g;
       im[k] *= g;

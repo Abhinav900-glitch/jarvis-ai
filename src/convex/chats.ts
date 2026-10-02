@@ -164,6 +164,12 @@ export const appendMessage = mutation({
     ),
     content: v.string(),
     model: v.optional(v.string()),
+    engineId: v.optional(v.string()),
+    decisionReason: v.optional(v.string()),
+    latencyMs: v.optional(v.number()),
+    promptTokens: v.optional(v.number()),
+    completionTokens: v.optional(v.number()),
+    isDecisionBranch: v.optional(v.boolean()),
     usedFallback: v.optional(v.boolean()),
     usedSearch: v.optional(v.boolean()),
     sources: v.optional(
@@ -204,6 +210,12 @@ export const appendMessage = mutation({
       role: args.role,
       content: args.content,
       model: args.model,
+      engineId: args.engineId,
+      decisionReason: args.decisionReason,
+      latencyMs: args.latencyMs,
+      promptTokens: args.promptTokens,
+      completionTokens: args.completionTokens,
+      isDecisionBranch: args.isDecisionBranch,
       usedFallback: args.usedFallback,
       usedSearch: args.usedSearch,
       sources: args.sources,
@@ -554,6 +566,11 @@ export const finalizeStream = internalMutation({
     usedFallback: v.optional(v.boolean()),
     usedSearch: v.optional(v.boolean()),
     truncated: v.optional(v.boolean()),
+    engineId: v.optional(v.string()),
+    decisionReason: v.optional(v.string()),
+    latencyMs: v.optional(v.number()),
+    promptTokens: v.optional(v.number()),
+    completionTokens: v.optional(v.number()),
     sources: v.optional(
       v.array(
         v.object({ title: v.string(), url: v.string(), domain: v.optional(v.string()) }),
@@ -570,9 +587,124 @@ export const finalizeStream = internalMutation({
       usedSearch: args.usedSearch,
       sources: args.sources,
       truncated: args.truncated,
+      engineId: args.engineId,
+      decisionReason: args.decisionReason,
+      latencyMs: args.latencyMs,
+      promptTokens: args.promptTokens,
+      completionTokens: args.completionTokens,
       // Clear the flag so the same message can be continued later without the
       // next attempt stopping immediately.
       cancelRequested: false,
+    });
+  },
+});
+
+/**
+ * Pins or unpins a message.
+ *
+ * Written as a toggle rather than an explicit value so the UI cannot get the
+ * two out of step with what is stored — the argument is the new state, and a
+ * double click is a no-op rather than a race.
+ */
+/**
+ * Fetch specific messages by id.
+ *
+ * Exists for the compare view: a decision branch's alternative answer lives on
+ * a different branch, so it is not in the transcript the user is looking at,
+ * and after a reload the id on the original is the only pointer to it left.
+ * Capped at six ids — this is a lookup, not a query.
+ */
+export const getMessagesByIds = query({
+  args: { ids: v.array(v.id("chatMessages")) },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const rows = await Promise.all(args.ids.slice(0, 6).map((id) => ctx.db.get(id)));
+    return rows.filter((row) => Boolean(row && row.userId === userId));
+  },
+});
+
+export const setPin = mutation({
+  args: {
+    messageId: v.id("chatMessages"),
+    pinned: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+    const row = await ctx.db.get(args.messageId);
+    if (!row || row.userId !== userId) throw new Error("Message not found.");
+    await ctx.db.patch(args.messageId, { pinned: args.pinned });
+  },
+});
+
+/**
+ * Every pinned message across every session, newest first.
+ *
+ * Deliberately not scoped to one chat. A pin is the user saying "I will want
+ * this again"; scoping it to a single conversation would hide it precisely
+ * when they are in a different one looking for it.
+ */
+export const listPinned = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+
+    const rows = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    const pinned = rows
+      .filter((m) => m.pinned)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 100);
+
+    // The session title is read per row rather than joined, because there is
+    // no index that answers "sessions for these ids" and the list is capped.
+    const withTitles = await Promise.all(
+      pinned.map(async (m) => {
+        const session = await ctx.db.get(m.sessionId);
+        return {
+          _id: m._id,
+          sessionId: m.sessionId,
+          sessionTitle: session?.title ?? "Jarvis chat",
+          role: m.role,
+          // Long replies are clipped: this is a jump list, not a second reader.
+          preview: m.content.length > 220 ? `${m.content.slice(0, 220)}…` : m.content,
+          model: m.model,
+          createdAt: m.createdAt,
+        };
+      }),
+    );
+    return withTitles;
+  },
+});
+
+/**
+ * Links a reply to the alternative answer produced on a decision branch.
+ *
+ * Both ids are stored on the ORIGINAL message rather than on the alternative:
+ * the original is the one the user is looking at, so the "compare" affordance
+ * has to be reachable from there without first finding the other branch.
+ */
+export const setAlternative = mutation({
+  args: {
+    messageId: v.id("chatMessages"),
+    altMessageId: v.id("chatMessages"),
+    altBranchId: v.optional(v.id("chatBranches")),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+    const row = await ctx.db.get(args.messageId);
+    if (!row || row.userId !== userId) throw new Error("Message not found.");
+    const alt = await ctx.db.get(args.altMessageId);
+    if (!alt || alt.userId !== userId) throw new Error("Message not found.");
+    await ctx.db.patch(args.messageId, {
+      altMessageId: args.altMessageId,
+      altBranchId: args.altBranchId,
     });
   },
 });

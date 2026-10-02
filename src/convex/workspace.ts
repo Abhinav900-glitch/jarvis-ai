@@ -4,6 +4,12 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import type { GenericDatabaseReader } from "convex/server";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
 import { DEFAULT_BEHAVIOR_INSTRUCTIONS } from "../lib/identity";
+import { ENGINES } from "./engines";
+
+/** Every engine id the registry knows, for validating a pinned choice. */
+const engineLabels: Record<string, string> = Object.fromEntries(
+  ENGINES.map((e) => [e.id, e.label]),
+);
 
 // ---------------------------------------------------------------------------
 // Personas and standing instructions.
@@ -284,6 +290,93 @@ export async function instructionBlockFor(
  * Authenticated, like every other settings read: this is one user's private
  * standing instructions, and live mode is only usable while signed in.
  */
+/**
+ * Whether this user wants per-turn engine routing, and which engine they pinned.
+ *
+ * An internal query because the AI actions run on the node runtime and have no
+ * database reader — this is how they reach the routing preference without the
+ * router having to be told twice.
+ *
+ * Defaults to smart routing on. Someone who has never opened Settings should
+ * get the better behaviour; the switch exists for people who want the old fixed
+ * order, not as something to opt into.
+ */
+export const enginePrefs = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ smartEngine: boolean; pinnedEngineId: string | null }> => {
+    const settings = await ctx.db
+      .query("userSettings")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .first();
+    return {
+      smartEngine: settings?.smartEngine ?? true,
+      pinnedEngineId: settings?.pinnedEngineId ?? null,
+    };
+  },
+});
+
+/** The routing preference on its own, for the Settings UI. */
+export const getEngineSettings = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+    const settings = await ctx.db
+      .query("userSettings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    return {
+      smartEngine: settings?.smartEngine ?? true,
+      pinnedEngineId: settings?.pinnedEngineId ?? null,
+      autoBranch: settings?.autoBranch ?? false,
+    };
+  },
+});
+
+/**
+ * Writes the routing preference, creating the settings row on first use.
+ *
+ * Separate from `saveSettings` rather than folded into it: that mutation is
+ * called from the persona panel with a required persona id, and making routing
+ * depend on that form would couple two unrelated settings together.
+ */
+export const saveEngineSettings = mutation({
+  args: {
+    smartEngine: v.optional(v.boolean()),
+    pinnedEngineId: v.optional(v.union(v.string(), v.null())),
+    autoBranch: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const existing = await ctx.db
+      .query("userSettings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+
+    const patch: Partial<Doc<"userSettings">> = { updatedAt: Date.now() };
+    if (args.smartEngine !== undefined) patch.smartEngine = args.smartEngine;
+    if (args.autoBranch !== undefined) patch.autoBranch = args.autoBranch;
+    if (args.pinnedEngineId !== undefined) {
+      // An unknown engine id would silently disable routing, so only a real id
+      // from the registry is accepted — or nothing, to clear the pin.
+      patch.pinnedEngineId = args.pinnedEngineId
+        ? (args.pinnedEngineId in engineLabels ? args.pinnedEngineId : undefined)
+        : undefined;
+    }
+
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+      return existing._id;
+    }
+    return await ctx.db.insert("userSettings", { userId, ...patch });
+  },
+});
+
 export const livePersona = query({
   args: {
     /** Overrides the user's active persona, for a session that pinned one. */
