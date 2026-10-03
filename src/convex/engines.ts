@@ -516,9 +516,11 @@ export const ENGINES: EngineSpec[] = [
  * the engine quietly 404ing on a day nobody was watching and burning a request
  * from a 50-a-day budget on every step to find out.
  *
- * A date that has passed is not an error — the panel filters those out and the
- * provider chain falls through on its own — so this table can go stale without
- * breaking anything, which is the safe direction to be stale in.
+ * A date that has passed is not an error, and does not need this table to be
+ * tidied up on the day: `isRetired` drops the engine from routing from that
+ * moment on, and the provider chain would fall through anyway. The entry can
+ * stay here as a record of what was withdrawn. A date still ahead of us is the
+ * useful state, because it is the one the panel can warn about.
  */
 export const RETIRING: Record<string, string> = {
   "openrouter/space-bunny": "2026-10-05",
@@ -534,6 +536,23 @@ export function retiringSoon(): { id: string; label: string; on: string }[] {
       label: engineById(id)?.label ?? id,
       on,
     }));
+}
+
+/**
+ * Whether an engine's published withdrawal date has already passed.
+ *
+ * Enforced in routing, not just reported. A withdrawn model does not announce
+ * itself: the provider answers with an error, the chain falls through, and the
+ * step still completes — but it spends one request from a 50-a-day free budget
+ * to discover something the registry already knew. Dropping it from the plan up
+ * front costs nothing and keeps the routing honest about which engine will run.
+ *
+ * The date is read as UTC midnight, so the engine leaves the plan at the start
+ * of its withdrawal day rather than at some arbitrary hour of it.
+ */
+export function isRetired(id: string, now: number = Date.now()): boolean {
+  const on = RETIRING[id];
+  return on !== undefined && Date.parse(on) <= now;
 }
 
 /**
@@ -583,7 +602,9 @@ export function providerStatuses(): ProviderStatus[] {
   return PROVIDERS.map((provider) => {
     const engines = ENGINES.filter((e) => e.provider === provider.id)
       .sort((a, b) => b.quality - a.quality)
-      .map((e) => ({ id: e.id, label: e.label, available: true }));
+      // A retired engine is reported unavailable even when its key is present,
+      // so the health surface stops advertising a model the router will refuse.
+      .map((e) => ({ id: e.id, label: e.label, available: !isRetired(e.id) }));
     const configured = Boolean(providerKey(provider));
     return {
       id: provider.id,
@@ -664,6 +685,11 @@ export function rankEngines(request: RouteRequest = {}): EnginePlan {
   const scored: RankedEngine[] = [];
   for (const engine of ENGINES) {
     if (excluded && engine.id === excluded) continue;
+    // A withdrawn engine is dropped from the plan outright, including when it
+    // is pinned: it cannot serve the turn, so honouring the pin would only
+    // fail one request later instead of now. This is the one place a date in
+    // RETIRING actually changes behaviour — everywhere else it is a label.
+    if (isRetired(engine.id)) continue;
     // Capability, not preference: a text-only model cannot be told to look at
     // a picture, so it is dropped rather than ranked last.
     if (wantImages && !engine.vision) continue;

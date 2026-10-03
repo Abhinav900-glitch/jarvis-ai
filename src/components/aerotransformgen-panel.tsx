@@ -791,8 +791,9 @@ export function AeroTransformGenPanel({
                           {r.label}
                         </span>{" "}
                         <span className="text-muted-foreground">
-                          is withdrawn on {r.on}. The free router takes over
-                          automatically.
+                          is withdrawn on {r.on}. Routing drops it from that
+                          date, so the free router takes over without spending
+                          a request to find out.
                         </span>
                       </p>
                     ))}
