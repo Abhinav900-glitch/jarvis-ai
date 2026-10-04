@@ -384,18 +384,36 @@ export const ENGINES: EngineSpec[] = [
   {
     // Next best on OpenRouter's tool-calling and programming collections, 1M
     // context, tools supported. Its free status has rotated before — every
-    // DeepSeek model was paid as of July 2026 — so the panel's live roster
-    // check is what tells the truth about it, not this entry.
-    id: "openrouter/deepseek-v4-flash",
+    // DeepSeek model was paid as of July 2026, and `deepseek-v4-flash:free`
+    // was confirmed gone from the roster on 2026-10-03. Because it held the
+    // top reasoning slot, its disappearance silently demoted the agent off
+    // reasoning models entirely. It is replaced below rather than merely
+    // dropped, so that slot is filled again.
+    //
+    // Replacements were picked off the live `:free` roster on 2026-10-03,
+    // checking that they are actually there rather than trusting the entry.
+    id: "openrouter/ling-flash",
     provider: "openrouter",
-    modelId: "deepseek/deepseek-v4-flash:free",
-    label: "DeepSeek V4 Flash",
+    modelId: "inclusionai/ling-3.0-flash-sante:free",
+    label: "Ling 3.0 Flash",
     vision: false,
     reasoning: true,
-    quality: 0.86,
-    speed: 0.80,
-    context: 1_048_576,
-    bestFor: "long-context tool use when Space Bunny is gone",
+    quality: 0.84,
+    speed: 0.78,
+    context: 262_144,
+    bestFor: "reasoning and long tool chains on a confirmed free slot",
+  },
+  {
+    id: "openrouter/apodex-mini",
+    provider: "openrouter",
+    modelId: "apodex/apodex-1.1-mini:free",
+    label: "Apodex 1.1 Mini",
+    vision: false,
+    reasoning: false,
+    quality: 0.74,
+    speed: 0.90,
+    context: 262_144,
+    bestFor: "the cheap fast step that still has to answer",
   },
   {
     id: "openrouter/nemotron-ultra",

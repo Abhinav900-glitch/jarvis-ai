@@ -122,11 +122,15 @@ Write \`output\` for a human: conclusion first, no restating the step, no filler
 /**
  * Route one agent call.
  *
- * Prefers the free OpenRouter roster when a key exists, because it is the
- * widest pool and costs nothing — a run should spend free capacity before it
- * spends a metered one. The sort is stable, so within each group the router's
- * own scoring still decides; this only decides which group goes first, and with
- * no OpenRouter key it changes nothing at all.
+ * Prefers the free OpenRouter roster, because it is the widest pool and costs
+ * nothing — a run should spend free capacity before it spends a metered one.
+ *
+ * The fallback *order* itself is not built here. `runProviderChain` round-robins
+ * across providers when it walks the plan, and doing that here as well would be
+ * undone: it regroups the ranking into per-provider blocks before attempting
+ * anything, so a plan sorted this way still tries every OpenRouter engine
+ * before it ever reaches Mistral. One withdrawn model would cost a dozen
+ * attempts — most of a free day's budget — to discover one bad URL.
  */
 function agentPlan(text: string, promptChars: number) {
   const task = inferTask(text, false);
