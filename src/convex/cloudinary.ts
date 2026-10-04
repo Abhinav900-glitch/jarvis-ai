@@ -903,19 +903,27 @@ export const generateImage = action({
 
     const attempts: { name: string; run: () => Promise<GeneratedImage> }[] = [
       {
+        // First: Cloudinary is the only provider in this chain that honours
+        // `model` and `aspectRatio` — perchance, pollinations, huggingface
+        // and replicate all take the bare prompt and ignore both. Promoting
+        // it also puts the asset in the account the user actually owns.
+        // Safe to try first while it is exhausted: the 429 comes back in
+        // milliseconds and the breaker skips it for 10 minutes after 3 of
+        // them, so it cannot stall the rest of the chain.
+        name: "cloudinary",
+        run: () =>
+          generateViaCloudinary(ctx, prompt, args.model, args.aspectRatio),
+      },
+      {
         name: "perchance",
         run: () => generateViaPerchance(ctx, prompt),
       },
       {
-        // Verified working (fast, keyless) — #2 so the chain almost always
-        // produces an image even when Perchance is bot-blocked.
+        // Verified working (fast, keyless) — directly after Perchance so the
+        // chain almost always produces an image even when Perchance is
+        // bot-blocked.
         name: "pollinations",
         run: () => generateViaPollinations(ctx, prompt),
-      },
-      {
-        name: "cloudinary",
-        run: () =>
-          generateViaCloudinary(ctx, prompt, args.model, args.aspectRatio),
       },
       {
         name: "huggingface",
