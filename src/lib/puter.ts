@@ -247,6 +247,14 @@ export async function getPuterSignInStatus(): Promise<PuterSignInStatus> {
  * the alternative is a popup racing a generation request.
  */
 export async function signInToPuter(): Promise<PuterSignInStatus> {
+  // Puter rejects with `unsupported_origin` when the page has no origin the
+  // browser will vouch for — an opaque origin from a sandboxed frame or
+  // file://. Fail fast with that reason instead of a confusing popup failure.
+  if (typeof window !== "undefined" && window.origin === "null") {
+    throw new Error(
+      "This page has an opaque origin (sandboxed frame or file://), which Puter cannot sign in from. Open the app in its own tab.",
+    );
+  }
   const puter = await loadPuter();
   if (!puter.auth?.signIn) {
     throw new Error("Puter sign-in is unavailable in this browser.");

@@ -3807,18 +3807,15 @@ export default function Dashboard() {
                       Disconnect Cloudinary
                     </DropdownMenuItem>
                   ) : null}
-                  <DropdownMenuItem onClick={handleConnectPuter} disabled={puterConnecting || puterAuth.signedIn}>
-                    <Wand2 className="size-4" />
-                    {puterAuth.signedIn
-                      ? `Puter connected${puterAuth.username ? ` (${puterAuth.username})` : ""} ✓`
-                      : puterConnecting
-                        ? "Connecting to Puter…"
-                        : "Connect Puter (sign in)"}
-                  </DropdownMenuItem>
+                  {/* Sign-in deliberately lives outside this menu: a Radix
+                      menu item has its pointer activation stripped, which
+                      costs Puter's sign-in popup the user gesture it needs.
+                      Disconnecting is a plain token call, so it can stay. */}
                   {puterAuth.signedIn ? (
                     <DropdownMenuItem onClick={handleDisconnectPuter}>
                       <X className="size-4" />
                       Disconnect Puter
+                      {puterAuth.username ? ` (${puterAuth.username})` : ""}
                     </DropdownMenuItem>
                   ) : null}
                   <DropdownMenuSeparator />
@@ -4838,6 +4835,23 @@ export default function Dashboard() {
                   className="hidden"
                   onChange={handleFileInput}
                 />
+                {/* Puter sign-in. Puter is the primary image provider and its
+                    sign-in popup needs a genuine user gesture, so this is a
+                    standalone button rather than a settings-menu item. */}
+                {!puterAuth.signedIn ? (
+                  <div className="px-4 pt-3">
+                    <button
+                      onClick={handleConnectPuter}
+                      disabled={puterConnecting}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-foreground/25 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                    >
+                      <Wand2 className="size-3" />
+                      {puterConnecting
+                        ? "Connecting to Puter…"
+                        : "Connect Puter to generate images"}
+                    </button>
+                  </div>
+                ) : null}
                 {/* Previews: image thumbnails + file chips */}
                 {pendingImages.length > 0 || pendingFiles.length > 0 ? (
                   <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
