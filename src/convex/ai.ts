@@ -603,13 +603,6 @@ async function streamProvider(
 }
 
 /**
- * (Removed: `groupByProvider`. It returned the plan as per-provider blocks and
- * was what made fallback depth depend on how many models a provider happened to
- * register. `interleaveLadder` replaced it for both the plain and streaming
- * paths, and this had no remaining callers.)
- */
-
-/**
  * Run a prompt down the ranked plan until one engine answers.
  *
  * Every AI entry point goes through here, so a turn never behaves differently
