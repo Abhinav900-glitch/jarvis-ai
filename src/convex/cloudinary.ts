@@ -48,9 +48,10 @@ export const getOAuthStartUrl = action({
       );
     }
 
-    const state =
-      crypto.randomUUID().replace(/-/g, "") +
-      crypto.randomUUID().replace(/-/g, "");
+    // 32 hex chars (128 bits) is ample CSRF entropy and keeps the value short
+    // enough that an OAuth provider is very unlikely to truncate it on the way
+    // back — a truncated state comes home as a mismatch with no explanation.
+    const state = crypto.randomUUID().replace(/-/g, "");
     await ctx.runMutation(internalApi.cloudinaryOAuth.setPendingState, {
       userId,
       state,
@@ -87,8 +88,19 @@ export const exchangeCode = action({
       internalApi.cloudinaryOAuth.getStoredAuth,
       { userId },
     );
-    if (!stored || stored.pendingState !== args.state) {
-      throw new Error("OAuth state mismatch — restart the connection flow.");
+    if (!stored) {
+      // No row for this account at all: the callback is running under a
+      // different signed-in user than the one that started the flow.
+      throw new Error(
+        "No pending Cloudinary connection was found for this account — the callback is running under a different user than the one that started it. Start the connection again and finish it in the same browser.",
+      );
+    }
+    if (stored.pendingState !== args.state) {
+      // A row exists but its state differs: a later Connect click overwrote
+      // this one, so the authorization window that just came back is stale.
+      throw new Error(
+        "This Cloudinary authorization window is out of date — a newer Connect click replaced it. Close any other Cloudinary sign-in tabs, then connect again.",
+      );
     }
 
     const redirectUri = stored.redirectUri ?? args.redirectUri;
