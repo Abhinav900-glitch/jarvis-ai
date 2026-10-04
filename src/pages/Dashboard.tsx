@@ -908,10 +908,14 @@ export default function Dashboard() {
     }
     try {
       return await generateImageWithPuter(prompt, uploadFile);
-    } catch {
-      setAssistantError(null);
+    } catch (err) {
+      // Keep the real reason: Puter rejects with codes like `popup_blocked`
+      // and the upload leg has its own message. Clearing the error here threw
+      // both away and left only a generic "everything failed".
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[image-gen] Puter.js failed:", msg);
       throw new Error(
-        "All image providers failed — Perchance, Pollinations, Cloudinary, Hugging Face, Replicate and Puter were tried.",
+        `Puter.js was the last provider and could not finish: ${msg}`,
       );
     }
   };
