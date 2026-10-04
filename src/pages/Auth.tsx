@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/input-otp";
 
 import { useAuth } from "@/hooks/use-auth";
+import { GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+import { firebaseAuth } from "@/lib/firebase";
 import { JarvisIcon } from "@/components/jarvis-icon";
 import { ArrowRight, Loader2, Mail, UserX } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
@@ -121,14 +123,22 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     setIsLoading(true);
     setError(null);
     try {
-      // Convex Auth redirects to Google and back, so there is nothing to
-      // navigate to afterwards — the auth effect takes it from there.
-      await signIn("google");
+      // Firebase owns the Google popup and mints the ID token; Convex Auth
+      // trades that token for a session. Both halves are needed — the popup
+      // must be opened straight from the click to keep the user gesture.
+      const provider = new GoogleAuthProvider();
+      const credential = await signInWithPopup(firebaseAuth(), provider);
+      const token = await credential.user.getIdToken();
+      await signIn("firebase", { token });
     } catch (error) {
       console.error("Google sign in error:", error);
-      setError(
-        `Google sign-in failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      const message = error instanceof Error ? error.message : "Unknown error";
+      // A dismissed popup is a normal outcome, not an error worth shouting about.
+      if (/popup-closed|cancelled/i.test(message)) {
+        setIsLoading(false);
+        return;
+      }
+      setError(`Google sign-in failed: ${message}`);
       setIsLoading(false);
     }
   };
