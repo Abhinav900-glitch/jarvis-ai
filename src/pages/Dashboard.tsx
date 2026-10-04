@@ -879,12 +879,24 @@ export default function Dashboard() {
     }
   };
 
-  // ---- AI image generation: Perchance (client, primary) → server chain → Puter ----
-  // Perchance runs client-side (corsproxy's free tier only serves browser
-  // requests); the server chain (Pollinations etc.) is fallback; Puter.js last.
+  // ---- AI image generation: Puter (primary) → Perchance → server chain ----
+  // Puter runs first and in the browser, under its "user pays" model: it needs
+  // no API keys, and running it immediately means its sign-in popup still has
+  // the original click's user activation — browsers block popups that follow a
+  // long fallback chain. Perchance is next (corsproxy's free tier only serves
+  // browser requests); the server chain (Pollinations etc.) is the last resort.
   const generateImageSmart = async (
     prompt: string,
   ): Promise<{ url: string; publicId: string; provider: string }> => {
+    try {
+      return await generateImageWithPuter(prompt, uploadFile);
+    } catch (err) {
+      // Keep the real reason rather than erasing it: Puter rejects with codes
+      // like `popup_blocked`, and the upload leg has its own message.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[image-gen] Puter.js failed, falling back:", msg);
+      setAssistantError(null);
+    }
     if (perchanceKeys?.corsproxyKey && perchanceKeys?.perchanceKey) {
       try {
         return await generateImageWithPerchance(
@@ -902,20 +914,9 @@ export default function Dashboard() {
       return await generateImageAction({ prompt });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // All server providers exhausted → last resort: client-side Puter.
-      console.warn("[image-gen] server chain failed, trying Puter.js:", msg);
-      setAssistantError(null);
-    }
-    try {
-      return await generateImageWithPuter(prompt, uploadFile);
-    } catch (err) {
-      // Keep the real reason: Puter rejects with codes like `popup_blocked`
-      // and the upload leg has its own message. Clearing the error here threw
-      // both away and left only a generic "everything failed".
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn("[image-gen] Puter.js failed:", msg);
+      console.warn("[image-gen] server chain failed:", msg);
       throw new Error(
-        `Puter.js was the last provider and could not finish: ${msg}`,
+        `Every image provider failed (Puter, Perchance, server chain). Last error: ${msg}`,
       );
     }
   };
