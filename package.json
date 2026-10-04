@@ -58,6 +58,7 @@
     "convex": "^1.46.0",
     "date-fns": "^4.1.0",
     "embla-carousel-react": "^8.6.0",
+    "firebase": "^12.19.0",
     "framer-motion": "^12.23.25",
     "highlight.js": "^11.12.0",
     "hono": "^4.10.7",
