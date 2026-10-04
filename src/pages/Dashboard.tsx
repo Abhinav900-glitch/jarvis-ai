@@ -947,7 +947,9 @@ export default function Dashboard() {
     }
   };
 
-  const generateImageWithPrompt = async (prompt: string) => {
+  // Returns whether an image actually landed, so callers that auto-send can
+  // tell a real generation from a failure.
+  const generateImageWithPrompt = async (prompt: string): Promise<boolean> => {
     setGenerating(true);
     setAssistantError(null);
     try {
@@ -963,10 +965,12 @@ export default function Dashboard() {
         void getPuterSignInStatus().then(setPuterAuth);
       }
       inputRef.current?.focus();
+      return true;
     } catch (err) {
       setAssistantError(
         err instanceof Error ? err.message : "Image generation failed.",
       );
+      return false;
     } finally {
       setGenerating(false);
     }
@@ -982,7 +986,9 @@ export default function Dashboard() {
   // /image <prompt> — generate AND send as a message in one step
   const handleGenerateImageWithText = async (prompt: string) => {
     if (!prompt.trim() || generating) return;
-    await generateImageWithPrompt(prompt);
+    // Only caption the turn when an image actually landed. Sending anyway made
+    // a failed generation look like a plain chat reply with no image at all.
+    if (!(await generateImageWithPrompt(prompt))) return;
     // Once attached, auto-send with the prompt as caption
     setTimeout(() => {
       void runSendWithText(prompt);
