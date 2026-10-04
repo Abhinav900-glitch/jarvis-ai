@@ -329,8 +329,15 @@ async function generateViaCloudinary(
         "Cloudinary Image Generation add-on is not enabled on this account.",
       );
     }
-    if (res.status === 402) {
-      throw new Error("Cloudinary image generation quota exhausted.");
+    // Cloudinary reports exhausted Image Generation credits as 429
+    // (category `rate_limit_error`, code `MG_00602`), not 402 — 402 is the
+    // billing-gate code. Without this branch the chain reports a bare
+    // "Cloudinary generation failed (429)" and hides the only step that
+    // actually unblocks it.
+    if (res.status === 429 || errText.includes("MG_00602")) {
+      throw new Error(
+        "Cloudinary Image Generation credits are exhausted for this billing period. Top up or review the plan at https://console.cloudinary.com/app/image/generation/plans",
+      );
     }
     throw new Error(`Cloudinary generation failed (${res.status})`);
   }
