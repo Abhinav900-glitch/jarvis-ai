@@ -214,6 +214,28 @@ export async function generateImageWithPuter(
   return { ...stored, provider: "puter" };
 }
 
+/**
+ * Facts about the page that decide which Puter failure is even possible: an
+ * opaque origin or an embedded frame blocks the sign-in popup outright, and a
+ * missing script tag means the SDK never downloaded. Reporting these with the
+ * failure means a diagnosis never depends on opening DevTools.
+ */
+export function describePuterEnvironment(): string {
+  if (typeof window === "undefined") return "Page: not a browser.";
+  const w = window as unknown as { puter?: PuterGlobal };
+  const sdkReady = Boolean(w.puter?.ai?.txt2img);
+  const scriptTag =
+    typeof document !== "undefined" &&
+    document.querySelector(`script[src="${PUTER_SCRIPT_SRC}"]`) !== null;
+  const embedded = window.self !== window.top;
+  return [
+    `Page origin: ${window.origin || "(none)"}`,
+    `Embedded in another frame: ${embedded ? "yes" : "no"}`,
+    `Puter script tag loaded: ${scriptTag ? "yes" : "no"}`,
+    `Puter SDK ready: ${sdkReady ? "yes" : "no"}`,
+  ].join("\n");
+}
+
 export interface PuterSignInStatus {
   signedIn: boolean;
   username: string | null;

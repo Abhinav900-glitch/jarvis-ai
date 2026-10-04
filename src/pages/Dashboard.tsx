@@ -113,6 +113,7 @@ import {
 } from "@/lib/voices";
 import { COUNTRIES, getCountry } from "@/lib/languages";
 import {
+  describePuterEnvironment,
   generateImageWithPuter,
   getPuterSignInStatus,
   signInToPuter,
@@ -950,7 +951,11 @@ export default function Dashboard() {
       const msg = err instanceof Error ? err.message : String(err);
       failures.push(`Server chain: ${msg}`);
       console.warn("[image-gen] server chain failed:", msg);
-      throw new Error(`Every image provider failed. ${failures.join("  |  ")}`);
+      // Newline-separated and accompanied by the page's own Puter facts: the
+      // banner is the diagnostic, so it must not need DevTools to interpret.
+      throw new Error(
+        `Every image provider failed.\n${failures.join("\n")}\n${describePuterEnvironment()}`,
+      );
     }
   };
 
@@ -4780,7 +4785,9 @@ export default function Dashboard() {
                   {assistantError && (
                     <p className="flex items-start gap-2 text-xs leading-5 text-destructive">
                       <span className="mt-px">⚠</span>
-                      <span>{assistantError}</span>
+                      <span className="whitespace-pre-line font-mono">
+                        {assistantError}
+                      </span>
                     </p>
                   )}
                   {panelNlp && (

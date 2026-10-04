@@ -12,10 +12,22 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  describePuterEnvironment,
   describePuterError,
   PUTER_GENERATE_TIMEOUT_MS,
   PUTER_LOAD_TIMEOUT_MS,
 } from "../puter";
+
+describe("describePuterEnvironment", () => {
+  test("reports page facts instead of throwing outside a browser", () => {
+    // The banner must be able to print this on any path, including a
+    // server-side render or a test run where `window` does not exist.
+    const text = describePuterEnvironment();
+    expect(text.length).toBeGreaterThan(0);
+    expect(text).not.toContain("undefined");
+    expect(text).not.toContain("[object Object]");
+  });
+});
 
 describe("describePuterError", () => {
   test("never leaks Puter's object shape as [object Object]", () => {
