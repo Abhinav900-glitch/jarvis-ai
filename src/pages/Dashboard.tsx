@@ -914,12 +914,17 @@ export default function Dashboard() {
   const generateImageSmart = async (
     prompt: string,
   ): Promise<{ url: string; publicId: string; provider: string }> => {
+    // Collect every stage's reason, not just the last one. Reporting only the
+    // final failure hid the Puter error — the one that actually explains why
+    // the primary provider was skipped.
+    const failures: string[] = [];
     try {
       return await generateImageWithPuter(prompt, uploadFile);
     } catch (err) {
       // Keep the real reason rather than erasing it: Puter rejects with codes
       // like `popup_blocked`, and the upload leg has its own message.
       const msg = err instanceof Error ? err.message : String(err);
+      failures.push(`Puter: ${msg}`);
       console.warn("[image-gen] Puter.js failed, falling back:", msg);
       setAssistantError(null);
     }
@@ -932,18 +937,20 @@ export default function Dashboard() {
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        failures.push(`Perchance: ${msg}`);
         console.warn("[image-gen] perchance failed, falling back:", msg);
         setAssistantError(null);
       }
+    } else {
+      failures.push("Perchance: not configured");
     }
     try {
       return await generateImageAction({ prompt });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      failures.push(`Server chain: ${msg}`);
       console.warn("[image-gen] server chain failed:", msg);
-      throw new Error(
-        `Every image provider failed (Puter, Perchance, server chain). Last error: ${msg}`,
-      );
+      throw new Error(`Every image provider failed. ${failures.join("  |  ")}`);
     }
   };
 
