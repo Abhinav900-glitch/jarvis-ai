@@ -2745,6 +2745,16 @@ export default function Dashboard() {
 
   // --- Cloudinary OAuth connect / disconnect ---
   const handleConnectCloudinary = async () => {
+    // Cloudinary only accepts a redirect URI that exactly matches one registered
+    // in the OAuth app. An opaque origin (sandboxed frame) stringifies to "null",
+    // which would send the user to a bogus "null/cloudinary/callback" and fail
+    // with an opaque Cloudinary error — say what is actually wrong instead.
+    if (window.location.origin === "null") {
+      toast.error(
+        "This page has an opaque origin (sandboxed frame), so there is no valid Cloudinary redirect URI. Open Jarvis in its own tab and connect Cloudinary there.",
+      );
+      return;
+    }
     setCloudinaryConnecting(true);
     try {
       const redirectUri = `${window.location.origin}/cloudinary/callback`;
