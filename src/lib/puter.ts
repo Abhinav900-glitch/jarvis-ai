@@ -12,8 +12,23 @@ interface PuterAi {
   ) => Promise<Blob | HTMLImageElement | string>;
 }
 
+interface PuterAuthUser {
+  username?: string;
+  email?: string;
+}
+
+interface PuterAuth {
+  signIn: (options?: {
+    attempt_temp_user_creation?: boolean;
+  }) => Promise<unknown>;
+  signOut: () => Promise<unknown>;
+  isSignedIn: () => Promise<boolean>;
+  getUser: () => Promise<PuterAuthUser | null>;
+}
+
 interface PuterGlobal {
   ai?: PuterAi;
+  auth?: PuterAuth;
 }
 
 const PUTER_SCRIPT_SRC = "https://js.puter.com/v2/";
@@ -197,4 +212,51 @@ export async function generateImageWithPuter(
   const stored = await upload(file);
   if (!stored) throw new Error("Could not store the generated image.");
   return { ...stored, provider: "puter" };
+}
+
+export interface PuterSignInStatus {
+  signedIn: boolean;
+  username: string | null;
+}
+
+/**
+ * Read the current Puter session without throwing — and without loading the
+ * SDK. The UI probes this on mount, and pulling js.puter.com on every page
+ * load for a feature most sessions never use is not worth it, so an SDK that
+ * has not loaded yet simply reads as "not signed in". Puter loads when the
+ * user clicks Connect, or when a generation actually reaches it.
+ */
+export async function getPuterSignInStatus(): Promise<PuterSignInStatus> {
+  const puter = windowPuter();
+  if (!puter?.auth?.isSignedIn) return { signedIn: false, username: null };
+  try {
+    const signedIn = await puter.auth.isSignedIn();
+    if (!signedIn) return { signedIn: false, username: null };
+    const user = await puter.auth.getUser().catch(() => null);
+    return { signedIn: true, username: user?.username ?? null };
+  } catch {
+    // Probing must never break the page.
+    return { signedIn: false, username: null };
+  }
+}
+
+/**
+ * Sign in to Puter. MUST be called directly from a click handler: Puter opens
+ * a popup window, and browsers block popups that are not tied to a live user
+ * gesture. Doing this from an explicit button is what makes it reliable —
+ * the alternative is a popup racing a generation request.
+ */
+export async function signInToPuter(): Promise<PuterSignInStatus> {
+  const puter = await loadPuter();
+  if (!puter.auth?.signIn) {
+    throw new Error("Puter sign-in is unavailable in this browser.");
+  }
+  await puter.auth.signIn();
+  return getPuterSignInStatus();
+}
+
+export async function signOutOfPuter(): Promise<void> {
+  const puter = await loadPuter();
+  if (!puter.auth?.signOut) return;
+  await puter.auth.signOut();
 }

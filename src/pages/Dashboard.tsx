@@ -112,7 +112,13 @@ import {
   type VoicePreference,
 } from "@/lib/voices";
 import { COUNTRIES, getCountry } from "@/lib/languages";
-import { generateImageWithPuter } from "@/lib/puter";
+import {
+  generateImageWithPuter,
+  getPuterSignInStatus,
+  signInToPuter,
+  signOutOfPuter,
+  type PuterSignInStatus,
+} from "@/lib/puter";
 import {
   generateImageWithPerchance,
   type PerchanceKeys,
@@ -679,6 +685,26 @@ export default function Dashboard() {
   const [regionBusy, setRegionBusy] = useState(false);
   const [showCalculator, setShowCalculator] = useState(false);
   const [cloudinaryConnecting, setCloudinaryConnecting] = useState(false);
+  // Puter's session. Probed on mount so the UI can offer a real Connect
+  // button; a signed-in user never sees the txt2img popup again.
+  const [puterAuth, setPuterAuth] = useState<PuterSignInStatus>({
+    signedIn: false,
+    username: null,
+  });
+  const [puterConnecting, setPuterConnecting] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void getPuterSignInStatus()
+      .then((status) => {
+        if (!cancelled) setPuterAuth(status);
+      })
+      .catch(() => {
+        /* best-effort probe; the Connect button loads the SDK on demand */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [showPrompts, setShowPrompts] = useState(false);
   // `countryCode` is already read this way, so the stored theme can be too —
   // seeding it lazily avoids a light-mode flash before the mount effect runs.
@@ -930,6 +956,12 @@ export default function Dashboard() {
         ...prev,
         { url, publicId, provider },
       ]);
+      // Puter only loads once a generation actually reaches it. Now that the
+      // SDK is present the probe can read the real session, so keep the
+      // Connect label truthful after the first Puter-backed image.
+      if (provider === "puter") {
+        void getPuterSignInStatus().then(setPuterAuth);
+      }
       inputRef.current?.focus();
     } catch (err) {
       setAssistantError(
@@ -2658,6 +2690,41 @@ export default function Dashboard() {
     }
   };
 
+  // --- Puter connect / disconnect ---
+  // Called straight from the menu item's click so Puter's sign-in popup keeps
+  // the user gesture it needs; signing in once means later /image calls go
+  // straight to Puter without a popup.
+  const handleConnectPuter = async () => {
+    setPuterConnecting(true);
+    try {
+      const status = await signInToPuter();
+      setPuterAuth(status);
+      if (status.signedIn) {
+        toast.success(
+          `Puter connected${status.username ? ` as ${status.username}` : ""}.`,
+        );
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to connect to Puter.",
+      );
+    } finally {
+      setPuterConnecting(false);
+    }
+  };
+
+  const handleDisconnectPuter = async () => {
+    try {
+      await signOutOfPuter();
+      setPuterAuth({ signedIn: false, username: null });
+      toast.success("Puter disconnected.");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to disconnect Puter.",
+      );
+    }
+  };
+
   // --- Cloudinary OAuth connect / disconnect ---
   const handleConnectCloudinary = async () => {
     setCloudinaryConnecting(true);
@@ -3732,6 +3799,20 @@ export default function Dashboard() {
                     <DropdownMenuItem onClick={handleDisconnectCloudinary}>
                       <X className="size-4" />
                       Disconnect Cloudinary
+                    </DropdownMenuItem>
+                  ) : null}
+                  <DropdownMenuItem onClick={handleConnectPuter} disabled={puterConnecting || puterAuth.signedIn}>
+                    <Wand2 className="size-4" />
+                    {puterAuth.signedIn
+                      ? `Puter connected${puterAuth.username ? ` (${puterAuth.username})` : ""} ✓`
+                      : puterConnecting
+                        ? "Connecting to Puter…"
+                        : "Connect Puter (sign in)"}
+                  </DropdownMenuItem>
+                  {puterAuth.signedIn ? (
+                    <DropdownMenuItem onClick={handleDisconnectPuter}>
+                      <X className="size-4" />
+                      Disconnect Puter
                     </DropdownMenuItem>
                   ) : null}
                   <DropdownMenuSeparator />
