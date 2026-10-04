@@ -60,6 +60,40 @@ function GoogleMark({ className }: { className?: string }) {
   );
 }
 
+/**
+ * Firebase's own error class is not exported from `firebase/auth`, so read the
+ * `code` property structurally. Every Firebase error carries one.
+ */
+function firebaseErrorCode(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return "";
+}
+
+/**
+ * Firebase's raw error codes are accurate but not actionable. Translate the
+ * ones a user can actually fix, and quote the exact domain to paste rather
+ * than making them go and work out which origin the app is running on.
+ */
+function describeFirebaseSignInError(error: unknown): string {
+  const code = firebaseErrorCode(error);
+  switch (code) {
+    case "auth/unauthorized-domain":
+      return `This page (${window.location.origin}) is not an approved domain for the Firebase project yet. Firebase Console → Authentication → Settings → Authorized domains → add it exactly, then try again.`;
+    case "auth/configuration-not-found":
+    case "auth/operation-not-allowed":
+      return `Google sign-in is not enabled on this Firebase project. Firebase Console → Authentication → Sign-in method → Google → Enable, then try again.`;
+    case "auth/popup-blocked":
+      return "Your browser blocked the Google popup. Allow popups for this site and try again.";
+    default:
+      return error instanceof Error
+        ? `Google sign-in failed: ${error.message}`
+        : "Google sign-in failed.";
+  }
+}
+
 function Auth({ redirectAfterAuth }: AuthProps = {}) {
   const { isLoading: authLoading, isAuthenticated, signIn } = useAuth();
   const navigate = useNavigate();
@@ -132,13 +166,16 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
       await signIn("firebase", { token });
     } catch (error) {
       console.error("Google sign in error:", error);
-      const message = error instanceof Error ? error.message : "Unknown error";
       // A dismissed popup is a normal outcome, not an error worth shouting about.
-      if (/popup-closed|cancelled/i.test(message)) {
+      const code = firebaseErrorCode(error);
+      if (
+        code === "auth/popup-closed-by-user" ||
+        code === "auth/cancelled-popup-request"
+      ) {
         setIsLoading(false);
         return;
       }
-      setError(`Google sign-in failed: ${message}`);
+      setError(describeFirebaseSignInError(error));
       setIsLoading(false);
     }
   };
