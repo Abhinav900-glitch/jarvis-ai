@@ -2744,6 +2744,29 @@ export default function Dashboard() {
   };
 
   // --- Cloudinary OAuth connect / disconnect ---
+  /** Exactly the URI Cloudinary must have pre-registered for this origin. */
+  const cloudinaryRedirectUri = `${window.location.origin}/cloudinary/callback`;
+
+  // Cloudinary rejects the authorize request outright when this URI is not in
+  // the OAuth app's registered list, and the user lands on Cloudinary's own
+  // error page with no idea which value to paste. Hand it to them on demand.
+  const handleCopyCloudinaryRedirectUri = async () => {
+    if (window.location.origin === "null") {
+      toast.error(
+        "This page has an opaque origin, so there is no valid redirect URI to copy. Open Jarvis in its own tab.",
+      );
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(cloudinaryRedirectUri);
+      toast.success(
+        "Redirect URI copied — paste it into Cloudinary OAuth settings.",
+      );
+    } catch {
+      toast.error(cloudinaryRedirectUri);
+    }
+  };
+
   const handleConnectCloudinary = async () => {
     // Cloudinary only accepts a redirect URI that exactly matches one registered
     // in the OAuth app. An opaque origin (sandboxed frame) stringifies to "null",
@@ -2757,7 +2780,7 @@ export default function Dashboard() {
     }
     setCloudinaryConnecting(true);
     try {
-      const redirectUri = `${window.location.origin}/cloudinary/callback`;
+      const redirectUri = cloudinaryRedirectUri;
       const { url } = await getOAuthStartUrlAction({ redirectUri });
       window.location.href = url; // full-page redirect to Cloudinary consent
     } catch (err) {
@@ -3822,6 +3845,10 @@ export default function Dashboard() {
                       : cloudinaryConnecting
                         ? "Connecting to Cloudinary…"
                         : "Connect Cloudinary (OAuth)"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleCopyCloudinaryRedirectUri}>
+                    <Copy className="size-4" />
+                    Copy Cloudinary redirect URI
                   </DropdownMenuItem>
                   {cloudinaryStatus?.connected ? (
                     <DropdownMenuItem onClick={handleDisconnectCloudinary}>
