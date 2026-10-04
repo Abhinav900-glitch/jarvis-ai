@@ -187,7 +187,9 @@ export async function getFreshAccessToken(
 
     if (data.error === "invalid_grant") {
       // Refresh token revoked/expired → force reconnect
-      await ctx.runMutation(internalApi.cloudinaryOAuth.clearTokens, { userId });
+      await ctx.runMutation(internalApi.cloudinaryOAuth.clearTokens, {
+        userId,
+      });
     }
     return null;
   } catch (err) {
@@ -226,7 +228,11 @@ async function uploadBytesToCloudinary(
   const timestamp = Math.floor(Date.now() / 1000);
 
   const form = new FormData();
-  form.append("file", new Blob([bytes], { type: "image/png" }), "generated.png");
+  form.append(
+    "file",
+    new Blob([bytes], { type: "image/png" }),
+    "generated.png",
+  );
   form.append("timestamp", String(timestamp));
   form.append("public_id", publicId);
 
@@ -334,7 +340,9 @@ async function generateViaCloudinary(
   }
 
   return {
-    url: directUrl ?? `https://res.cloudinary.com/${cloudName}/image/upload/${publicId}`,
+    url:
+      directUrl ??
+      `https://res.cloudinary.com/${cloudName}/image/upload/${publicId}`,
     publicId: publicId ?? "",
     provider: "cloudinary",
   };
@@ -381,7 +389,11 @@ async function hfImageRequest(
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    console.error(`HF image error [${model}]`, res.status, errText.slice(0, 300));
+    console.error(
+      `HF image error [${model}]`,
+      res.status,
+      errText.slice(0, 300),
+    );
     throw new Error(`${model} failed (${res.status})`);
   }
 
@@ -435,7 +447,11 @@ async function generateViaHuggingFace(
         // Cloudinary upload failed — data URL so the client still shows the image
         const base64 = Buffer.from(bytes).toString("base64");
         const dataUrl = `data:image/png;base64,${base64}`;
-        return { url: dataUrl, publicId, provider: `hf/${a.model.split("/")[1]}` };
+        return {
+          url: dataUrl,
+          publicId,
+          provider: `hf/${a.model.split("/")[1]}`,
+        };
       }
     } catch (err) {
       failures.push(err instanceof Error ? err.message : "failed");
@@ -517,7 +533,11 @@ async function generateViaReplicate(
       bytes,
       `jarvis-gen/rep-${Date.now()}`,
     );
-    return { url: stored.url, publicId: stored.publicId, provider: "replicate" };
+    return {
+      url: stored.url,
+      publicId: stored.publicId,
+      provider: "replicate",
+    };
   } catch {
     // Cloudinary upload failed — serve straight from Replicate's CDN
     return {
@@ -547,7 +567,10 @@ async function proxiedFetch(url: string, timeoutMs: number): Promise<Response> {
   }
   return fetch(
     `https://corsproxy.io/?key=${encodeURIComponent(proxyKey)}&url=${encodeURIComponent(url)}`,
-    { headers: { Accept: "application/json, image/*" }, signal: AbortSignal.timeout(timeoutMs) },
+    {
+      headers: { Accept: "application/json, image/*" },
+      signal: AbortSignal.timeout(timeoutMs),
+    },
   );
 }
 
@@ -630,7 +653,11 @@ async function generateViaPerchance(
       bytes,
       `jarvis-gen/per-${Date.now()}`,
     );
-    return { url: stored.url, publicId: stored.publicId, provider: "perchance" };
+    return {
+      url: stored.url,
+      publicId: stored.publicId,
+      provider: "perchance",
+    };
   } catch {
     // Cloudinary upload failed — data URL so the client still shows the image
     const base64 = Buffer.from(bytes).toString("base64");
@@ -693,7 +720,11 @@ async function generateViaPollinations(
       bytes,
       `jarvis-gen/poll-${Date.now()}`,
     );
-    return { url: stored.url, publicId: stored.publicId, provider: "pollinations" };
+    return {
+      url: stored.url,
+      publicId: stored.publicId,
+      provider: "pollinations",
+    };
   } catch {
     return {
       url: pollinationsUrl,
@@ -701,6 +732,37 @@ async function generateViaPollinations(
       provider: "pollinations",
     };
   }
+}
+
+/**
+ * The `public_id` to send alongside a `folder`.
+ *
+ * Folder-relative on purpose. Cloudinary treats `folder` and `public_id` as two
+ * halves of the full path, so a `public_id` that already begins with the folder
+ * name lands the asset at `folder/folder/name` — every upload duplicating its
+ * own directory. `folder` is sent and signed separately, so this must not
+ * repeat it.
+ *
+ * Pure and exported so the regression is testable without a network round trip.
+ */
+export function buildPublicId(
+  filename: string | undefined,
+  folder: string,
+  timestamp: number,
+): string {
+  const base = filename
+    ? filename
+        .replace(/\.[^.]+$/, "")
+        .replace(/[^a-zA-Z0-9-_]/g, "_")
+        .slice(0, 60)
+    : "";
+  // The random suffix is on both branches, not just the unnamed one. Two
+  // uploads of `photo.png` in the same second used to produce the same
+  // `public_id`, and since Cloudinary replaces an asset rather than adding to
+  // it, the second upload silently destroyed the first. A timestamp alone is
+  // not unique — uploads are not serialised.
+  const unique = Math.random().toString(36).slice(2, 8);
+  return base ? `${base}-${timestamp}-${unique}` : `${timestamp}-${unique}`;
 }
 
 /**
@@ -722,9 +784,7 @@ export const getSignedUploadUrl = action({
 
     const timestamp = Math.floor(Date.now() / 1000);
     const folder = args.folder ?? "jarvis-chat";
-    const publicId = args.filename
-      ? `${folder}/${args.filename.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9-_]/g, "_").slice(0, 60)}-${timestamp}`
-      : `${folder}/${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+    const publicId = buildPublicId(args.filename, folder, timestamp);
 
     const paramsToSign: Record<string, string | number> = {
       timestamp,
@@ -732,7 +792,10 @@ export const getSignedUploadUrl = action({
       public_id: publicId,
     };
 
-    const signature = cloudinary.utils.api_sign_request(paramsToSign, apiSecret);
+    const signature = cloudinary.utils.api_sign_request(
+      paramsToSign,
+      apiSecret,
+    );
 
     return {
       url: `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
@@ -816,9 +879,7 @@ export const generateImage = action({
     const prompt = args.prompt.trim();
     if (!prompt) throw new Error("Image prompt is empty.");
     if (prompt.length > 1000) {
-      throw new Error(
-        "Image prompt too long — keep it under 1000 characters.",
-      );
+      throw new Error("Image prompt too long — keep it under 1000 characters.");
     }
 
     const attempts: { name: string; run: () => Promise<GeneratedImage> }[] = [
@@ -850,7 +911,9 @@ export const generateImage = action({
     const errors: string[] = [];
     for (const attempt of attempts) {
       if (!breakerAllows(attempt.name)) {
-        errors.push(`${attempt.name}: skipped (cooling down after recent failures)`);
+        errors.push(
+          `${attempt.name}: skipped (cooling down after recent failures)`,
+        );
         continue;
       }
       try {
