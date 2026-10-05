@@ -434,6 +434,22 @@ const schema = defineSchema(
       connectedAt: v.optional(v.number()),
     }).index("by_user", ["userId"]),
 
+    // Canva OAuth 2.0 (authorization code + PKCE) connection (one row per user)
+    canvaAuth: defineTable({
+      userId: v.id("users"),
+      accessToken: v.optional(v.string()),
+      refreshToken: v.optional(v.string()),
+      expiresAt: v.optional(v.number()), // ms epoch
+      scope: v.optional(v.string()),
+      redirectUri: v.optional(v.string()),
+      pendingState: v.optional(v.string()), // CSRF state while connecting
+      // PKCE verifier. Canva requires S256, and the verifier cannot be
+      // re-derived from the challenge, so it has to survive the redirect
+      // round-trip. Cleared as soon as the code is exchanged.
+      pendingCodeVerifier: v.optional(v.string()),
+      connectedAt: v.optional(v.number()),
+    }).index("by_user", ["userId"]),
+
     // tableName: defineTable({
     //   ...
     //   // table fields

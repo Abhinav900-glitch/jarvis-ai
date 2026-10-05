@@ -17,6 +17,7 @@ const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const CloudinaryCallback = lazy(
   () => import("./pages/CloudinaryCallback.tsx"),
 );
+const CanvaCallback = lazy(() => import("./pages/CanvaCallback.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -141,6 +142,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <CloudinaryCallback />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/canva/callback"
+                element={
+                  <RequireAuth>
+                    <CanvaCallback />
                   </RequireAuth>
                 }
               />

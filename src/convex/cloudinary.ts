@@ -373,8 +373,13 @@ async function generateViaCloudinary(
  *
  * Unlike the providers below it cannot hand back a URL of its own: Canva's
  * download URL only lives for 24 hours, so the bytes are re-uploaded to
- * Cloudinary and that becomes the persistent URL. Canva itself is called with
- * an app-only client-credentials token, so this needs no Canva OAuth connect.
+ * Cloudinary and that becomes the persistent URL.
+ *
+ * Canva has no client-credentials grant — its token endpoint rejects that
+ * grant type outright — so this runs on the signed-in user's own OAuth token
+ * and throws a "not connected" error when they have not connected Canva. The
+ * ladder records that and moves on, so an unconnected user simply loses this
+ * stage rather than the whole generation.
  */
 async function generateViaCanva(
   ctx: ActionCtx,
@@ -382,7 +387,7 @@ async function generateViaCanva(
   model?: string,
   aspectRatio?: string,
 ): Promise<GeneratedImage> {
-  const { bytes, downloadUrl } = await generateImageViaCanva(prompt, {
+  const { bytes, downloadUrl } = await generateImageViaCanva(ctx, prompt, {
     model,
     aspectRatio,
   });

@@ -566,6 +566,8 @@ export default function Dashboard() {
   const getCountryInfoAction = useAction(api.ai.getCountryInfo);
   const getOAuthStartUrlAction = useAction(api.cloudinary.getOAuthStartUrl);
   const disconnectCloudinaryAction = useAction(api.cloudinary.disconnectCloudinary);
+  const getCanvaOAuthStartUrl = useAction(api.canva.getOAuthStartUrl);
+  const disconnectCanvaAction = useAction(api.canva.disconnectCanva);
   const generateTitleAction = useAction(api.ai.generateTitle);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
   const renameSessionMutation = useMutation(api.chats.renameSession);
@@ -575,6 +577,7 @@ export default function Dashboard() {
 
   // Cloudinary OAuth connection status (live query)
   const cloudinaryStatus = useQuery(api.cloudinaryOAuth.getStatus);
+  const canvaStatus = useQuery(api.canvaOAuth.getStatus);
   // Client-side Perchance credentials (corsproxy free tier is browser-only)
   const perchanceKeys = useQuery(api.imageKeys.getPerchanceKeys);
 
@@ -686,6 +689,7 @@ export default function Dashboard() {
   const [regionBusy, setRegionBusy] = useState(false);
   const [showCalculator, setShowCalculator] = useState(false);
   const [cloudinaryConnecting, setCloudinaryConnecting] = useState(false);
+  const [canvaConnecting, setCanvaConnecting] = useState(false);
   // Puter's session. Probed on mount so the UI can offer a real Connect
   // button; a signed-in user never sees the txt2img popup again.
   const [puterAuth, setPuterAuth] = useState<PuterSignInStatus>({
@@ -2802,6 +2806,64 @@ export default function Dashboard() {
     }
   };
 
+  // --- Canva OAuth connect / disconnect (authorization code + PKCE) ---
+  /** Exactly the URI Canva must have pre-registered for this origin. */
+  const canvaRedirectUri = `${window.location.origin}/canva/callback`;
+
+  // Canva rejects the authorize request when the redirect URI isn't already in
+  // the app's registered list, and the user lands on Canva's own error page
+  // with no idea which value to paste. Hand it to them on demand.
+  const handleCopyCanvaRedirectUri = async () => {
+    if (window.location.origin === "null") {
+      toast.error(
+        "This page has an opaque origin, so there is no valid redirect URI to copy. Open Jarvis in its own tab.",
+      );
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(canvaRedirectUri);
+      toast.success(
+        "Redirect URI copied — paste it into your Canva app's Redirect URLs.",
+      );
+    } catch {
+      toast.error(canvaRedirectUri);
+    }
+  };
+
+  const handleConnectCanva = async () => {
+    // An opaque origin (sandboxed frame) stringifies to "null", which would
+    // send the user to a bogus "null/canva/callback" and fail with an opaque
+    // Canva error — say what is actually wrong instead.
+    if (window.location.origin === "null") {
+      toast.error(
+        "This page has an opaque origin (sandboxed frame), so there is no valid Canva redirect URI. Open Jarvis in its own tab and connect Canva there.",
+      );
+      return;
+    }
+    setCanvaConnecting(true);
+    try {
+      const redirectUri = canvaRedirectUri;
+      const { url } = await getCanvaOAuthStartUrl({ redirectUri });
+      window.location.href = url; // full-page redirect to Canva consent
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to start Canva connection.",
+      );
+      setCanvaConnecting(false);
+    }
+  };
+
+  const handleDisconnectCanva = async () => {
+    try {
+      await disconnectCanvaAction({});
+      toast.success("Canva disconnected.");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to disconnect Canva.",
+      );
+    }
+  };
+
   // ---- Dark mode toggle (persisted) ----
   const toggleTheme = () => {
     const next = !isDark;
@@ -3854,6 +3916,28 @@ export default function Dashboard() {
                     <DropdownMenuItem onClick={handleDisconnectCloudinary}>
                       <X className="size-4" />
                       Disconnect Cloudinary
+                    </DropdownMenuItem>
+                  ) : null}
+                  {/* Canva is an image provider, not a storage target, and it
+                      has no client-credentials grant — every user must
+                      authorize with their own Canva account before it can be
+                      used for generation. */}
+                  <DropdownMenuItem onClick={handleConnectCanva} disabled={canvaConnecting || canvaStatus?.connected}>
+                    <Link2 className="size-4" />
+                    {canvaStatus?.connected
+                      ? "Canva connected ✓"
+                      : canvaConnecting
+                        ? "Connecting to Canva…"
+                        : "Connect Canva (image gen)"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleCopyCanvaRedirectUri}>
+                    <Copy className="size-4" />
+                    Copy Canva redirect URI
+                  </DropdownMenuItem>
+                  {canvaStatus?.connected ? (
+                    <DropdownMenuItem onClick={handleDisconnectCanva}>
+                      <X className="size-4" />
+                      Disconnect Canva
                     </DropdownMenuItem>
                   ) : null}
                   {/* Sign-in deliberately lives outside this menu: a Radix
