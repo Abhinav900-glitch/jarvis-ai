@@ -965,7 +965,9 @@ export default function Dashboard() {
 
   // Returns whether an image actually landed, so callers that auto-send can
   // tell a real generation from a failure.
-  const generateImageWithPrompt = async (prompt: string): Promise<boolean> => {
+  const generateImageWithPrompt = async (
+    prompt: string,
+  ): Promise<{ url: string; publicId: string; provider: string } | null> => {
     setGenerating(true);
     setAssistantError(null);
     try {
@@ -981,12 +983,12 @@ export default function Dashboard() {
         void getPuterSignInStatus().then(setPuterAuth);
       }
       inputRef.current?.focus();
-      return true;
+      return { url, publicId, provider };
     } catch (err) {
       setAssistantError(
         err instanceof Error ? err.message : "Image generation failed.",
       );
-      return false;
+      return null;
     } finally {
       setGenerating(false);
     }
@@ -1004,10 +1006,16 @@ export default function Dashboard() {
     if (!prompt.trim() || generating) return;
     // Only caption the turn when an image actually landed. Sending anyway made
     // a failed generation look like a plain chat reply with no image at all.
-    if (!(await generateImageWithPrompt(prompt))) return;
-    // Once attached, auto-send with the prompt as caption
+    const generated = await generateImageWithPrompt(prompt);
+    if (!generated) return;
+    // Once attached, auto-send with the prompt as caption. The image is passed
+    // explicitly: this timeout's closure was captured before the render that
+    // populated pendingImages, so reading that state inside it yields the old
+    // empty array and the turn ships as bare prompt text with no image.
     setTimeout(() => {
-      void runSendWithText(prompt);
+      void runSendWithText(prompt, [
+        { url: generated.url, publicId: generated.publicId },
+      ]);
     }, 100);
   };
 
@@ -2057,12 +2065,19 @@ export default function Dashboard() {
     }
   };
 
-  const runSendWithText = async (overrideText?: string) => {
+  const runSendWithText = async (
+    overrideText?: string,
+    overrideImages?: { url: string; publicId: string }[],
+  ) => {
     const text = (overrideText ?? input).trim();
+    // Single source of truth for "what images belong to this turn". Callers
+    // that generated an image moments ago pass it in, because their closure
+    // predates the render that populated pendingImages.
+    const imagesForTurn = overrideImages ?? pendingImages;
     // A turn is sendable if it has text, an attachment, OR the camera is on
     // and the user wants Jarvis to look at what's in front of them.
     const hasCamera = camera.enabled;
-    if ((!text && pendingImages.length === 0 && pendingFiles.length === 0 && !hasCamera) || sending)
+    if ((!text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !hasCamera) || sending)
       return;
     if (text.length > 8000) {
       setAssistantError("Message too long — keep it under 8,000 characters.");
@@ -2081,7 +2096,7 @@ export default function Dashboard() {
     // persona to an empty string would just be a stray instruction.
     const countryPersona = getCountry(countryCode).persona;
     let effectiveText =
-      !text || editingId || deepResearch || pendingImages.length > 0 || pendingFiles.length > 0
+      !text || editingId || deepResearch || imagesForTurn.length > 0 || pendingFiles.length > 0
         ? text
         : `${text}\n\n[System: ${countryPersona}]`;
 
@@ -2102,7 +2117,7 @@ export default function Dashboard() {
     }
 
     // Natural-language image generation: "generate an image of..." etc.
-    if (!editingId && text && pendingImages.length === 0 && pendingFiles.length === 0 && !deepResearch) {
+    if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !deepResearch) {
       const imgIntent = text.match(
         /^\s*(?:hey\s+|hi\s+|ok(?:ay)?[,\s]+)?(?:jarvis[,\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:gen(?:erate|rate|arate)|create|make|draw|paint|render|show|give)\s+(?:me\s+)?(?:an?|the)??\s*(?:ai\s+)?(?:image|picture|photo|artwork|drawing|painting|illustration|pic)\s*(?:of|showing|with|about|for)?\s*[:]?\s*([\s\S]{3,400})/i,
       );
@@ -2117,7 +2132,7 @@ export default function Dashboard() {
     // handlers so those keep priority when a message contains more than one
     // thing, and before the generic chat path so the transcript reaches the
     // model instead of only the bare link.
-    if (!editingId && text && pendingImages.length === 0 && pendingFiles.length === 0 && !deepResearch) {
+    if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !deepResearch) {
       const videoLinks = findYouTubeLinks(text);
       if (videoLinks.length > 0) {
         // Every link is passed along, so several can be compared; the action
@@ -2131,7 +2146,7 @@ export default function Dashboard() {
     }
 
     // Natural-language weather: fetch live data directly, no slash command needed
-    if (!editingId && text && pendingImages.length === 0 && pendingFiles.length === 0) {
+    if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0) {
       try {
         const detection = await detectWeatherAction({ message: text });
         if (detection.isWeather && detection.city) {
@@ -2158,16 +2173,16 @@ export default function Dashboard() {
     setPanelVoice(null);
     if (recorder.recording) recorder.stop();
 
-    const hasImages = pendingImages.length > 0;
+    const hasImages = imagesForTurn.length > 0;
     const imagePayload = hasImages
       ? {
-          images: pendingImages.map((img) => ({
+          images: imagesForTurn.map((img) => ({
             url: img.url,
             publicId: img.publicId,
           })),
           // Back-compat single fields for the first image
-          imageUrl: pendingImages[0].url,
-          imagePublicId: pendingImages[0].publicId,
+          imageUrl: imagesForTurn[0].url,
+          imagePublicId: imagesForTurn[0].publicId,
         }
       : undefined;
     const attachments = pendingFiles.map((f) => ({
