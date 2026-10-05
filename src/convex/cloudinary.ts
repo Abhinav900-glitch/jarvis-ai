@@ -5,6 +5,7 @@ import { action, type ActionCtx } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v2 as cloudinary } from "cloudinary";
 import { internal as internalApi } from "./_generated/api";
+import { generateImageViaCanva } from "./canva";
 
 // ---------------------------------------------------------------------------
 // Cloudinary OAuth 2.0 (authorization code grant)
@@ -230,7 +231,7 @@ function cloudinaryConfig() {
  * Uses the OAuth access token when the user has connected Cloudinary,
  * otherwise falls back to signed API key/secret auth.
  */
-async function uploadBytesToCloudinary(
+export async function uploadBytesToCloudinary(
   ctx: ActionCtx,
   bytes: ArrayBuffer,
   publicId: string,
@@ -365,6 +366,39 @@ async function generateViaCloudinary(
     publicId: publicId ?? "",
     provider: "cloudinary",
   };
+}
+
+/**
+ * Provider 1b — Canva image generation.
+ *
+ * Unlike the providers below it cannot hand back a URL of its own: Canva's
+ * download URL only lives for 24 hours, so the bytes are re-uploaded to
+ * Cloudinary and that becomes the persistent URL. Canva itself is called with
+ * an app-only client-credentials token, so this needs no Canva OAuth connect.
+ */
+async function generateViaCanva(
+  ctx: ActionCtx,
+  prompt: string,
+  model?: string,
+  aspectRatio?: string,
+): Promise<GeneratedImage> {
+  const { bytes, downloadUrl } = await generateImageViaCanva(prompt, {
+    model,
+    aspectRatio,
+  });
+  // Same `jarvis-gen/<prefix>-<timestamp>` shape the other byte-returning
+  // providers use, so generated images stay in one folder.
+  const publicId = `jarvis-gen/canva-${Date.now()}`;
+  try {
+    const stored = await uploadBytesToCloudinary(ctx, bytes, publicId);
+    return { url: stored.url, publicId: stored.publicId, provider: "canva" };
+  } catch {
+    // Cloudinary upload failed. Canva's URL still serves the image for the
+    // next 24 hours, which beats discarding a generation that already
+    // succeeded and was paid for. It is not persisted — the 24h window is the
+    // whole reason the upload above is tried first.
+    return { url: downloadUrl, publicId, provider: "canva" };
+  }
 }
 
 /**
@@ -913,6 +947,10 @@ export const generateImage = action({
         name: "cloudinary",
         run: () =>
           generateViaCloudinary(ctx, prompt, args.model, args.aspectRatio),
+      },
+      {
+        name: "canva",
+        run: () => generateViaCanva(ctx, prompt, args.model, args.aspectRatio),
       },
       {
         name: "perchance",

@@ -18,6 +18,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   ENGINES,
   RETIRING,
+  isRetired,
   rankEngines,
 } from "../../convex/engines";
 import { interleaveLadder } from "../../convex/ai";
@@ -98,8 +99,13 @@ describe("provider fallback ladder", () => {
     configureAll();
     const ranked = rank();
     const ids = enginesOf(ranked).map((e) => e.id);
-    expect(ids.length).toBe(ENGINES.length);
-    expect(new Set(ids).size).toBe(ENGINES.length);
+    // Compared against the engines that are still live, not the raw table.
+    // Once a withdrawal date in RETIRING has passed the ladder is supposed to
+    // drop that engine, so asserting against ENGINES.length made this test
+    // fail on the withdrawal day itself rather than on a real ladder bug.
+    const live = ENGINES.filter((e) => !isRetired(e.id));
+    expect(ids.length).toBe(live.length);
+    expect(new Set(ids).size).toBe(live.length);
   });
 
   test("preserves each provider's internal order", () => {
