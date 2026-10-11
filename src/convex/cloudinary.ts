@@ -818,32 +818,107 @@ async function hordeImageBytes(img: string): Promise<ArrayBuffer> {
 }
 
 /**
- * Provider — AI Horde (aihorde.net): a volunteer-run, always-free
- * text-to-image network, queue-backed rather than instant.
+ * Every configured AI Horde key, in the order the caller should spend them.
  *
- * Env: AIHORDE_API_KEY — the API key or a Shared Key from
- * aihorde.net/register. It is required on purpose: the all-zeros anonymous
- * key is valid but sits at the very back of the queue and is throttled under
- * load, which is exactly the multi-minute stall this chain exists to avoid.
+ * Env: AIHORDE_API_KEY, AIHORDE_API_KEY_2, AIHORDE_API_KEY_3 … Each entry may
+ * hold one key or several separated by commas or whitespace, so a spare key
+ * can be pasted into the existing variable without renaming anything.
+ *
+ * Duplicates are dropped: pasting the same key twice would otherwise buy a
+ * second attempt that fails in exactly the same way, only slower.
  */
-async function generateViaAIHorde(
-  ctx: ActionCtx,
-  prompt: string,
-): Promise<GeneratedImage> {
-  const apiKey = process.env.AIHORDE_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error(
-      "AIHORDE_API_KEY is not configured — add your AI Horde key in the Keys tab (register at aihorde.net/register).",
-    );
+export function hordeApiKeys(): string[] {
+  const names = ["AIHORDE_API_KEY", "AIHORDE_API_KEY_2", "AIHORDE_API_KEY_3"];
+  const seen = new Set<string>();
+  const keys: string[] = [];
+  for (const name of names) {
+    for (const part of (process.env[name] ?? "").split(/[\s,]+/)) {
+      const key = part.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
+    }
   }
-  const headers: Record<string, string> = {
+  return keys;
+}
+
+/**
+ * The two headers every AI Horde request needs. `Content-Type` is left to the
+ * caller: sending one on a GET with no body is harmless but misleading.
+ */
+function hordeHeaders(apiKey: string): Record<string, string> {
+  return {
     apikey: apiKey,
     // AI Horde asks clients to identify themselves; the documented default of
     // "unknown:0:unknown" is indistinguishable from a misbehaving bot.
     "Client-Agent": "Jarvis:1.0:freebuff",
-    "Content-Type": "application/json",
   };
+}
 
+/**
+ * A failure attributable to one key rather than to the network — an
+ * unrecognised key, or an account that cannot pay for the request.
+ *
+ * These are the only failures worth retrying on the next key. A faulted
+ * generation or an over-long queue belongs to the network as a whole, so
+ * spending the second key on it would fail the same way, just 60s later.
+ */
+class HordeKeyError extends Error {}
+
+/**
+ * Queue priority on AI Horde is bought with kudos, so with several keys
+ * configured the one holding the most should be spent first and the poorer
+ * ones kept for when it runs dry.
+ *
+ * A key whose balance cannot be read sorts last rather than being dropped.
+ * This lookup is an optimisation, and refusing to try a working key because
+ * its balance read timed out would be worse than trying it in the dark —
+ * `fetch` failing here must never take the provider down with it.
+ *
+ * `GET /api/v2/find_user` reads the balance from the `apikey` header and
+ * answers 404 `UserNotFound` for a key the network does not recognise
+ * (verified live against both cases).
+ */
+export async function hordeKeysByPriority(
+  apiKeys: string[],
+): Promise<string[]> {
+  if (apiKeys.length < 2) return apiKeys;
+  const kudos = await Promise.all(
+    apiKeys.map(async (apiKey) => {
+      try {
+        const res = await fetch("https://aihorde.net/api/v2/find_user", {
+          headers: hordeHeaders(apiKey),
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (!res.ok) return Number.NEGATIVE_INFINITY;
+        const body = (await res.json()) as { kudos?: number };
+        return typeof body.kudos === "number"
+          ? body.kudos
+          : Number.NEGATIVE_INFINITY;
+      } catch {
+        return Number.NEGATIVE_INFINITY;
+      }
+    }),
+  );
+  // Declared order breaks ties, so equal balances stay in the order they were
+  // configured rather than shuffling between generations.
+  return apiKeys
+    .map((apiKey, index) => ({ apiKey, score: kudos[index] }))
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.apiKey);
+}
+
+/**
+ * Submit and collect one generation from AI Horde using a single key.
+ *
+ * @throws {HordeKeyError} when the key itself is the problem, so the caller
+ * can move on to the next one.
+ */
+async function generateViaAIHordeWithKey(
+  ctx: ActionCtx,
+  prompt: string,
+  apiKey: string,
+): Promise<GeneratedImage> {
   // 1024px costs kudos the account may not hold — the network answers 403
   // `KudosUpfront` for anything over 576px when it doesn't (verified live).
   // 512px is accepted with none at all, so the request downgrades instead of
@@ -857,7 +932,10 @@ async function generateViaAIHorde(
   for (const size of sizes) {
     const submit = await fetch("https://aihorde.net/api/v2/generate/async", {
       method: "POST",
-      headers,
+      headers: {
+        ...hordeHeaders(apiKey),
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
         prompt: prompt.slice(0, 800),
         params: {
@@ -880,7 +958,16 @@ async function generateViaAIHorde(
       signal: AbortSignal.timeout(20_000),
     });
     if (!submit.ok) {
-      lastSubmit = await submit.text().catch(() => "");
+      const body = await submit.text().catch(() => "");
+      // 401/402/403 are verdicts on the key — unknown, or unable to pay even
+      // after `allow_downgrade` walked the request down. Trying the second
+      // size would repeat that verdict for nothing.
+      if (submit.status === 401 || submit.status === 402 || submit.status === 403) {
+        throw new HordeKeyError(
+          `AI Horde refused the key (${submit.status}): ${body.slice(0, 200)}`,
+        );
+      }
+      lastSubmit = body;
       continue;
     }
     const parsed = (await submit.json()) as { id?: string };
@@ -902,9 +989,14 @@ async function generateViaAIHorde(
   for (;;) {
     const res = await fetch(
       `https://aihorde.net/api/v2/generate/status/${encodeURIComponent(id)}`,
-      { headers, signal: AbortSignal.timeout(20_000) },
+      { headers: hordeHeaders(apiKey), signal: AbortSignal.timeout(20_000) },
     );
     if (!res.ok) {
+      // A generation whose key has gone bad cannot be collected either way,
+      // so this is worth handing to the next key rather than dropping.
+      if (res.status === 401 || res.status === 402 || res.status === 403) {
+        throw new HordeKeyError(`AI Horde status rejected the key (${res.status}).`);
+      }
       throw new Error(`AI Horde status failed (${res.status}).`);
     }
     const status = (await res.json()) as {
@@ -945,6 +1037,51 @@ async function generateViaAIHorde(
     }
     await new Promise((r) => setTimeout(r, 3000));
   }
+}
+
+/**
+ * Provider — AI Horde (aihorde.net): a volunteer-run, always-free
+ * text-to-image network, queue-backed rather than instant.
+ *
+ * Env: AIHORDE_API_KEY (+ AIHORDE_API_KEY_2, AIHORDE_API_KEY_3) — an API key
+ * or a Shared Key from aihorde.net/register. At least one is required on
+ * purpose: the all-zeros anonymous key is valid but sits at the very back of
+ * the queue and is throttled under load, which is exactly the multi-minute
+ * stall this chain exists to avoid.
+ *
+ * Several keys may be configured; they are spent richest-first, and a key the
+ * network rejects simply hands over to the next instead of failing the stage.
+ */
+async function generateViaAIHorde(
+  ctx: ActionCtx,
+  prompt: string,
+): Promise<GeneratedImage> {
+  const apiKeys = hordeApiKeys();
+  if (!apiKeys.length) {
+    throw new Error(
+      "AIHORDE_API_KEY is not configured — add your AI Horde key in the Keys tab (register at aihorde.net/register).",
+    );
+  }
+  const ordered = await hordeKeysByPriority(apiKeys);
+  const failures: string[] = [];
+  for (let index = 0; index < ordered.length; index += 1) {
+    try {
+      return await generateViaAIHordeWithKey(ctx, prompt, ordered[index]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // The last key has nobody to hand over to, so its failure stands as the
+      // stage's — and a non-key failure (faulted, queued too long) stands
+      // immediately, because a second key would meet the same network.
+      if (!(err instanceof HordeKeyError) || index === ordered.length - 1) {
+        throw err;
+      }
+      console.warn(
+        `[image-gen] aihorde key ${index + 1}/${ordered.length} unusable — trying the next: ${msg}`,
+      );
+      failures.push(msg);
+    }
+  }
+  throw new Error(`AI Horde rejected every configured key. ${failures.join(" | ")}`);
 }
 
 /**
