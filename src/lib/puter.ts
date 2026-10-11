@@ -198,8 +198,21 @@ export async function generateImageWithPuter(
   if (!puter.ai?.txt2img) {
     throw new Error("Puter.js is unavailable in this browser.");
   }
-  // txt2img can hang indefinitely if the sign-in popup is dismissed without
-  // completing auth — bound it so callers can fall back cleanly.
+  // A signed-out txt2img call opens Puter's sign-in popup and can sit on it
+  // for the full generation timeout — minutes of dead air during which the
+  // keyless provider behind this one never gets a turn, so the request looks
+  // like it produced nothing. Puter is opt-in: the Connect button exists
+  // precisely because the popup needs a real user gesture, and that gesture
+  // has already happened by the time a signed-in session reaches this line.
+  // So an unconnected session skips straight through instead of stalling.
+  const session = await getPuterSignInStatus();
+  if (!session.signedIn) {
+    throw new Error(
+      "Not signed in to Puter (use Connect first) — falling back to the keyless provider.",
+    );
+  }
+  // txt2img can still hang indefinitely if the sign-in popup is dismissed
+  // without completing auth — bound it so callers can fall back cleanly.
   const raw = await withTimeout(
     Promise.resolve(puter.ai.txt2img(prompt)),
     PUTER_GENERATE_TIMEOUT_MS,
