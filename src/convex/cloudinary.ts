@@ -793,6 +793,161 @@ async function generateViaPollinations(
 }
 
 /**
+ * AI Horde returns `generations[].img` as either the raw base64 of the image
+ * bytes or as a plain URL, depending on how the request was made. Supporting
+ * only base64 is what turns a perfectly good generation into a corrupt upload,
+ * so both shapes decode here.
+ */
+async function hordeImageBytes(img: string): Promise<ArrayBuffer> {
+  if (/^https?:\/\//i.test(img.trim())) {
+    const res = await fetch(img, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) {
+      throw new Error(`AI Horde image download failed (${res.status}).`);
+    }
+    return res.arrayBuffer();
+  }
+  const base64 = img.replace(/^data:image\/[a-z0-9+.-]+;base64,/i, "");
+  const buf = Buffer.from(base64, "base64");
+  // Sliced rather than returned whole: Buffer.from over a pool hands back a
+  // view into a shared slab, and uploading the slab would send other
+  // allocations' bytes along with the image.
+  return buf.buffer.slice(
+    buf.byteOffset,
+    buf.byteOffset + buf.byteLength,
+  ) as ArrayBuffer;
+}
+
+/**
+ * Provider — AI Horde (aihorde.net): a volunteer-run, always-free
+ * text-to-image network, queue-backed rather than instant.
+ *
+ * Env: AIHORDE_API_KEY — the API key or a Shared Key from
+ * aihorde.net/register. It is required on purpose: the all-zeros anonymous
+ * key is valid but sits at the very back of the queue and is throttled under
+ * load, which is exactly the multi-minute stall this chain exists to avoid.
+ */
+async function generateViaAIHorde(
+  ctx: ActionCtx,
+  prompt: string,
+): Promise<GeneratedImage> {
+  const apiKey = process.env.AIHORDE_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "AIHORDE_API_KEY is not configured — add your AI Horde key in the Keys tab (register at aihorde.net/register).",
+    );
+  }
+  const headers: Record<string, string> = {
+    apikey: apiKey,
+    // AI Horde asks clients to identify themselves; the documented default of
+    // "unknown:0:unknown" is indistinguishable from a misbehaving bot.
+    "Client-Agent": "Jarvis:1.0:freebuff",
+    "Content-Type": "application/json",
+  };
+
+  // 1024px costs kudos the account may not hold — the network answers 403
+  // `KudosUpfront` for anything over 576px when it doesn't (verified live).
+  // 512px is accepted with none at all, so the request downgrades instead of
+  // dying on a key that is simply short of kudos.
+  const sizes = [
+    { width: 1024, height: 1024, steps: 30 },
+    { width: 512, height: 512, steps: 25 },
+  ];
+  let id: string | undefined;
+  let lastSubmit = "";
+  for (const size of sizes) {
+    const submit = await fetch("https://aihorde.net/api/v2/generate/async", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        prompt: prompt.slice(0, 800),
+        params: {
+          ...size,
+          sampler_name: "k_euler",
+          cfg_scale: 7,
+          clip_skip: 1,
+          n: 1,
+        },
+        // `allow_downgrade` is Horde's own answer to KudosUpfront: it walks
+        // the request down in steps and resolution until the account can afford
+        // it. The manual 1024→512 retry below stays as a second layer for a
+        // server that still refuses the submit outright.
+        allow_downgrade: true,
+        // Asks for a Cloudflare R2 download link instead of base64, so the
+        // result arrives as a plain URL and `hordeImageBytes` no longer has to
+        // guess which shape it got.
+        r2: true,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!submit.ok) {
+      lastSubmit = await submit.text().catch(() => "");
+      continue;
+    }
+    const parsed = (await submit.json()) as { id?: string };
+    if (parsed.id) {
+      id = parsed.id;
+      break;
+    }
+    lastSubmit = "no generation id returned";
+  }
+  if (!id) {
+    throw new Error(
+      `AI Horde rejected the request at 1024px and 512px: ${lastSubmit.slice(0, 200)}`,
+    );
+  }
+
+  // Poll /status for the bytes. It is limited to 10 requests/minute, so this
+  // waits 3s between reads and is bounded outright.
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    const res = await fetch(
+      `https://aihorde.net/api/v2/generate/status/${encodeURIComponent(id)}`,
+      { headers, signal: AbortSignal.timeout(20_000) },
+    );
+    if (!res.ok) {
+      throw new Error(`AI Horde status failed (${res.status}).`);
+    }
+    const status = (await res.json()) as {
+      done?: boolean;
+      faulted?: boolean;
+      wait_time?: number;
+      generations?: { img?: string }[];
+    };
+    if (status.faulted) throw new Error("AI Horde generation faulted.");
+    const img = status.generations?.[0]?.img;
+    if (status.done) {
+      if (!img) throw new Error("AI Horde reported done with no image.");
+      const bytes = await hordeImageBytes(img);
+      const stored = await uploadBytesToCloudinary(
+        ctx,
+        bytes,
+        `jarvis-gen/horde-${Date.now()}`,
+      );
+      return { ...stored, provider: "aihorde" };
+    }
+    // The queue decides this, not elapsed time. When the network's own
+    // estimate already exceeds everything the chain can spare, stop polling
+    // now rather than burning the budget one read at a time — verified: the
+    // anonymous key sits ~600 deep with a wait of over half an hour.
+    const remaining = deadline - Date.now();
+    if (
+      typeof status.wait_time === "number" &&
+      status.wait_time * 1000 > remaining
+    ) {
+      throw new Error(
+        `AI Horde queue is ${status.wait_time}s — longer than this chain can wait; falling through.`,
+      );
+    }
+    if (remaining <= 0) {
+      throw new Error(
+        "AI Horde was still queued after 60s — falling through to the next provider.",
+      );
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
+/**
  * The `public_id` to send alongside a `folder`.
  *
  * Folder-relative on purpose. Cloudinary treats `folder` and `public_id` as two
@@ -967,6 +1122,14 @@ export const generateImage = action({
         // bot-blocked.
         name: "pollinations",
         run: () => generateViaPollinations(ctx, prompt),
+      },
+      {
+        // Also free and key-backed, but queue-backed: it can sit behind other
+        // people's requests, so it runs after Pollinations (about half a second)
+        // rather than ahead of it. It still comes before HuggingFace and
+        // Replicate, which need paid tokens.
+        name: "aihorde",
+        run: () => generateViaAIHorde(ctx, prompt),
       },
       {
         name: "huggingface",
