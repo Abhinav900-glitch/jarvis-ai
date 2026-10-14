@@ -1,7 +1,7 @@
 "use node";
 
 import { v } from "convex/values";
-import { action, type ActionCtx } from "./_generated/server";
+import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v2 as cloudinary } from "cloudinary";
 import { internal as internalApi } from "./_generated/api";
@@ -1326,5 +1326,40 @@ export const getOptimizedUrl = action({
     parts.push(args.publicId);
 
     return { url: parts.join("/") };
+  },
+});
+
+// TEMPORARY — runs the real chain to confirm an image comes out; deleted after.
+export const debugChain = internalAction({
+  args: { prompt: v.string() },
+  handler: async (ctx, args) => {
+    const stages: { name: string; run: () => Promise<GeneratedImage> }[] = [
+      { name: "cloudinary", run: () => generateViaCloudinary(ctx, args.prompt) },
+      { name: "canva", run: () => generateViaCanva(ctx, args.prompt) },
+      { name: "perchance", run: () => generateViaPerchance(ctx, args.prompt) },
+      { name: "pollinations", run: () => generateViaPollinations(ctx, args.prompt) },
+      { name: "aihorde", run: () => generateViaAIHorde(ctx, args.prompt) },
+      { name: "huggingface", run: () => generateViaHuggingFace(ctx, args.prompt) },
+      { name: "replicate", run: () => generateViaReplicate(ctx, args.prompt) },
+    ];
+    const errors: string[] = [];
+    for (const stage of stages) {
+      const started = Date.now();
+      try {
+        const image = await stage.run();
+        return {
+          provider: image.provider,
+          url: image.url,
+          publicId: image.publicId,
+          ms: Date.now() - started,
+          errors,
+        };
+      } catch (err) {
+        errors.push(
+          `${stage.name} (${Date.now() - started}ms): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return { provider: null, url: null, publicId: null, ms: 0, errors };
   },
 });
