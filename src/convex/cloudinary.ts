@@ -1,7 +1,7 @@
 "use node";
 
 import { v } from "convex/values";
-import { action, internalAction, type ActionCtx } from "./_generated/server";
+import { action, type ActionCtx } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v2 as cloudinary } from "cloudinary";
 import { internal as internalApi } from "./_generated/api";
@@ -734,21 +734,63 @@ async function generateViaPerchance(
  * the pollinations URL directly: their queue can serve 429/504 on the first
  * few requests, and HEAD checks often pass before generation has finished.
  */
+/**
+ * How long Pollinations' free tier says to wait before the next image, in
+ * seconds, or `null` when this is not a free-limit response.
+ *
+ * Both spellings are read because the limit travels either way: the 402 body
+ * carries an explicit "Retry after 38s", and a `Retry-After` header may carry
+ * the same figure on its own. Returning `null` for anything unrecognised is
+ * deliberate — the caller must fall back to its short backoff rather than
+ * sleep on a number this function invented.
+ */
+export function parsePollinationsFreeLimit(
+  body: string,
+  retryAfterHeader: string | null,
+): number | null {
+  if (/"code"\s*:\s*"FREE_LIMIT"/.test(body)) {
+    // "Retry after 38s, or get unlimited images…"
+    const fromMessage = body.match(/retry after (\d+)s/i);
+    if (fromMessage) return Number(fromMessage[1]);
+  }
+  if (retryAfterHeader) {
+    const seconds = Number(retryAfterHeader);
+    if (Number.isFinite(seconds) && seconds > 0) return seconds;
+  }
+  return null;
+}
+
 async function generateViaPollinations(
   ctx: ActionCtx,
   prompt: string,
 ): Promise<GeneratedImage> {
   const encoded = encodeURIComponent(prompt.slice(0, 800));
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&nologo=true&model=flux&seed=${Date.now()}`;
+  // The seed keeps a retry from returning the very same picture, but
+  // Pollinations validates it as a signed 32-bit int: `Date.now()` (~1.79e12)
+  // exceeds 2^31-1 and is rejected with HTTP 400 `seed: Too big` (verified
+  // live), which meant this keyless provider failed on every single attempt
+  // regardless of the rate limit below. Staying inside the range is what lets
+  // it work at all; randomising within it still varies each generation.
+  const seed = Math.floor(Math.random() * 2_147_483_647);
+  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&nologo=true&model=flux&seed=${seed}`;
 
   // GET with retries — generation can be slow or briefly rate-limited.
   // Keep total time bounded: Convex actions have a hard time limit, so the
   // whole fallback chain must finish well under it.
+  //
+  // The limit that matters is Pollinations' free tier: 1 image every 45s per
+  // IP (verified live, HTTP 402 `FREE_LIMIT`). A fixed 2s sleep between
+  // attempts cannot outlast that window, so the chain used to give up on the
+  // one provider that needs no key. The wait therefore comes from the server
+  // when it says how long, not from a guess.
+  const MAX_WAIT_MS = 50_000;
   let bytes: ArrayBuffer | null = null;
   let lastStatus: number | string = "network error";
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let retryAfterMs = 0;
     try {
       const res = await fetch(pollinationsUrl, {
+        headers: { "User-Agent": "Jarvis:1.0:freebuff" },
         signal: AbortSignal.timeout(45_000),
       });
       const ct = res.headers.get("content-type") ?? "";
@@ -761,11 +803,27 @@ async function generateViaPollinations(
         lastStatus = "empty image";
       } else {
         lastStatus = res.status;
+        // Only the free-tier limit is worth waiting out. Any other failure
+        // (a 400 from the API, a 5xx) will not clear by sleeping, so those
+        // fall through to the short fixed backoff below.
+        if (res.status === 402) {
+          const text = await res.text().catch(() => "");
+          const parsed = parsePollinationsFreeLimit(text, res.headers.get("retry-after"));
+          if (parsed !== null) {
+            lastStatus = `402 free limit (${parsed}s)`;
+            retryAfterMs = parsed * 1000;
+          }
+        }
       }
     } catch (err) {
       lastStatus = err instanceof Error ? err.message : "network error";
     }
-    if (attempt < 1) await new Promise((r) => setTimeout(r, 2000));
+    if (attempt < 2) {
+      // Capped so a hostile or misreading response cannot pin the whole chain
+      // on this stage — the rest of the fallback must still get its turn.
+      const wait = retryAfterMs > 0 ? Math.min(retryAfterMs, MAX_WAIT_MS) : 2_000;
+      await new Promise((r) => setTimeout(r, wait));
+    }
   }
   if (!bytes) {
     throw new Error(`Pollinations generation failed (${lastStatus})`);
@@ -1326,40 +1384,5 @@ export const getOptimizedUrl = action({
     parts.push(args.publicId);
 
     return { url: parts.join("/") };
-  },
-});
-
-// TEMPORARY — runs the real chain to confirm an image comes out; deleted after.
-export const debugChain = internalAction({
-  args: { prompt: v.string() },
-  handler: async (ctx, args) => {
-    const stages: { name: string; run: () => Promise<GeneratedImage> }[] = [
-      { name: "cloudinary", run: () => generateViaCloudinary(ctx, args.prompt) },
-      { name: "canva", run: () => generateViaCanva(ctx, args.prompt) },
-      { name: "perchance", run: () => generateViaPerchance(ctx, args.prompt) },
-      { name: "pollinations", run: () => generateViaPollinations(ctx, args.prompt) },
-      { name: "aihorde", run: () => generateViaAIHorde(ctx, args.prompt) },
-      { name: "huggingface", run: () => generateViaHuggingFace(ctx, args.prompt) },
-      { name: "replicate", run: () => generateViaReplicate(ctx, args.prompt) },
-    ];
-    const errors: string[] = [];
-    for (const stage of stages) {
-      const started = Date.now();
-      try {
-        const image = await stage.run();
-        return {
-          provider: image.provider,
-          url: image.url,
-          publicId: image.publicId,
-          ms: Date.now() - started,
-          errors,
-        };
-      } catch (err) {
-        errors.push(
-          `${stage.name} (${Date.now() - started}ms): ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-    return { provider: null, url: null, publicId: null, ms: 0, errors };
   },
 });
