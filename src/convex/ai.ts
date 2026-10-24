@@ -2356,7 +2356,11 @@ export const generateTitle = action({
   args: {
     firstMessage: v.string(),
   },
-  handler: async (_ctx, args): Promise<{ title: string }> => {
+  handler: async (ctx, args): Promise<{ title: string }> => {
+    // Authenticated: this spends a real model call, so leaving it open would
+    // hand anyone on the internet a free proxy onto the provider chain.
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to generate titles.");
     // Titles go through the same provider chain as every other reply, so a
     // Groq outage (or a key that was never added) still produces a real
     // title instead of silently degrading to a truncated first message.
@@ -2396,7 +2400,11 @@ function cleanTitle(raw: string): string | null {
 
 export const extractPdfText = action({
   args: { url: v.string() },
-  handler: async (_ctx, args): Promise<{ text: string; pages: number }> => {
+  handler: async (ctx, args): Promise<{ text: string; pages: number }> => {
+    // Authenticated: an open download-and-parse endpoint is a free proxy for
+    // bandwidth and CPU, whatever the URL guard says.
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to extract PDFs.");
     const safeUrl = assertSafePublicUrl(args.url);
     const res = await fetch(safeUrl, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JarvisBot/1.0)" },

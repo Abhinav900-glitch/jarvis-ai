@@ -120,10 +120,6 @@ import {
   signOutOfPuter,
   type PuterSignInStatus,
 } from "@/lib/puter";
-import {
-  generateImageWithPerchance,
-  type PerchanceKeys,
-} from "@/lib/perchance";
 import { Radio } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
@@ -578,8 +574,6 @@ export default function Dashboard() {
   // Cloudinary OAuth connection status (live query)
   const cloudinaryStatus = useQuery(api.cloudinaryOAuth.getStatus);
   const canvaStatus = useQuery(api.canvaOAuth.getStatus);
-  // Client-side Perchance credentials (corsproxy free tier is browser-only)
-  const perchanceKeys = useQuery(api.imageKeys.getPerchanceKeys);
 
   const [input, setInput] = useState("");
   /**
@@ -933,22 +927,10 @@ export default function Dashboard() {
       console.warn("[image-gen] Puter.js failed, falling back:", msg);
       setAssistantError(null);
     }
-    if (perchanceKeys?.corsproxyKey && perchanceKeys?.perchanceKey) {
-      try {
-        return await generateImageWithPerchance(
-          prompt,
-          perchanceKeys as PerchanceKeys,
-          uploadFile,
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        failures.push(`Perchance: ${msg}`);
-        console.warn("[image-gen] perchance failed, falling back:", msg);
-        setAssistantError(null);
-      }
-    } else {
-      failures.push("Perchance: not configured");
-    }
+    // No browser-side Perchance step: it required handing corsproxy and
+    // perchance credentials to every signed-in client, and the server chain
+    // below already runs Perchance (plus Pollinations and AI Horde) without
+    // exposing a single key.
     try {
       return await generateImageAction({ prompt });
     } catch (err) {
