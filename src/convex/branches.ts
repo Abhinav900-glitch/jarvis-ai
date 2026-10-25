@@ -3,6 +3,7 @@ import { mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import type { GenericDatabaseReader } from "convex/server";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
+import { isCiphertext } from "../lib/e2e";
 
 /** The schema-aware reader both queries and mutations expose as `db`. */
 type Db = GenericDatabaseReader<DataModel>;
@@ -203,6 +204,16 @@ export const appendToBranch = mutation({
 
     const siblings = await loadBranchMessages(ctx.db, args.sessionId, args.branchId);
     const variantIndex = siblings.length;
+
+    // Same rule as the main line: a user turn is never stored in the clear,
+    // whichever branch it lands on.
+    if (args.role === "user") {
+      if (!isCiphertext(args.content)) {
+        throw new Error(
+          "A message you typed must be encrypted before it is sent. Re-enter your passphrase and try again.",
+        );
+      }
+    }
 
     const messageId = await ctx.db.insert("chatMessages", {
       sessionId: args.sessionId,

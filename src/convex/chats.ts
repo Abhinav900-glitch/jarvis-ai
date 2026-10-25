@@ -2,6 +2,82 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import type { Id } from "./_generated/dataModel";
+import { isCiphertext } from "../lib/e2e";
+
+/**
+ * The invariant this whole feature rests on.
+ *
+ * Anything a user *typed* must arrive already encrypted — the server has no
+ * key and never will. Checking the shape rather than the bytes keeps this
+ * cheap enough to run on every write, and means a client bug degrades into a
+ * visible error instead of a quietly stored secret.
+ */
+function assertEncrypted(value: string, what: string): void {
+  if (!isCiphertext(value)) {
+    throw new Error(
+      `${what} must be encrypted before it is sent. Re-enter your passphrase and try again.`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Encryption key material
+// ---------------------------------------------------------------------------
+
+/**
+ * The salt and verifier for the signed-in user, or null on first use.
+ *
+ * Neither value is secret and neither can decrypt anything — the point of
+ * returning them together is that the client can both derive the key and
+ * prove it derived the right one, in the same breath.
+ */
+export const keyMaterial = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+    const row = await ctx.db
+      .query("e2eKeys")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    if (!row) return null;
+    return { salt: row.salt, verifier: row.verifier };
+  },
+});
+
+/**
+ * Record passphrase material for a user who has none yet.
+ *
+ * Refusing to overwrite is deliberate: an existing row guards messages that
+ * are already ciphertext, and swapping the salt underneath them would make
+ * every one of them permanently unreadable.
+ */
+export const createKeyMaterial = mutation({
+  args: { salt: v.string(), verifier: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in first.");
+
+    const existing = await ctx.db
+      .query("e2eKeys")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    if (existing) {
+      throw new Error("A passphrase is already set for this account.");
+    }
+    if (!isCiphertext(args.verifier)) {
+      throw new Error("Verifier must be a value the passphrase produced.");
+    }
+
+    await ctx.db.insert("e2eKeys", {
+      userId,
+      salt: args.salt,
+      verifier: args.verifier,
+      createdAt: Date.now(),
+    });
+    return true;
+  },
+});
 
 /**
  * One uploaded file or image on a message. `text` carries extracted content for
@@ -68,6 +144,9 @@ export const renameSession = mutation({
       throw new Error("Chat not found.");
     }
 
+    // Titles are derived from what the user typed, so they carry the same
+    // obligation as the message they came from.
+    assertEncrypted(args.title, "A chat title");
     await ctx.db.patch(args.sessionId, { title: args.title });
   },
 });
@@ -203,6 +282,10 @@ export const appendMessage = mutation({
       throw new Error("Chat not found.");
     }
 
+    // The model's replies are stored in the clear — they were never secret —
+    // but a user turn never is.
+    if (args.role === "user") assertEncrypted(args.content, "A message you typed");
+
     const messageId = await ctx.db.insert("chatMessages", {
       sessionId: args.sessionId,
       userId,
@@ -239,6 +322,12 @@ export const appendMessage = mutation({
 export const startWithMessage = mutation({
   args: {
     content: v.string(),
+    /**
+     * The first line of the chat, encrypted from the same plaintext the
+     * client just sent. Optional only so that a caller with no key can still
+     * start a chat under the default title rather than store their words.
+     */
+    titleCiphertext: v.optional(v.string()),
     imageUrl: v.optional(v.string()),
     imagePublicId: v.optional(v.string()),
     images: v.optional(
@@ -261,11 +350,15 @@ export const startWithMessage = mutation({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to start a chat.");
 
+    assertEncrypted(args.content, "A message you typed");
+
     const now = Date.now();
+    // Anything that is not provably ciphertext is dropped in favour of the
+    // neutral title: degrading the label is fine, leaking the sentence is not.
     const title =
-      args.content.length > 60
-        ? `${args.content.slice(0, 60).trimEnd()}…`
-        : args.content;
+      args.titleCiphertext && isCiphertext(args.titleCiphertext)
+        ? args.titleCiphertext
+        : "New chat";
 
     const sessionId = await ctx.db.insert("chatSessions", {
       userId,
@@ -724,6 +817,41 @@ export const patchMessageContent = mutation({
     if (userId === null) throw new Error("Not signed in.");
     const row = await ctx.db.get(args.messageId);
     if (!row || row.userId !== userId) throw new Error("Message not found.");
+    if (row.role === "user") assertEncrypted(args.content, "A message you typed");
     await ctx.db.patch(args.messageId, { content: args.content });
+  },
+});
+
+/**
+ * Attach web image results to an assistant message.
+ *
+ * Kept as its own mutation rather than folded into `appendMessage` because
+ * the search runs alongside the reply instead of before it: the answer is
+ * already on screen by the time the web results come back, and making the user
+ * wait for a second network call would be a worse trade than filling them in.
+ *
+ * Assistant messages only — there is no user-authored content here to encrypt.
+ */
+export const setWebImages = mutation({
+  args: {
+    messageId: v.id("chatMessages"),
+    images: v.array(
+      v.object({
+        url: v.string(),
+        pageUrl: v.string(),
+        source: v.string(),
+        title: v.optional(v.string()),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+    const row = await ctx.db.get(args.messageId);
+    if (!row || row.userId !== userId) throw new Error("Message not found.");
+    if (row.role === "user") {
+      throw new Error("Web results belong on a reply, not on what you typed.");
+    }
+    await ctx.db.patch(args.messageId, { webImages: args.images.slice(0, 6) });
   },
 });

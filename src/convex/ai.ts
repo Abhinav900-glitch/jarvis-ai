@@ -1601,6 +1601,93 @@ export const deepResearch = action({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Web images
+// ---------------------------------------------------------------------------
+
+/** An image found on the web, with the page it should be credited to. */
+export type WebImage = {
+  url: string;
+  pageUrl: string;
+  source: string;
+  title?: string;
+};
+
+/**
+ * Google Images through SerpApi.
+ *
+ * SerpStack — the primary provider for text search here — has no documented
+ * image-search request, so images go to SerpApi only. Better a second key than
+ * a call that fails in a way nobody can debug.
+ */
+async function serpApiImageSearch(key: string, query: string): Promise<WebImage[]> {
+  const url =
+    `https://serpapi.com/search.json?engine=google_images` +
+    `&q=${encodeURIComponent(query)}&num=10&api_key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`serpapi images ${res.status}`);
+  const data = (await res.json()) as {
+    error?: string;
+    images_results?: {
+      original?: string;
+      link?: string;
+      source?: string;
+      title?: string;
+    }[];
+  };
+  if (data.error) throw new Error(`serpapi: ${data.error}`);
+
+  return (data.images_results ?? [])
+    .filter((r) => typeof r.original === "string" && r.original.startsWith("http"))
+    .slice(0, 6)
+    .map((r) => ({
+      url: r.original as string,
+      pageUrl: r.link ?? "",
+      source: r.source ?? "",
+      title: r.title,
+    }));
+}
+
+/**
+ * Real images from the web for a prompt, each credited to its source page.
+ *
+ * Never throws: an image search is an enhancement on top of a generation that
+ * has already succeeded, and a missing key or a rate limit must not turn into
+ * a failed turn. The reason comes back instead so the UI can say why the strip
+ * is empty rather than looking broken.
+ */
+export const searchWebImages = action({
+  args: { query: v.string() },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ images: WebImage[]; reason: string | null }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to search the web.");
+
+    const key = process.env.SERPAPI_API_KEY?.trim();
+    if (!key) {
+      return { images: [], reason: "SERPAPI_API_KEY is not configured." };
+    }
+
+    const query = args.query.trim().slice(0, 300);
+    if (!query) return { images: [], reason: "Nothing to search for." };
+
+    try {
+      const images = await serpApiImageSearch(key, query);
+      return {
+        images,
+        reason: images.length === 0 ? "No matching images on the web." : null,
+      };
+    } catch (err) {
+      return {
+        images: [],
+        reason: err instanceof Error ? err.message : "Image search failed.",
+      };
+    }
+  },
+});
+
 /**
  * SerApi (serpapi.com) Google search fallback.
  * Returns organic results normalized to the same Source shape as serpstack.

@@ -201,7 +201,23 @@ const schema = defineSchema(
           }),
         ),
       ),
-      imageUrl: v.optional(v.string()),
+            imageUrl: v.optional(v.string()),
+      /**
+       * Real images found on the web for this turn, kept beside the generated
+       * one so the transcript can show what actually exists out there — each
+       * with the page it came from, credited and linked.
+       */
+      webImages: v.optional(
+        v.array(
+          v.object({
+            url: v.string(),
+            /** The page the image lives on — the credit link. */
+            pageUrl: v.string(),
+            source: v.string(),
+            title: v.optional(v.string()),
+          }),
+        ),
+      ),
       imagePublicId: v.optional(v.string()),
       images: v.optional(
         v.array(
@@ -448,6 +464,17 @@ const schema = defineSchema(
       // round-trip. Cleared as soon as the code is exchanged.
       pendingCodeVerifier: v.optional(v.string()),
       connectedAt: v.optional(v.number()),
+    }).index("by_user", ["userId"]),
+
+    // Per-user material for chat encryption. Only two things live here, and
+    // neither can open a message: a random salt (public by design) and a
+    // verifier — a ciphertext the passphrase must be able to produce, so a
+    // later attempt can be proved correct without ever storing the passphrase.
+    e2eKeys: defineTable({
+      userId: v.id("users"),
+      salt: v.string(),
+      verifier: v.string(),
+      createdAt: v.number(),
     }).index("by_user", ["userId"]),
 
     // tableName: defineTable({

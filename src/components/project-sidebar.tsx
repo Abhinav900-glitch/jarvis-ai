@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useDecryptedTitles } from "@/lib/use-e2e";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -124,6 +125,8 @@ export function ProjectSidebar({
   const [editingId, setEditingId] = useState<Id<"projects"> | null>(null);
 
   const projects: Project[] = projectsQuery?.projects ?? [];
+  // Titles are ciphertext in the database — see `useDecryptedTitles`.
+  const titleOf = useDecryptedTitles(sessions);
 
   const grouped = useMemo(() => {
     const byProject = new Map<Id<"projects">, Id<"chatSessions">[]>();
@@ -187,7 +190,7 @@ export function ProjectSidebar({
             : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
         }`}
       >
-        {session.title}
+        {titleOf(session)}
       </button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

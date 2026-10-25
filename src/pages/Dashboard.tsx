@@ -120,6 +120,21 @@ import {
   signOutOfPuter,
   type PuterSignInStatus,
 } from "@/lib/puter";
+import {
+  decryptMaybe,
+  isCiphertext,
+  lockEverything,
+  peekPlaintext,
+  rememberPlaintext,
+} from "@/lib/e2e";
+import { useDecryptedTitles, useE2EKey } from "@/lib/use-e2e";
+import {
+  PASSPHRASE_REQUIRED,
+  useAppendMessage,
+  useRenameSession,
+  useStartWithMessage,
+} from "@/lib/messages";
+import { PassphraseGate } from "@/components/passphrase-gate";
 import { Radio } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
@@ -527,10 +542,85 @@ export default function Dashboard() {
   const [showPalette, setShowPalette] = useState(false);
   const [showPersona, setShowPersona] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
-  const messages = useQuery(
+  /** `setup` before a passphrase exists, `unlock` once one does, null when closed. */
+  const [passphraseOpen, setPassphraseOpen] = useState<
+    "setup" | "unlock" | null
+  >(null);
+  // Which chat we have already prompted about, so opening a locked
+  // conversation asks once instead of snapping the dialog shut every time the
+  // user dismisses it.
+  const promptedUnlockFor = useRef<string | null>(null);
+  const rawMessages = useQuery(
     api.chats.listMessages,
     activeId ? { sessionId: activeId, branchId: activeBranchId } : "skip",
   );
+
+  // ---------------------------------------------------------------------------
+  // Decryption
+  //
+  // What you typed is ciphertext in the database and plaintext here, and only
+  // while the passphrase is unlocked in this tab. Reads go through a synchronous
+  // cache seeded at write time, so your own message renders as typed instead of
+  // arriving one async pass later; anything older — a chat reopened after a
+  // reload — is filled in by the effect below.
+  //
+  // A locked tab gets an empty list plus the passphrase prompt, never a
+  // screenful of base64.
+  // ---------------------------------------------------------------------------
+  const keyMaterial = useQuery(api.chats.keyMaterial);
+  const e2eKey = useE2EKey(keyMaterial?.salt);
+  const [decryptTick, setDecryptTick] = useState(0);
+
+  const encryptedRows = useMemo(
+    () =>
+      (rawMessages ?? []).some(
+        (m) => m.role === "user" && isCiphertext(m.content),
+      ),
+    [rawMessages],
+  );
+  const lockedOut = encryptedRows && !e2eKey;
+
+  useEffect(() => {
+    if (!e2eKey || !rawMessages) return;
+    let cancelled = false;
+    void (async () => {
+      let filled = false;
+      for (const m of rawMessages) {
+        if (m.role !== "user" || !isCiphertext(m.content)) continue;
+        if (peekPlaintext(m.content) !== undefined) continue;
+        const plain = await decryptMaybe(e2eKey, m.content);
+        rememberPlaintext(m.content, plain);
+        filled = true;
+      }
+      if (!cancelled && filled) setDecryptTick((t) => t + 1);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rawMessages, e2eKey]);
+
+  const messages = useMemo(() => {
+    if (!rawMessages) return undefined;
+    if (!encryptedRows) return rawMessages;
+    if (!e2eKey) return [];
+    return rawMessages.map((m) => {
+      if (m.role !== "user" || !isCiphertext(m.content)) return m;
+      const plain = peekPlaintext(m.content);
+      return plain === undefined ? { ...m, content: "" } : { ...m, content: plain };
+    });
+    // decryptTick is read on purpose: it is what re-runs this memo when an
+    // async decrypt lands after the rows themselves stopped changing.
+  }, [rawMessages, e2eKey, encryptedRows, decryptTick]);
+
+  useEffect(() => {
+    if (!lockedOut) {
+      promptedUnlockFor.current = null;
+      return;
+    }
+    if (promptedUnlockFor.current === activeId) return;
+    promptedUnlockFor.current = activeId;
+    setPassphraseOpen("unlock");
+  }, [lockedOut, activeId]);
 
   // A chat can pin a persona of its own; it overrides the user's default for
   // every reply in that conversation.
@@ -539,8 +629,10 @@ export default function Dashboard() {
     [sessions, activeId],
   );
 
-  const startWithMessage = useMutation(api.chats.startWithMessage);
-  const appendMessage = useMutation(api.chats.appendMessage);
+  // Encrypting wrappers — every call site below reads exactly as it did
+  // before, but the text is sealed before it reaches the network.
+  const startWithMessage = useStartWithMessage();
+  const appendMessage = useAppendMessage();
   const askAction = useAction(api.ai.ask);
   const askStreamAction = useAction(api.ai.askStream);
   const deepResearchAction = useAction(api.ai.deepResearch);
@@ -565,8 +657,10 @@ export default function Dashboard() {
   const getCanvaOAuthStartUrl = useAction(api.canva.getOAuthStartUrl);
   const disconnectCanvaAction = useAction(api.canva.disconnectCanva);
   const generateTitleAction = useAction(api.ai.generateTitle);
+  const searchWebImagesAction = useAction(api.ai.searchWebImages);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
-  const renameSessionMutation = useMutation(api.chats.renameSession);
+  const renameSessionMutation = useRenameSession();
+  const setWebImagesMutation = useMutation(api.chats.setWebImages);
   const savePromptMutation = useMutation(api.chats.savePrompt);
   const deletePromptMutation = useMutation(api.chats.deletePrompt);
   const promptsList = useQuery(api.chats.listPrompts);
@@ -1961,7 +2055,7 @@ export default function Dashboard() {
 
       // Attach the generated image and send it as an assistant message
       if (generated) {
-        await appendMessage({
+        const generatedMessageId = await appendMessage({
           sessionId,
           role: "assistant",
           content: `Generated image: **${prompt}**`,
@@ -1970,6 +2064,17 @@ export default function Dashboard() {
           imagePublicId: generated.publicId,
           images: [{ url: generated.url, publicId: generated.publicId }],
         });
+        // Also show what already exists on the web for the same prompt, each
+        // linked to the page it came from. Deliberately detached: the
+        // generation has already landed on screen, and making the user wait
+        // on a second network call would cost more than the strip is worth.
+        void searchWebImagesAction({ query: prompt })
+          .then(({ images }) =>
+            images.length > 0
+              ? setWebImagesMutation({ messageId: generatedMessageId, images })
+              : null,
+          )
+          .catch(() => {});
       } else {
         // All providers failed — have the LLM acknowledge gracefully
         const answer = await askAction({
@@ -2052,6 +2157,15 @@ export default function Dashboard() {
     overrideImages?: { url: string; publicId: string }[],
   ) => {
     const text = (overrideText ?? input).trim();
+
+    // Nothing is written until the key exists. The server refuses an
+    // unencrypted turn anyway, so failing here is both the honest answer and
+    // the cheap one — the user gets the prompt instead of a stack trace.
+    if (!e2eKey && keyMaterial !== undefined) {
+      setPassphraseOpen(keyMaterial ? "unlock" : "setup");
+      return;
+    }
+
     // Single source of truth for "what images belong to this turn". Callers
     // that generated an image moments ago pass it in, because their closure
     // predates the render that populated pendingImages.
@@ -2377,6 +2491,13 @@ export default function Dashboard() {
         extractMemories(messageContent, answerText);
       }
     } catch (err) {
+      // A missing passphrase arrives as a sentinel, not a stack trace: open
+      // the gate rather than printing an error the user cannot act on.
+      if (err instanceof Error && err.message === PASSPHRASE_REQUIRED) {
+        setPassphraseOpen(keyMaterial ? "unlock" : "setup");
+        setSending(false);
+        return;
+      }
       setAssistantError(
         err instanceof Error
           ? err.message
@@ -2660,6 +2781,9 @@ export default function Dashboard() {
   };
 
   const handleSignOut = async () => {
+    // Signing out drops the key and everything it had opened in memory —
+    // otherwise the next person at this tab inherits a decrypted transcript.
+    lockEverything();
     await signOut();
     navigate("/");
   };
@@ -3365,9 +3489,12 @@ export default function Dashboard() {
     }
   };
 
-  const sessionTitle = activeId
-    ? sessions.find((s) => s._id === activeId)?.title ?? "Chat"
-    : "New chat";
+  // Titles come from your first message, so they are encrypted alongside it.
+  const titleOf = useDecryptedTitles(sessions);
+  const activeSessionRow = activeId
+    ? sessions.find((s) => s._id === activeId)
+    : undefined;
+  const sessionTitle = activeSessionRow ? titleOf(activeSessionRow) : "New chat";
 
   // ---- Command palette contents -------------------------------------------
   // Built here rather than in the palette itself so every shortcut the app
@@ -4508,6 +4635,46 @@ export default function Dashboard() {
                               />
                             );
                           })()}
+                          {/* Real images found on the web, credited to the
+                              page they came from. Each tile is a link, so the
+                              credit is one click away rather than a footnote
+                              nobody reads. */}
+                          {(m.webImages ?? []).length > 0 ? (
+                            <div className="mb-3">
+                              <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                                <Globe className="size-3" />
+                                From the web
+                              </p>
+                              <div className="grid max-w-md grid-cols-3 gap-1.5">
+                                {(m.webImages ?? []).map((w) => (
+                                  <a
+                                    key={w.url}
+                                    href={w.pageUrl || w.url}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                    className="group block overflow-hidden rounded-lg border transition-colors hover:border-primary"
+                                    title={
+                                      w.source
+                                        ? `Open on ${w.source}`
+                                        : "Open the source page"
+                                    }
+                                  >
+                                    <img
+                                      src={w.url}
+                                      alt={w.title ?? "Image from the web"}
+                                      loading="lazy"
+                                      className="h-24 w-full object-cover transition-opacity group-hover:opacity-90"
+                                    />
+                                    {w.source ? (
+                                      <span className="block truncate px-1.5 py-0.5 text-[10px] text-muted-foreground group-hover:text-foreground">
+                                        {w.source}
+                                      </span>
+                                    ) : null}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
                           <MarkdownMessage
                             content={m.content}
                             sources={m.sources}
@@ -5879,6 +6046,13 @@ export default function Dashboard() {
       />
       <PersonaPanel open={showPersona} onOpenChange={setShowPersona} />
       <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
+      <PassphraseGate
+        mode={passphraseOpen}
+        salt={keyMaterial?.salt ?? null}
+        verifier={keyMaterial?.verifier ?? null}
+        onClose={() => setPassphraseOpen(null)}
+        onUnlocked={() => setPassphraseOpen(null)}
+      />
       <EnginePanel open={showEngines} onClose={() => setShowEngines(false)} />
       <PinnedPanel
         open={showPins}
