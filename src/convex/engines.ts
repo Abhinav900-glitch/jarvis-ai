@@ -183,9 +183,10 @@ export interface EngineSpec {
  *  - Hugging Face does not serve Qwen2.5-7B-1M or gemma-2-2b-it for this
  *    token, and cannot take an image at all.
  *  - Ollama's hosted roster is live at GET /v1/models and turns over more
- *    often than the rest of this table; the six below were confirmed present
- *    with their vision capability and context length read from /api/tags and
- *    /api/show rather than inferred.
+ *    often than the rest of this table. Of its 23 models only 7 are covered by
+ *    the free allowance — the rest answer 402 "not included in your free
+ *    usage" — so every Ollama engine below was probed with a real completion
+ *    on 2026-10-27 rather than read off the roster.
  */
 export const ENGINES: EngineSpec[] = [
   // --- Groq ---------------------------------------------------------------
@@ -549,77 +550,31 @@ export const ENGINES: EngineSpec[] = [
   },
 
   // --- Ollama (hosted) -----------------------------------------------------
-  // The roster was read live from GET /v1/models, and each model's vision
-  // capability from GET /api/tags (`capabilities` includes "vision") and its
-  // window from GET /api/show (`model_info.*.context_length`). So `vision` and
-  // `context` below are measured facts, not guesses from the model's family.
+  // Every engine below was probed through the real provider path on 2026-10-27:
+  // one completion each, against this deployment's own key. That is the only
+  // honest way to know what a free allowance covers, because Ollama's roster
+  // advertises models the free tier does not include.
   //
-  // Six of the twenty-three hosted models: one of each shape the router asks
-  // for — a heavy reasoner, a long-window reader, two fast vision models, a
-  // prose model and a compact one. The rest can be added the same way.
+  // Of the 23 hosted models, exactly SEVEN answered without a usage credit:
+  //   gpt-oss:120b, gpt-oss:20b, nemotron-3-ultra, nemotron-3-super,
+  //   nemotron-3-nano:30b, gemma4:31b, beam
   //
-  // Declared surest-first: within a provider, declaration order is the
+  // Rejected as pay-as-you-go ("not included in your free usage"):
+  //   kimi-k2.6, kimi-k3, kimi-k2.7-code, deepseek-v4-pro:0813,
+  //   deepseek-v4.1-flash, deepseek-v4.1-flash:1017, glm-5.2, glm-5.3,
+  //   glm-5.3-flash, minimax-m2.7, minimax-m3, minimax-m3.1-flash,
+  //   muse-spark-open, mistral-large-3:675b
+  // Rejected outright: clef:27b (400 — a decision model, different endpoint)
+  // and mistral-large-4 (403 — withheld at the time of the probe).
+  //
+  // Do not add a model from the roster without probing it first: it will look
+  // available in this table and fail on the first message a user sends.
+  // Vision and context come from GET /api/tags and GET /api/show. Note what
+  // the free tier costs us here — gemma4:31b is the ONLY free model that can
+  // see an image, so an image turn has nowhere else to go on this provider.
+  //
+  // Declared strongest-first: within a provider, declaration order is the
   // fallback ladder when the router is switched off.
-  {
-    id: "ollama/glm-5.3-flash",
-    provider: "ollama",
-    modelId: "glm-5.3-flash",
-    label: "GLM 5.3 Flash",
-    vision: true,
-    reasoning: true,
-    quality: 0.80,
-    speed: 0.88,
-    context: 1_048_576,
-    bestFor: "a quick everyday reply that can still see images",
-  },
-  {
-    id: "ollama/deepseek-v4.1-flash",
-    provider: "ollama",
-    modelId: "deepseek-v4.1-flash",
-    label: "DeepSeek V4.1 Flash",
-    vision: true,
-    reasoning: true,
-    quality: 0.84,
-    speed: 0.86,
-    context: 1_048_576,
-    bestFor: "fast current answers, images included",
-  },
-  {
-    id: "ollama/gemma4-31b",
-    provider: "ollama",
-    modelId: "gemma4:31b",
-    label: "Gemma 4 31B",
-    vision: true,
-    reasoning: true,
-    quality: 0.76,
-    speed: 0.80,
-    context: 262_144,
-    bestFor: "a compact vision model for lighter turns",
-  },
-  {
-    id: "ollama/mistral-large-4",
-    provider: "ollama",
-    modelId: "mistral-large-4",
-    label: "Mistral Large 4",
-    vision: true,
-    reasoning: true,
-    quality: 0.87,
-    speed: 0.68,
-    context: 1_048_576,
-    bestFor: "multilingual prose over a very long document",
-  },
-  {
-    id: "ollama/kimi-k3",
-    provider: "ollama",
-    modelId: "kimi-k3",
-    label: "Kimi K3",
-    vision: true,
-    reasoning: true,
-    quality: 0.90,
-    speed: 0.64,
-    context: 1_048_576,
-    bestFor: "a million tokens of context, thinking as it goes",
-  },
   {
     id: "ollama/gpt-oss-120b",
     provider: "ollama",
@@ -631,6 +586,80 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.70,
     context: 131_072,
     bestFor: "hard reasoning from a large open model",
+  },
+  {
+    id: "ollama/nemotron-3-ultra",
+    provider: "ollama",
+    modelId: "nemotron-3-ultra",
+    label: "Nemotron 3 Ultra",
+    vision: false,
+    reasoning: true,
+    quality: 0.88,
+    speed: 0.60,
+    context: 262_144,
+    bestFor: "the strongest free Ollama model with a 256k window",
+  },
+  {
+    id: "ollama/beam",
+    provider: "ollama",
+    modelId: "beam",
+    label: "Beam",
+    vision: false,
+    reasoning: true,
+    quality: 0.82,
+    speed: 0.66,
+    context: 1_048_576,
+    bestFor: "a million tokens when the prompt itself is enormous",
+  },
+  {
+    id: "ollama/nemotron-3-super",
+    provider: "ollama",
+    modelId: "nemotron-3-super",
+    label: "Nemotron 3 Super",
+    vision: false,
+    reasoning: true,
+    quality: 0.80,
+    speed: 0.78,
+    context: 262_144,
+    bestFor: "a balanced free answer that still reads carefully",
+  },
+  {
+    // The only vision engine in the free set — every image turn routed to
+    // Ollama lands here.
+    id: "ollama/gemma4-31b",
+    provider: "ollama",
+    modelId: "gemma4:31b",
+    label: "Gemma 4 31B",
+    vision: true,
+    reasoning: true,
+    quality: 0.78,
+    speed: 0.80,
+    context: 262_144,
+    bestFor: "the one free Ollama model that can see images",
+  },
+  {
+    id: "ollama/gpt-oss-20b",
+    provider: "ollama",
+    modelId: "gpt-oss:20b",
+    label: "GPT-OSS 20B",
+    vision: false,
+    reasoning: true,
+    quality: 0.76,
+    speed: 0.86,
+    context: 131_072,
+    bestFor: "fast reasoning when the answer should not wait",
+  },
+  {
+    id: "ollama/nemotron-3-nano",
+    provider: "ollama",
+    modelId: "nemotron-3-nano:30b",
+    label: "Nemotron 3 Nano",
+    vision: false,
+    reasoning: true,
+    quality: 0.70,
+    speed: 0.90,
+    context: 262_144,
+    bestFor: "the lightest free step that still thinks before answering",
   },
 ];
 
