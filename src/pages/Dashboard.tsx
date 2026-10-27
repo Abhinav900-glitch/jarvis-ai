@@ -99,6 +99,7 @@ import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
 import { findYouTubeLinks, MAX_VIDEOS_PER_TURN } from "@/lib/youtube";
+import { findWebImageQuery } from "@/lib/web-images";
 import { stripWakeWord } from "@/lib/wake-word";
 import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
@@ -2020,6 +2021,77 @@ export default function Dashboard() {
   };
 
 
+  // ---- Real photographs: "images of X" answered with actual pictures ----
+  //
+  // The model cannot open a live gallery — it has no browser — so its honest
+  // answer is a list of links telling the user where to go look, which is the
+  // answer nobody wanted. The search happens here instead, and the pictures
+  // become the reply.
+  const runWebImageSearchMessage = async (
+    query: string,
+    originalText: string,
+  ) => {
+    setSending(true);
+    setAssistantError(null);
+    setInput("");
+    if (recorder.recording) recorder.stop();
+
+    try {
+      let sessionId: Id<"chatSessions">;
+      let history: { role: string; content: string }[] = [];
+      if (!activeId) {
+        const { sessionId: sid } = await startWithMessage({ content: originalText });
+        sessionId = sid;
+        setActiveId(sid);
+      } else {
+        sessionId = activeId;
+        await appendMessage({ sessionId, role: "user", content: originalText });
+        history = (messages ?? []).slice(-12).map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+      }
+
+      const { images } = await searchWebImagesAction({ query });
+
+      if (images.length > 0) {
+        // Fetched before the reply is written, because here the images ARE
+        // the answer — unlike generation, where they decorate a reply that
+        // has already landed on screen.
+        const replyId = await appendMessage({
+          sessionId,
+          role: "assistant",
+          content: `Photos of **${query}** — real images found on the web. Each one opens the page it came from.`,
+          model: "web-images",
+        });
+        await setWebImagesMutation({ messageId: replyId, images });
+        return;
+      }
+
+      // Nothing came back: no key, quota spent, or genuinely nothing out
+      // there. An empty strip would read as broken, so the turn falls through
+      // to the model and the user still gets somewhere to look.
+      const answer = await askAction({
+        prompt:
+          `The user asked for images of "${query}", but a web image search returned no results. ` +
+          `Reply with the best places to find them — name the sites and link them — and keep it to a few lines.`,
+        history,
+      });
+      await appendMessage({
+        sessionId,
+        role: "assistant",
+        content: answer.text,
+        model: answer.model,
+        usedFallback: answer.usedFallback,
+      });
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image search failed.");
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  };
+
   // ---- Natural-language image gen: stores msg, generates, sends result ----
   const runImageGenerationMessage = async (prompt: string, originalText: string) => {
     setSending(true);
@@ -2212,10 +2284,21 @@ export default function Dashboard() {
       return;
     }
 
+    // Real photographs from the web: "photos of Robert Downey Jr." Checked
+    // before generation because the two are one word apart — "show me images
+    // of X" asks for real ones, while "make an image of X" asks for art.
+    if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !deepResearch) {
+      const webImageQuery = findWebImageQuery(text);
+      if (webImageQuery) {
+        await runWebImageSearchMessage(webImageQuery, text);
+        return;
+      }
+    }
+
     // Natural-language image generation: "generate an image of..." etc.
     if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !deepResearch) {
       const imgIntent = text.match(
-        /^\s*(?:hey\s+|hi\s+|ok(?:ay)?[,\s]+)?(?:jarvis[,\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:gen(?:erate|rate|arate)|create|make|draw|paint|render|show|give)\s+(?:me\s+)?(?:an?|the)??\s*(?:ai\s+)?(?:image|picture|photo|artwork|drawing|painting|illustration|pic)\s*(?:of|showing|with|about|for)?\s*[:]?\s*([\s\S]{3,400})/i,
+        /^\s*(?:hey\s+|hi\s+|ok(?:ay)?[,\s]+)?(?:jarvis[,\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:gen(?:erate|rate|arate)|create|make|draw|paint|render|show|give)\s+(?:me\s+)?(?:an?|the)??\s*(?:ai\s+)?(?:image|picture|photo|artwork|drawing|painting|illustration|pic)s?\s*(?:of|showing|with|about|for)?\s*[:]?\s*([\s\S]{3,400})/i,
       );
       if (imgIntent?.[1]) {
         const prompt = imgIntent[1].replace(/[.?!]+$/, "").trim();
