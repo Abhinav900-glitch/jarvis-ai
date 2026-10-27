@@ -1433,20 +1433,22 @@ async function webSearch(
 
   // Fallback: SerApi (serpapi.com) Google results
   if (sources.length === 0) {
-    const serpApiKey = process.env.SERPAPI_API_KEY;
-    if (serpApiKey) {
+    const serpApiKeys = readSerpApiKeys();
+    if (serpApiKeys.length === 0) {
+      errors.push("serpapi: SERPAPI_API_KEY not configured");
+    }
+    for (const serpApiKey of serpApiKeys) {
       try {
         sources = await serpApiSearch(serpApiKey, query);
         console.log(
           `[deep-research] serpapi fallback returned ${sources.length} results`,
         );
+        break;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "failed";
         console.error("[deep-research] serpapi exception:", msg);
         errors.push(`serpapi: ${msg}`);
       }
-    } else {
-      errors.push("serpapi: SERPAPI_API_KEY not configured");
     }
   }
 
@@ -1665,28 +1667,45 @@ export const searchWebImages = action({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to search the web.");
 
-    const key = process.env.SERPAPI_API_KEY?.trim();
-    if (!key) {
+    const keys = readSerpApiKeys();
+    if (keys.length === 0) {
       return { images: [], reason: "SERPAPI_API_KEY is not configured." };
     }
 
     const query = args.query.trim().slice(0, 300);
     if (!query) return { images: [], reason: "Nothing to search for." };
 
-    try {
-      const images = await serpApiImageSearch(key, query);
-      return {
-        images,
-        reason: images.length === 0 ? "No matching images on the web." : null,
-      };
-    } catch (err) {
-      return {
-        images: [],
-        reason: err instanceof Error ? err.message : "Image search failed.",
-      };
+    // Try the primary key first, then the backup. A key is only abandoned on
+    // an error — an empty result set means the key worked, so fall through to
+    // the "no matching images" reason rather than spending a second quota unit.
+    let failure: string = "Image search failed.";
+    for (const key of keys) {
+      try {
+        const images = await serpApiImageSearch(key, query);
+        return {
+          images,
+          reason: images.length === 0 ? "No matching images on the web." : null,
+        };
+      } catch (err) {
+        failure = err instanceof Error ? err.message : "Image search failed.";
+      }
     }
+    return { images: [], reason: failure };
   },
 });
+
+/**
+ * SerpApi keys in priority order: the primary key, then the backup.
+ *
+ * The backup exists because SerpApi's free tier is a fixed daily quota and a
+ * busy afternoon can exhaust it mid-session. An empty array means neither key
+ * is configured, which callers report as a reason instead of throwing.
+ */
+function readSerpApiKeys(): string[] {
+  return [process.env.SERPAPI_API_KEY, process.env.SERPAPI_API_KEY_2]
+    .map((k) => k?.trim())
+    .filter((k): k is string => !!k);
+}
 
 /**
  * SerApi (serpapi.com) Google search fallback.
