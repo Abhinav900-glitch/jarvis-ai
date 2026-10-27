@@ -1381,7 +1381,7 @@ export interface DeepResearchResult {
 }
 
 /**
- * One web search across both providers, serpstack first and SerApi second.
+ * One web search across three providers: TinyFish, then serpstack, then SerApi.
  *
  * Errors are returned rather than thrown: a research run that already has
  * sources must not fail because a second provider is unhappy, and a round-two
@@ -1393,7 +1393,29 @@ async function webSearch(
   const errors: string[] = [];
   let sources: Source[] = [];
 
-  const serpstackKey = process.env.SERPSTACK_API_KEY;
+  // TinyFish first: it is free to 12,000 searches a day, while serpstack and
+  // SerApi both sit at roughly 100 a month on their free tiers. Spending the
+  // abundant key first leaves the scarce ones doing what they are good at —
+  // catching a result the first two missed.
+  const tinyFishKey = process.env.TINYFISH_API_KEY?.trim();
+  if (tinyFishKey) {
+    try {
+      sources = await tinyFishSearch(tinyFishKey, query);
+      console.log(
+        `[deep-research] tinyfish returned ${sources.length} results`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "failed";
+      console.error("[deep-research] tinyfish exception:", msg);
+      errors.push(`tinyfish: ${msg}`);
+    }
+  } else {
+    errors.push("tinyfish: TINYFISH_API_KEY not configured");
+  }
+
+  // SerpStack — skipped when TinyFish already answered.
+  const serpstackKey =
+    sources.length === 0 ? process.env.SERPSTACK_API_KEY : undefined;
   if (serpstackKey) {
     try {
       const data = (await serpstackSearch(serpstackKey, query)) as {
@@ -1427,7 +1449,7 @@ async function webSearch(
       console.error("[deep-research] serpstack exception:", msg);
       errors.push(`serpstack: ${msg}`);
     }
-  } else {
+  } else if (sources.length === 0) {
     errors.push("serpstack: SERPSTACK_API_KEY not configured");
   }
 
@@ -1708,6 +1730,48 @@ function readSerpApiKeys(): string[] {
 }
 
 /**
+ * TinyFish Search — free, agent-oriented, and the first provider tried.
+ * Returns organic results normalized to the same Source shape as the others.
+ */
+async function tinyFishSearch(key: string, query: string): Promise<Source[]> {
+  const url =
+    `https://api.search.tinyfish.ai?query=${encodeURIComponent(query)}` +
+    `&page=0`;
+  const res = await fetch(url, {
+    headers: { "X-API-Key": key },
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (res.status === 401) throw new Error("tinyfish: invalid API key");
+  if (res.status === 429) throw new Error("tinyfish: rate limited");
+  if (!res.ok) throw new Error(`tinyfish ${res.status}`);
+  const data = (await res.json()) as {
+    error?: { code?: string; message?: string };
+    results?: {
+      title?: string;
+      url?: string;
+      site_name?: string;
+    }[];
+  };
+  if (data.error) {
+    throw new Error(`tinyfish: ${data.error.message ?? data.error.code ?? "error"}`);
+  }
+
+  const results = (data.results ?? [])
+    .slice(0, 8)
+    .map((r) => ({
+      title: r.title ?? "Untitled result",
+      url: r.url ?? "",
+      domain: r.site_name,
+    }))
+    .filter((s) => s.url);
+
+  if (results.length === 0) {
+    throw new Error("tinyfish: no results");
+  }
+  return results;
+}
+
+/**
  * SerApi (serpapi.com) Google search fallback.
  * Returns organic results normalized to the same Source shape as serpstack.
  */
@@ -1885,6 +1949,47 @@ export const searchNews = action({
 // Summarize URL — fetch a webpage and have Jarvis summarize it
 // ---------------------------------------------------------------------------
 
+/**
+ * One page through TinyFish Fetch — rendered, then cleaned to markdown.
+ *
+ * Returns null instead of throwing. This is an upgrade over the plain fetch,
+ * not a dependency of it: a rate limit, an exhausted daily allowance or a key
+ * that was never set must degrade to the old path, never fail the summary.
+ */
+async function tinyFishFetch(key: string, url: string): Promise<string | null> {
+  try {
+    const res = await fetch("https://api.fetch.tinyfish.ai", {
+      method: "POST",
+      headers: { "X-API-Key": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ urls: [url], format: "markdown" }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      console.error(`[summarize] tinyfish fetch ${res.status}`);
+      return null;
+    }
+    const data = (await res.json()) as {
+      results?: { text?: unknown }[];
+      errors?: unknown[];
+    };
+    // A page-level failure arrives in `errors` behind an HTTP 200, so the
+    // body has to be inspected rather than trusting the status alone.
+    if (Array.isArray(data.errors) && data.errors.length > 0) {
+      console.error("[summarize] tinyfish page errors:", data.errors.length);
+      return null;
+    }
+    const text = data.results?.[0]?.text;
+    if (typeof text !== "string" || text.length < 50) return null;
+    return text;
+  } catch (err) {
+    console.error(
+      "[summarize] tinyfish fetch exception:",
+      err instanceof Error ? err.message : "failed",
+    );
+    return null;
+  }
+}
+
 export const summarizeUrl = action({
   args: {
     url: v.string(),
@@ -1898,26 +2003,37 @@ export const summarizeUrl = action({
 
     const url = assertSafePublicUrl(args.url.trim());
 
-    // Fetch the webpage content
-    let html: string;
-    try {
-      const res = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; JarvisBot/1.0)",
-          Accept: "text/html,application/xhtml+xml",
-        },
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      html = await res.text();
-    } catch (err) {
-      throw new Error(
-        `Failed to fetch URL: ${err instanceof Error ? err.message : "network error"}`,
-      );
-    }
+    // TinyFish renders the page and returns clean markdown — better than
+    // stripping tags ourselves, and it works on pages that build their
+    // content in JavaScript. It returns null rather than throwing, so a
+    // missing key or a rate limit falls through to the plain fetch below
+    // instead of failing the summary.
+    const tinyFishKey = process.env.TINYFISH_API_KEY?.trim();
+    const rendered = tinyFishKey ? await tinyFishFetch(tinyFishKey, url) : null;
 
-    // Extract readable text from HTML
-    const text = extractReadableText(html);
+    let text = rendered;
+    if (text === null) {
+      // Fetch the webpage content
+      let html: string;
+      try {
+        const res = await fetch(url, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (compatible; JarvisBot/1.0)",
+            Accept: "text/html,application/xhtml+xml",
+          },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        html = await res.text();
+      } catch (err) {
+        throw new Error(
+          `Failed to fetch URL: ${err instanceof Error ? err.message : "network error"}`,
+        );
+      }
+
+      // Extract readable text from HTML
+      text = extractReadableText(html);
+    }
     if (text.length < 50) {
       throw new Error(
         "The page didn't contain enough readable text to summarize.",
