@@ -123,6 +123,26 @@ export const PROVIDERS: ProviderSpec[] = [
     // deadline is the difference between a slow answer and a fallback.
     timeoutMs: 90_000,
   },
+  {
+    // Ollama's hosted endpoint: same OpenAI-shaped dispatch as the rest, one
+    // key, `Authorization: Bearer` — which is exactly what callProvider
+    // already sends. The local runtime needs no key, so this entry covers the
+    // cloud; a localhost provider would be a separate entry with its own URL.
+    id: "ollama",
+    label: "Ollama",
+    url: "https://ollama.com/v1/chat/completions",
+    keyEnv: ["OLLAMA_API_KEY"],
+    missing: "OLLAMA_API_KEY not configured",
+    imageUrlAsString: false,
+    textOnly: false,
+    // Ollama's OpenAI layer accepts the parameter but does not document it
+    // per model, so no Groq-only knob is sent here.
+    reasoningEffort: false,
+    maxTokens: 8192,
+    // Hosted open-weight models think before answering, and the first token
+    // can take a while on the large ones.
+    timeoutMs: 90_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -162,6 +182,10 @@ export interface EngineSpec {
  *    answer; everything else comes back 402.
  *  - Hugging Face does not serve Qwen2.5-7B-1M or gemma-2-2b-it for this
  *    token, and cannot take an image at all.
+ *  - Ollama's hosted roster is live at GET /v1/models and turns over more
+ *    often than the rest of this table; the six below were confirmed present
+ *    with their vision capability and context length read from /api/tags and
+ *    /api/show rather than inferred.
  */
 export const ENGINES: EngineSpec[] = [
   // --- Groq ---------------------------------------------------------------
@@ -522,6 +546,91 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.96,
     context: 65_536,
     bestFor: "the cheapest step that still has to run",
+  },
+
+  // --- Ollama (hosted) -----------------------------------------------------
+  // The roster was read live from GET /v1/models, and each model's vision
+  // capability from GET /api/tags (`capabilities` includes "vision") and its
+  // window from GET /api/show (`model_info.*.context_length`). So `vision` and
+  // `context` below are measured facts, not guesses from the model's family.
+  //
+  // Six of the twenty-three hosted models: one of each shape the router asks
+  // for — a heavy reasoner, a long-window reader, two fast vision models, a
+  // prose model and a compact one. The rest can be added the same way.
+  //
+  // Declared surest-first: within a provider, declaration order is the
+  // fallback ladder when the router is switched off.
+  {
+    id: "ollama/glm-5.3-flash",
+    provider: "ollama",
+    modelId: "glm-5.3-flash",
+    label: "GLM 5.3 Flash",
+    vision: true,
+    reasoning: true,
+    quality: 0.80,
+    speed: 0.88,
+    context: 1_048_576,
+    bestFor: "a quick everyday reply that can still see images",
+  },
+  {
+    id: "ollama/deepseek-v4.1-flash",
+    provider: "ollama",
+    modelId: "deepseek-v4.1-flash",
+    label: "DeepSeek V4.1 Flash",
+    vision: true,
+    reasoning: true,
+    quality: 0.84,
+    speed: 0.86,
+    context: 1_048_576,
+    bestFor: "fast current answers, images included",
+  },
+  {
+    id: "ollama/gemma4-31b",
+    provider: "ollama",
+    modelId: "gemma4:31b",
+    label: "Gemma 4 31B",
+    vision: true,
+    reasoning: true,
+    quality: 0.76,
+    speed: 0.80,
+    context: 262_144,
+    bestFor: "a compact vision model for lighter turns",
+  },
+  {
+    id: "ollama/mistral-large-4",
+    provider: "ollama",
+    modelId: "mistral-large-4",
+    label: "Mistral Large 4",
+    vision: true,
+    reasoning: true,
+    quality: 0.87,
+    speed: 0.68,
+    context: 1_048_576,
+    bestFor: "multilingual prose over a very long document",
+  },
+  {
+    id: "ollama/kimi-k3",
+    provider: "ollama",
+    modelId: "kimi-k3",
+    label: "Kimi K3",
+    vision: true,
+    reasoning: true,
+    quality: 0.90,
+    speed: 0.64,
+    context: 1_048_576,
+    bestFor: "a million tokens of context, thinking as it goes",
+  },
+  {
+    id: "ollama/gpt-oss-120b",
+    provider: "ollama",
+    modelId: "gpt-oss:120b",
+    label: "GPT-OSS 120B",
+    vision: false,
+    reasoning: true,
+    quality: 0.92,
+    speed: 0.70,
+    context: 131_072,
+    bestFor: "hard reasoning from a large open model",
   },
 ];
 
