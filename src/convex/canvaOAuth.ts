@@ -45,7 +45,24 @@ export const getStatus = query({
   },
 });
 
-/** Store the CSRF state and PKCE verifier while the user is on Canva's consent page. */
+/**
+ * How long a connect window stays usable — longer than anyone takes at a
+ * consent screen, short enough that a forgotten window stops being able to
+ * hand back a code.
+ */
+const FLOW_TTL_MS = 30 * 60_000;
+/** How many connect windows may be in flight at once. */
+const FLOW_MAX = 5;
+
+/**
+ * Store the CSRF state and PKCE verifier while the user is on Canva's
+ * consent page.
+ *
+ * Appended rather than overwritten: a second click starts a second window,
+ * and the one the user actually approves may be either of them. Replacing the
+ * previous entry is what made an otherwise successful authorization fail with
+ * "window is out of date".
+ */
 export const setPendingState = internalMutation({
   args: {
     userId: v.id("users"),
@@ -54,24 +71,76 @@ export const setPendingState = internalMutation({
     redirectUri: v.string(),
   },
   handler: async (ctx, args) => {
+    const now = Date.now();
     const row = await ctx.db
       .query("canvaAuth")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .unique();
+
+    const kept = (row?.pendingFlows ?? [])
+      .filter((flow) => now - flow.createdAt <= FLOW_TTL_MS)
+      .slice(-(FLOW_MAX - 1));
+    const pendingFlows = [
+      ...kept,
+      {
+        state: args.state,
+        codeVerifier: args.codeVerifier,
+        redirectUri: args.redirectUri,
+        createdAt: now,
+      },
+    ];
+
     if (row) {
       await ctx.db.patch(row._id, {
-        pendingState: args.state,
-        pendingCodeVerifier: args.codeVerifier,
+        pendingFlows,
         redirectUri: args.redirectUri,
       });
     } else {
       await ctx.db.insert("canvaAuth", {
         userId: args.userId,
-        pendingState: args.state,
-        pendingCodeVerifier: args.codeVerifier,
+        pendingFlows,
         redirectUri: args.redirectUri,
       });
     }
+  },
+});
+
+/**
+ * The stored verifier for the state Canva sent back, or why there isn't one.
+ *
+ * `found` is false only when this account has no connection row at all — a
+ * different problem (wrong browser/user) from `matched: false`, which means
+ * the window was superseded. The distinction drives two different error
+ * messages, and conflating them would send the user to close tabs they never
+ * opened.
+ */
+export const getPendingFlow = internalQuery({
+  args: { userId: v.id("users"), state: v.string() },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("canvaAuth")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .unique();
+    if (!row) {
+      return { found: false as const, matched: false, codeVerifier: null, redirectUri: null };
+    }
+
+    const flow =
+      (row.pendingFlows ?? []).find((f) => f.state === args.state) ??
+      // A flow started before pendingFlows existed stored exactly one state.
+      (row.pendingState === args.state
+        ? {
+            codeVerifier: row.pendingCodeVerifier ?? null,
+            redirectUri: row.redirectUri,
+          }
+        : undefined);
+
+    return {
+      found: true as const,
+      matched: flow !== undefined,
+      codeVerifier: flow?.codeVerifier ?? null,
+      redirectUri: flow?.redirectUri ?? null,
+    };
   },
 });
 
@@ -98,9 +167,11 @@ export const saveTokens = internalMutation({
         refreshToken: args.refreshToken ?? row.refreshToken,
         expiresAt,
         scope: args.scope ?? row.scope,
-        // The verifier is single-use and must not survive the exchange.
+        // The verifier is single-use and must not survive the exchange —
+        // and every other window still in flight is now moot too.
         pendingState: undefined,
         pendingCodeVerifier: undefined,
+        pendingFlows: undefined,
         connectedAt: now,
       });
     } else {
@@ -157,6 +228,7 @@ export const clearTokens = internalMutation({
         expiresAt: undefined,
         pendingState: undefined,
         pendingCodeVerifier: undefined,
+        pendingFlows: undefined,
       });
     }
   },

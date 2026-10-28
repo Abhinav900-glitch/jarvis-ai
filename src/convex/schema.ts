@@ -463,6 +463,29 @@ const schema = defineSchema(
       // re-derived from the challenge, so it has to survive the redirect
       // round-trip. Cleared as soon as the code is exchanged.
       pendingCodeVerifier: v.optional(v.string()),
+      /**
+       * Every connect window currently in flight, newest last.
+       *
+       * One row holds several because one click does not mean one window:
+       * clicking Connect in a second tab, or going back from Canva's consent
+       * page and starting again, used to overwrite the single pending state —
+       * so the window the user actually approved came back with a state
+       * nothing recognised and the connection failed. Keeping the last few
+       * (capped and aged out) lets any of them finish.
+       *
+       * `pendingState` / `pendingCodeVerifier` above are the legacy single-flow
+       * form, still read as a fallback for a flow started before this existed.
+       */
+      pendingFlows: v.optional(
+        v.array(
+          v.object({
+            state: v.string(),
+            codeVerifier: v.string(),
+            redirectUri: v.optional(v.string()),
+            createdAt: v.number(),
+          }),
+        ),
+      ),
       connectedAt: v.optional(v.number()),
     }).index("by_user", ["userId"]),
 

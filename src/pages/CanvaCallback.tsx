@@ -1,6 +1,6 @@
 import { api } from "@/convex/_generated/api";
 import { JarvisIcon } from "@/components/jarvis-icon";
-import { useAction } from "convex/react";
+import { useAction, useQuery } from "convex/react";
 import { Loader2, XCircle, CheckCircle2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
@@ -15,12 +15,34 @@ export default function CanvaCallback() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const exchangeCode = useAction(api.canva.exchangeCode);
+  const canvaStatus = useQuery(api.canvaOAuth.getStatus);
 
   const [status, setStatus] = useState<"working" | "success" | "error">(
     "working",
   );
   const [message, setMessage] = useState("");
   const attempted = useRef(false);
+
+  // The reactive answer, read through a ref so the catch block below sees the
+  // current value rather than the one captured when the effect ran.
+  const latestStatus = useRef(canvaStatus);
+  latestStatus.current = canvaStatus;
+
+  /**
+   * Is the account connected right now?
+   *
+   * Waits briefly either way: the query may still be settling, and a
+   * connection completed in another window needs a moment to land.
+   */
+  async function readConnected(): Promise<boolean> {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const s = latestStatus.current;
+      if (s?.connected) return true;
+      if (s !== undefined && attempt >= 2) return false;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return latestStatus.current?.connected ?? false;
+  }
 
   useEffect(() => {
     if (attempted.current) return;
@@ -56,6 +78,18 @@ export default function CanvaCallback() {
         setMessage("Canva connected. You can close this page.");
         setTimeout(() => navigate("/dashboard", { replace: true }), 1500);
       } catch (err) {
+        // Two windows can race: this one's code was already spent by the
+        // other, but the account may well be connected now. Checking is the
+        // difference between a red X over a working connection and a truthful
+        // success screen.
+        if (await readConnected()) {
+          setStatus("success");
+          setMessage(
+            "Canva connected — another window finished the sign-in first, so this one's code was already used.",
+          );
+          setTimeout(() => navigate("/dashboard", { replace: true }), 2500);
+          return;
+        }
         setStatus("error");
         setMessage(err instanceof Error ? err.message : "Unknown OAuth error.");
       }

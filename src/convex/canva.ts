@@ -131,28 +131,29 @@ export const exchangeCode = action({
 
     const cfg = canvaConfig();
 
-    const stored = await ctx.runQuery(internalApi.canvaOAuth.getStoredAuth, {
+    const pending = await ctx.runQuery(internalApi.canvaOAuth.getPendingFlow, {
       userId,
+      state: args.state,
     });
-    if (!stored) {
+    if (!pending.found) {
       throw new Error(
         "No pending Canva connection was found for this account — the callback is running under a different user than the one that started it. Start the connection again and finish it in the same browser.",
       );
     }
-    if (stored.pendingState !== args.state) {
+    if (!pending.matched) {
       throw new Error(
         "This Canva authorization window is out of date — a newer Connect click replaced it. Close any other Canva sign-in tabs, then connect again.",
       );
     }
 
-    const codeVerifier = stored.pendingCodeVerifier;
+    const codeVerifier = pending.codeVerifier;
     if (!codeVerifier) {
       throw new Error(
         "The PKCE verifier for this Canva connection is missing — restart the connection.",
       );
     }
 
-    const redirectUri = stored.redirectUri ?? args.redirectUri;
+    const redirectUri = pending.redirectUri ?? args.redirectUri;
     if (!redirectUri) {
       throw new Error("Missing redirect URI — restart the connection flow.");
     }
