@@ -143,6 +143,30 @@ export const PROVIDERS: ProviderSpec[] = [
     // can take a while on the large ones.
     timeoutMs: 90_000,
   },
+  {
+    // Google AI Studio's Gemini API on the free tier, through the
+    // OpenAI-compatible layer Google publishes alongside the native one.
+    // Same `Authorization: Bearer` header, same chat-completions shape, so it
+    // needs no special-casing in the dispatch.
+    //
+    // Three key names because they are all in circulation: Google's own docs
+    // use GEMINI_API_KEY for this endpoint, its client libraries also accept
+    // GOOGLE_API_KEY, and third-party guides often say
+    // GOOGLE_GENERATIVE_AI_API_KEY. The first one set wins.
+    id: "googleai",
+    label: "Gemini (AI Studio)",
+    url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    keyEnv: ["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"],
+    missing: "GEMINI_API_KEY not configured",
+    imageUrlAsString: false,
+    textOnly: false,
+    // Google's compatibility layer documents `max_tokens` but not the
+    // Groq-only `reasoning_effort` knob, so it is not sent here.
+    reasoningEffort: false,
+    maxTokens: 8192,
+    // Free-tier quotas are per project and per minute, so a burst can queue.
+    timeoutMs: 90_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -660,6 +684,82 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.90,
     context: 262_144,
     bestFor: "the lightest free step that still thinks before answering",
+  },
+
+  // --- Google AI Studio (Gemini free tier) --------------------------------
+  // Model ids are from Google's own models page (ai.google.dev/gemini-api/
+  // docs/models) and the five below are the ones its pricing page marks as
+  // free of charge. Deliberately NOT included:
+  //  - gemini-2.5-flash / -pro / -lite — Google limits the 2.5 family to
+  //    projects that have actively used them, so a new key typically 429s.
+  //  - gemini-2.0-flash — shut down.
+  //  - gemini-3.1-pro-preview, gemini-4-argon — not on the free list.
+  //
+  // Everything above is a claim until it is probed: the keys were not in the
+  // deployment when this block was written, so each engine below still needs
+  // one real completion (plus an image turn and a streamed reply) before it is
+  // honest to call it available. Context figures are Google's standard 1M
+  // input window for the 3.x line and should be re-read from
+  // GET /v1beta/models → inputTokenLimit at the same time.
+  {
+    id: "googleai/gemini-3.8-flash",
+    provider: "googleai",
+    modelId: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    vision: true,
+    reasoning: true,
+    quality: 0.93,
+    speed: 0.84,
+    context: 1_048_576,
+    bestFor: "Google's flagship free model — agents, code, long horizons",
+  },
+  {
+    id: "googleai/gemini-3.6-flash",
+    provider: "googleai",
+    modelId: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash",
+    vision: true,
+    reasoning: true,
+    quality: 0.87,
+    speed: 0.88,
+    context: 1_048_576,
+    bestFor: "balanced multimodal chat that answers quickly",
+  },
+  {
+    id: "googleai/gemini-3-flash-preview",
+    provider: "googleai",
+    modelId: "gemini-3-flash-preview",
+    label: "Gemini 3 Flash",
+    vision: true,
+    reasoning: true,
+    quality: 0.88,
+    speed: 0.74,
+    context: 1_048_576,
+    bestFor: "frontier-class reasoning at a fraction of the cost",
+  },
+  {
+    id: "googleai/gemini-3.1-flash-lite",
+    provider: "googleai",
+    modelId: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
+    vision: true,
+    reasoning: false,
+    quality: 0.82,
+    speed: 0.91,
+    context: 1_048_576,
+    bestFor: "a near-frontier answer in well under a second",
+  },
+  {
+    id: "googleai/gemini-3.5-flash-lite",
+    provider: "googleai",
+    modelId: "gemini-3.5-flash-lite",
+    label: "Gemini 3.5 Flash-Lite",
+    vision: true,
+    reasoning: false,
+    quality: 0.78,
+    speed: 0.95,
+    context: 1_048_576,
+    bestFor: "titles, summaries and other high-volume steps",
   },
 ];
 

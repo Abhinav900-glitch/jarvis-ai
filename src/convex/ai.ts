@@ -2686,3 +2686,202 @@ export const askForTask = internalAction({
     );
   },
 });
+
+// ---------------------------------------------------------------------------
+// TEMPORARY DIAGNOSTIC — delete once the Gemini roster is confirmed.
+// Reports which key env var Google accepts, which models the free tier really
+// serves (a roster listing is not an entitlement), whether an image turn is
+// accepted, and whether streaming with usage accounting works.
+// ---------------------------------------------------------------------------
+export const probeGemini = internalAction({
+  args: {},
+  handler: async () => {
+    const names = [
+      "GEMINI_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "GOOGLE_API_KEY",
+    ];
+    const present = names.filter((n) => (process.env[n] ?? "").trim());
+    if (!present.length) return { ok: false, error: "no key env var set" };
+
+    const keyStatus: Record<string, number> = {};
+    let keyName: string | null = null;
+    let models: { id: string; in: number; out: number }[] = [];
+
+    for (const name of present) {
+      const key = (process.env[name] as string).trim();
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+        {
+          headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(15_000),
+        },
+      ).catch(() => null);
+      keyStatus[name] = res?.status ?? 0;
+      if (!res) continue;
+      if (res.ok && !keyName) {
+        keyName = name;
+        const data = (await res.json()) as {
+          models?: {
+            name?: string;
+            supportedGenerationMethods?: string[];
+            inputTokenLimit?: number;
+            outputTokenLimit?: number;
+          }[];
+        };
+        models = (data.models ?? [])
+          .filter((m) =>
+            (m.supportedGenerationMethods ?? []).includes("generateContent"),
+          )
+          .map((m) => ({
+            id: (m.name ?? "").replace(/^models\//, ""),
+            in: m.inputTokenLimit ?? 0,
+            out: m.outputTokenLimit ?? 0,
+          }));
+      } else {
+        await res.text().catch(() => "");
+      }
+    }
+    if (!keyName) return { ok: false, keyStatus };
+
+    const key = (process.env[keyName] as string).trim();
+    const priority = models.filter((m) =>
+      /flash|pro|lite|argon/.test(m.id),
+    );
+    const rest = models.filter((m) => !/flash|pro|lite/.test(m.id));
+    const target = [...priority, ...rest].slice(0, 14);
+
+    const results: { id: string; verdict: string; ms: number }[] = [];
+    for (const model of target) {
+      const started = Date.now();
+      try {
+        const res = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: model.id,
+              messages: [{ role: "user", content: "Say PONG." }],
+              max_tokens: 16,
+            }),
+            signal: AbortSignal.timeout(30_000),
+          },
+        );
+        const body = await res.text();
+        const ok = res.ok && /PONG/i.test(body);
+        results.push({
+          id: model.id,
+          verdict: ok ? "ok" : `HTTP ${res.status}: ${body.slice(0, 110)}`,
+          ms: Date.now() - started,
+        });
+      } catch (err) {
+        results.push({
+          id: model.id,
+          verdict: `error: ${err instanceof Error ? err.message : "failed"}`,
+          ms: Date.now() - started,
+        });
+      }
+    }
+
+    const firstOk = results.find((r) => r.verdict === "ok")?.id ?? null;
+
+    // Streaming with usage accounting — the app streams every reply and the
+    // inspector reads the usage frame, so an unsupported `stream_options`
+    // would break normal chat rather than one feature.
+    let stream = "skipped";
+    if (firstOk) {
+      try {
+        const res = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: firstOk,
+              messages: [{ role: "user", content: "Say PONG." }],
+              max_tokens: 16,
+              stream: true,
+              stream_options: { include_usage: true },
+            }),
+            signal: AbortSignal.timeout(30_000),
+          },
+        );
+        const text = await res.text();
+        stream = res.ok
+          ? `ok usage=${
+              /"usage"\s*:\s*\{[^}]*"completion_tokens"/.test(text)
+                ? "yes"
+                : "absent"
+            }`
+          : `HTTP ${res.status}: ${text.slice(0, 140)}`;
+      } catch (err) {
+        stream = `error: ${err instanceof Error ? err.message : "failed"}`;
+      }
+    }
+
+    // Vision: a 1x1 PNG, the same shape the app sends for an image turn.
+    const png =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const vision: { id: string; verdict: string }[] = [];
+    const visionTargets = results
+      .filter((r) => r.verdict === "ok")
+      .slice(0, 3)
+      .map((r) => r.id);
+    for (const id of visionTargets) {
+      try {
+        const res = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: id,
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: "Reply OK." },
+                    { type: "image_url", image_url: { url: png } },
+                  ],
+                },
+              ],
+              max_tokens: 16,
+            }),
+            signal: AbortSignal.timeout(30_000),
+          },
+        );
+        const body = await res.text();
+        vision.push({
+          id,
+          verdict: res.ok ? "ok" : `HTTP ${res.status}: ${body.slice(0, 110)}`,
+        });
+      } catch (err) {
+        vision.push({
+          id,
+          verdict: `error: ${err instanceof Error ? err.message : "failed"}`,
+        });
+      }
+    }
+
+    return {
+      ok: true,
+      keyStatus,
+      keyName,
+      generateContentModels: models.length,
+      limits: models,
+      results,
+      stream,
+      vision,
+    };
+  },
+});
