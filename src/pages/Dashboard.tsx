@@ -57,6 +57,8 @@ import {
   Sparkles,
   Bot,
   Gauge,
+  ThumbsUp,
+  ThumbsDown,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
@@ -136,6 +138,7 @@ import {
   useStartWithMessage,
 } from "@/lib/messages";
 import { PassphraseGate } from "@/components/passphrase-gate";
+import { SessionStatsDialog } from "@/components/session-stats-dialog";
 import { Radio } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
@@ -813,6 +816,7 @@ export default function Dashboard() {
   // --- Feature panels: memory, export, camera, live translation ---
   const [showMemory, setShowMemory] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [showAeroTransform, setShowAeroTransform] = useState(false);
   // The overview surface. Separate from Dev, like Claude's chat versus its code
@@ -1117,6 +1121,9 @@ export default function Dashboard() {
 
   // --- Engine routing, pins, comparison, listening -----------------------
   const setPin = useMutation(api.chats.setPin);
+  // A verdict is a plain field on the reply — no encryption obligation, since
+  // "good/bad" carries no content — so this one writes directly.
+  const giveFeedback = useMutation(api.chats.setMessageFeedback);
   const setAlternative = useMutation(api.chats.setAlternative);
   const appendToBranch = useMutation(api.branches.appendToBranch);
   const convex = useConvex();
@@ -3561,6 +3568,9 @@ export default function Dashboard() {
       case "export":
         setShowExport(true);
         return;
+      case "stats":
+        setShowStats(true);
+        return;
       case "new":
         setActiveId(null);
         return;
@@ -3607,6 +3617,15 @@ export default function Dashboard() {
         icon: <Download className="size-4" />,
         disabled: !messages || messages.length === 0,
         run: () => setShowExport(true),
+      },
+      {
+        id: "stats",
+        label: "Session stats — messages, tokens, engines",
+        group: "Chat",
+        keywords: "statistics analytics usage tokens",
+        icon: <Gauge className="size-4" />,
+        disabled: !messages || messages.length === 0,
+        run: () => setShowStats(true),
       },
       {
         id: "branch",
@@ -4413,6 +4432,50 @@ export default function Dashboard() {
                             <Copy className="size-3" />
                           )}
                         </button>
+                        {m.role === "assistant" && activeId ? (
+                          <button
+                            onClick={() =>
+                              void giveFeedback({
+                                messageId: m._id,
+                                value: m.feedback === "up" ? null : "up",
+                              })
+                            }
+                            title={
+                              m.feedback === "up"
+                                ? "Rated good — click to clear"
+                                : "This reply was good"
+                            }
+                            className={`rounded p-0.5 transition-colors ${
+                              m.feedback === "up"
+                                ? "text-emerald-500 hover:text-emerald-400"
+                                : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            <ThumbsUp className="size-3" />
+                          </button>
+                        ) : null}
+                        {m.role === "assistant" && activeId ? (
+                          <button
+                            onClick={() =>
+                              void giveFeedback({
+                                messageId: m._id,
+                                value: m.feedback === "down" ? null : "down",
+                              })
+                            }
+                            title={
+                              m.feedback === "down"
+                                ? "Rated bad — click to clear"
+                                : "This reply was bad"
+                            }
+                            className={`rounded p-0.5 transition-colors ${
+                              m.feedback === "down"
+                                ? "text-destructive hover:text-destructive/80"
+                                : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            <ThumbsDown className="size-3" />
+                          </button>
+                        ) : null}
                         {m.role === "user" && !sending && (
                           <button
                             onClick={() => void handleEditMessage(m._id, m.content)}
@@ -5138,6 +5201,14 @@ export default function Dashboard() {
               />
             )}
           </AnimatePresence>
+
+          {/* ---- Session stats ---- */}
+          <SessionStatsDialog
+            open={showStats}
+            onOpenChange={setShowStats}
+            title={sessionTitle}
+            messages={messages ?? []}
+          />
 
           {/* ---- Panel (NLP / news / voice / errors) ---- */}
           <AnimatePresence>

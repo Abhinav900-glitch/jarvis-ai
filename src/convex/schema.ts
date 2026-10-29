@@ -122,6 +122,12 @@ const schema = defineSchema(
       projectId: v.optional(v.id("projects")),
       personaId: v.optional(v.id("personas")),
       pinned: v.optional(v.boolean()),
+      /**
+       * Set when the user archives the chat. An archived chat keeps every
+       * message but leaves the project groups and search, living under one
+       * "Archived" list until it is restored or deleted. Absent = live.
+       */
+      archivedAt: v.optional(v.number()),
       createdAt: v.number(),
       updatedAt: v.number(),
     })
@@ -167,6 +173,12 @@ const schema = defineSchema(
       usedSearch: v.optional(v.boolean()),
       /** Kept by the user as one of the things worth finding again. */
       pinned: v.optional(v.boolean()),
+      /**
+       * The user's verdict on this reply. Kept on the row it belongs to rather
+       * than in a log, so the inspector can show it beside the engine that
+       * earned it and the router can learn which engines get thumbed down.
+       */
+      feedback: v.optional(v.union(v.literal("up"), v.literal("down"))),
       /** `provider/model` from the engine registry, for the answer inspector. */
       engineId: v.optional(v.string()),
       /** Why the router picked that engine, in one short clause. */

@@ -135,6 +135,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     example: "/export",
   },
   {
+    name: "stats",
+    aliases: ["statistics"],
+    group: "Session",
+    summary: "Conversation stats — messages, tokens, engines, ratings",
+    example: "/stats",
+  },
+  {
     name: "new",
     aliases: [],
     group: "Session",

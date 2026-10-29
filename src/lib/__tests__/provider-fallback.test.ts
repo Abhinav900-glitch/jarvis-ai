@@ -17,24 +17,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   ENGINES,
+  PROVIDERS,
   RETIRING,
   isRetired,
   rankEngines,
 } from "../../convex/engines";
 import { interleaveLadder } from "../../convex/ai";
 
-const KEY_ENVS = [
-  "MISTRAL_API_KEY",
-  "MISTRAL_KEY",
-  "GROQ_API_KEY",
-  "EDEN_AI_API_KEY",
-  "EDENAI_API_KEY",
-  "EDEN_API_KEY",
-  "EDEN_AI_TOKEN",
-  "HUGGING_FACE_TOKEN",
-  "OPENROUTER_API_KEY",
-  "OPENROUTER_KEY",
-];
+// Derived from the registry rather than hand-maintained: the old hand-written
+// list covered five providers and silently missed Ollama and Gemini once they
+// were added, so `configureAll()` stopped configuring every provider and the
+// ladder test failed for a setup gap instead of a ladder bug.
+const KEY_ENVS = [...new Set(PROVIDERS.flatMap((p) => p.keyEnv))];
 const realEnv: Record<string, string | undefined> = {};
 
 /** Marks every provider as configured, so no engine is dropped as unreachable. */
@@ -75,13 +69,19 @@ describe("provider fallback ladder", () => {
     // The regression. Grouped-by-provider walking put Mistral at position 22
     // when OpenRouter registered twelve engines; a single dead OpenRouter
     // model then consumed most of a free day's budget before any fallback.
+    //
+    // Derived from PROVIDERS rather than a fixed list: with N providers
+    // round-robin, the worst first-index is N-1, and a hand-written list goes
+    // stale the moment a provider is added (Ollama and Gemini did exactly
+    // that, pushing an old member of the list past the old bound).
     configureAll();
     const ranked = rank();
+    const providers = PROVIDERS.map((p) => p.id);
 
-    for (const provider of ["groq", "mistral", "eden", "huggingface", "openrouter"]) {
+    for (const provider of providers) {
       const at = firstIndexOfProvider(ranked, provider);
       expect(at).toBeGreaterThanOrEqual(0); // present at all
-      expect(at).toBeLessThanOrEqual(4); // and reached almost immediately
+      expect(at).toBeLessThanOrEqual(providers.length - 1); // and reached almost immediately
     }
   });
 

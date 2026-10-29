@@ -3,11 +3,15 @@ import { useMemo, useState } from "react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import {
+  Archive,
+  ArchiveRestore,
   ChevronDown,
   ChevronRight,
+  Copy,
   FolderPlus,
   MoreHorizontal,
   Pencil,
+  Pin,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -23,6 +27,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useDecryptedTitles } from "@/lib/use-e2e";
+import { useRenameSession } from "@/lib/messages";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -112,17 +117,43 @@ export function ProjectSidebar({
   const sessionsQuery = useQuery(api.chats.listSessions);
   // Stable while loading, so the grouping memo does not rebuild every render.
   const sessions = useMemo(() => sessionsQuery ?? [], [sessionsQuery]);
+  // Pinned chats sort above live ones inside their group; archived chats leave
+  // the groups entirely and are listed once, under "Archived".
+  const activeSessions = useMemo(
+    () =>
+      sessions
+        .filter((s) => !s.archivedAt)
+        .sort(
+          (a, b) =>
+            Number(!!b.pinned) - Number(!!a.pinned) ||
+            b.updatedAt - a.updatedAt,
+        ),
+    [sessions],
+  );
+  const archivedSessions = useMemo(
+    () => sessions.filter((s) => s.archivedAt),
+    [sessions],
+  );
   const createProject = useMutation(api.projects.createProject);
   const updateProject = useMutation(api.projects.updateProject);
   const deleteProject = useMutation(api.projects.deleteProject);
   const assignSessions = useMutation(api.projects.assignSessions);
   const deleteSession = useMutation(api.chats.deleteSession);
+  const setSessionPinned = useMutation(api.chats.setSessionPinned);
+  const setSessionArchived = useMutation(api.chats.setSessionArchived);
+  const duplicateSession = useMutation(api.chats.duplicateSession);
+  // Titles are ciphertext at rest, so every rename goes through the hook that
+  // seals it with the user's key before it reaches the network.
+  const renameSession = useRenameSession();
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [dialogOpen, setDialogOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [colorDraft, setColorDraft] = useState(PROJECT_COLORS[0]);
   const [editingId, setEditingId] = useState<Id<"projects"> | null>(null);
+  const [renameFor, setRenameFor] = useState<Id<"chatSessions"> | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [archivedOpen, setArchivedOpen] = useState(false);
 
   const projects: Project[] = projectsQuery?.projects ?? [];
   // Titles are ciphertext in the database — see `useDecryptedTitles`.
@@ -131,7 +162,7 @@ export function ProjectSidebar({
   const grouped = useMemo(() => {
     const byProject = new Map<Id<"projects">, Id<"chatSessions">[]>();
     const unfiled: Id<"chatSessions">[] = [];
-    for (const session of sessions) {
+    for (const session of activeSessions) {
       if (session.projectId && byProject.has(session.projectId)) {
         byProject.get(session.projectId)!.push(session._id);
       } else if (session.projectId) {
@@ -141,7 +172,7 @@ export function ProjectSidebar({
       }
     }
     return { byProject, unfiled };
-  }, [sessions]);
+  }, [activeSessions]);
 
   const openDialog = (project?: Project) => {
     setEditingId(project?._id ?? null);
@@ -180,17 +211,63 @@ export function ProjectSidebar({
     }
   };
 
+  const submitRename = async () => {
+    const title = renameDraft.trim();
+    if (!renameFor || !title) return;
+    try {
+      await renameSession({ sessionId: renameFor, title });
+      setRenameFor(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not rename chat.");
+    }
+  };
+
+  const togglePin = (session: (typeof sessions)[number]) => {
+    void setSessionPinned({
+      sessionId: session._id,
+      pinned: !session.pinned,
+    }).catch(() => toast.error("Could not update the pin."));
+  };
+
+  const toggleArchive = async (session: (typeof sessions)[number]) => {
+    const archiving = !session.archivedAt;
+    try {
+      await setSessionArchived({ sessionId: session._id, archived: archiving });
+      // Archiving the chat that is open would leave its transcript on screen
+      // with no way back to it from the sidebar, so start a fresh one.
+      if (archiving && activeId === session._id) onNewChat();
+      toast.success(archiving ? "Chat archived." : "Chat restored.");
+    } catch {
+      toast.error("Could not archive chat.");
+    }
+  };
+
+  const duplicate = async (session: (typeof sessions)[number]) => {
+    try {
+      const id = await duplicateSession({ sessionId: session._id });
+      toast.success("Chat duplicated.");
+      onSelect(id);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not duplicate chat.",
+      );
+    }
+  };
+
   const renderRow = (session: (typeof sessions)[number]) => (
     <li key={session._id} className="group/chat relative">
       <button
         onClick={() => onSelect(session._id)}
-        className={`w-full truncate rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
+        className={`flex w-full items-center gap-1.5 rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
           activeId === session._id
             ? "bg-accent font-medium"
             : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
         }`}
       >
-        {titleOf(session)}
+        {session.pinned && !session.archivedAt && (
+          <Pin className="size-3 shrink-0 text-amber-500/80" />
+        )}
+        <span className="truncate">{titleOf(session)}</span>
       </button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -202,31 +279,64 @@ export function ProjectSidebar({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52">
-          <DropdownMenuLabel>Move to</DropdownMenuLabel>
           <DropdownMenuItem
-            onSelect={() =>
-              void assignSessions({ projectId: null, sessionIds: [session._id] })
-            }
+            onSelect={() => {
+              setRenameDraft(titleOf(session));
+              setRenameFor(session._id);
+            }}
           >
-            Unfiled
+            <Pencil className="size-3.5" />
+            Rename chat
           </DropdownMenuItem>
-          {projects.map((project) => (
-            <DropdownMenuItem
-              key={project._id}
-              onSelect={() =>
-                void assignSessions({
-                  projectId: project._id,
-                  sessionIds: [session._id],
-                })
-              }
-            >
-              <span
-                className="size-2 rounded-full"
-                style={{ backgroundColor: project.color ?? "#64748b" }}
-              />
-              {project.name}
-            </DropdownMenuItem>
-          ))}
+          <DropdownMenuItem onSelect={() => void duplicate(session)}>
+            <Copy className="size-3.5" />
+            Duplicate chat
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => togglePin(session)}>
+            <Pin className="size-3.5" />
+            {session.pinned ? "Unpin chat" : "Pin to top"}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void toggleArchive(session)}>
+            {session.archivedAt ? (
+              <ArchiveRestore className="size-3.5" />
+            ) : (
+              <Archive className="size-3.5" />
+            )}
+            {session.archivedAt ? "Restore chat" : "Archive chat"}
+          </DropdownMenuItem>
+          {!session.archivedAt && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Move to</DropdownMenuLabel>
+              <DropdownMenuItem
+                onSelect={() =>
+                  void assignSessions({
+                    projectId: null,
+                    sessionIds: [session._id],
+                  })
+                }
+              >
+                Unfiled
+              </DropdownMenuItem>
+              {projects.map((project) => (
+                <DropdownMenuItem
+                  key={project._id}
+                  onSelect={() =>
+                    void assignSessions({
+                      projectId: project._id,
+                      sessionIds: [session._id],
+                    })
+                  }
+                >
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ backgroundColor: project.color ?? "#64748b" }}
+                  />
+                  {project.name}
+                </DropdownMenuItem>
+              ))}
+            </>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="text-destructive"
@@ -280,7 +390,12 @@ export function ProjectSidebar({
       <div className="flex-1 space-y-2 overflow-y-auto px-2 py-2">
         {sections.map((section) => {
           const isUnfiled = section.key === "unfiled";
-          if (isUnfiled && section.rows.length === 0 && projects.length === 0) {
+          if (
+            isUnfiled &&
+            section.rows.length === 0 &&
+            projects.length === 0 &&
+            archivedSessions.length === 0
+          ) {
             return (
               <p
                 key={section.key}
@@ -350,6 +465,23 @@ export function ProjectSidebar({
             </section>
           );
         })}
+
+        {archivedSessions.length > 0 && (
+          <section className="pt-1">
+            <FolderHeader
+              name="Archived"
+              color="#64748b"
+              count={archivedSessions.length}
+              collapsed={!archivedOpen}
+              onToggle={() => setArchivedOpen((v) => !v)}
+            />
+            {!archivedOpen && (
+              <ul className="space-y-0.5">
+                {archivedSessions.map((session) => renderRow(session))}
+              </ul>
+            )}
+          </section>
+        )}
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -395,6 +527,35 @@ export function ProjectSidebar({
             </Button>
             <Button onClick={() => void submit()} disabled={!nameDraft.trim()}>
               {editingId ? "Save" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={renameFor !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenameFor(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename chat</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameDraft}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            placeholder="Chat name"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void submitRename();
+            }}
+          />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRenameFor(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void submitRename()} disabled={!renameDraft.trim()}>
+              Save
             </Button>
           </DialogFooter>
         </DialogContent>

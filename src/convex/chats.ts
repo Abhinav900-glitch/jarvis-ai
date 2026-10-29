@@ -201,6 +201,165 @@ export const deleteSession = mutation({
   },
 });
 
+/**
+ * Pin (or unpin) a chat so it sorts to the top of its section.
+ *
+ * The field has been on the row since the schema was written; this is the
+ * mutation that finally uses it. Pinning is per-user ordering only — it never
+ * touches the project a chat lives in.
+ */
+export const setSessionPinned = mutation({
+  args: { sessionId: v.id("chatSessions"), pinned: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== userId) {
+      throw new Error("Chat not found.");
+    }
+    await ctx.db.patch(args.sessionId, { pinned: args.pinned });
+  },
+});
+
+/**
+ * Archive (or restore) a chat.
+ *
+ * Archiving is not deleting: every message stays exactly where it is, but the
+ * chat leaves the project groups and search results until it is restored.
+ * Passing `archived: false` clears the field entirely rather than setting a
+ * timestamp of zero, so "live" stays one absence rather than a magic value.
+ */
+export const setSessionArchived = mutation({
+  args: { sessionId: v.id("chatSessions"), archived: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== userId) {
+      throw new Error("Chat not found.");
+    }
+    await ctx.db.patch(args.sessionId, {
+      archivedAt: args.archived ? Date.now() : undefined,
+    });
+  },
+});
+
+/**
+ * Record the user's verdict on a reply. Null clears it, so the button acts as
+ * a toggle — clicking a rating twice is changing your mind, not stacking two.
+ */
+export const setMessageFeedback = mutation({
+  args: {
+    messageId: v.id("chatMessages"),
+    value: v.union(v.literal("up"), v.literal("down"), v.null()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const row = await ctx.db.get(args.messageId);
+    if (!row || row.userId !== userId) throw new Error("Message not found.");
+    await ctx.db.patch(args.messageId, {
+      feedback: args.value === null ? undefined : args.value,
+    });
+  },
+});
+
+/**
+ * Copy a chat — session, branches and every message — into a new one.
+ *
+ * Rows are copied verbatim, ciphertext included: the encryption key belongs
+ * to the user rather than to a session, so the copy decrypts in place and this
+ * handler never sees (or needs) plaintext. Ids are remapped in two passes,
+ * because `altMessageId` and `forkedAtMessageId` can only be resolved once
+ * every copy has an id of its own. The Stop flag is dropped rather than
+ * copied, so a duplicated chat cannot start out already cancelled.
+ *
+ * Returns the new session id so the sidebar can open it immediately.
+ */
+export const duplicateSession = mutation({
+  args: { sessionId: v.id("chatSessions") },
+  handler: async (ctx, args): Promise<Id<"chatSessions">> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== userId) {
+      throw new Error("Chat not found.");
+    }
+
+    const now = Date.now();
+    // The title is ciphertext, so it is copied as-is — a server cannot mint a
+    // fresh name it has no key to encrypt. The copy announces itself by
+    // sorting to the top on `updatedAt` instead.
+    const newSessionId = await ctx.db.insert("chatSessions", {
+      userId,
+      title: session.title,
+      projectId: session.projectId,
+      personaId: session.personaId,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const branches = await ctx.db
+      .query("chatBranches")
+      .withIndex("by_session", (q) => q.eq("sessionId", session._id))
+      .collect();
+    const branchMap = new Map<string, Id<"chatBranches">>();
+    for (const branch of branches) {
+      const { _id, _creationTime, sessionId: _old, forkedAtMessageId, ...rest } = branch;
+      const id = await ctx.db.insert("chatBranches", {
+        ...rest,
+        sessionId: newSessionId,
+      });
+      branchMap.set(_id, id);
+    }
+
+    const messages = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_session", (q) => q.eq("sessionId", session._id))
+      .collect();
+    const messageMap = new Map<string, Id<"chatMessages">>();
+    for (const message of messages) {
+      const { _id, _creationTime, sessionId: _old, branchId, altMessageId, altBranchId, cancelRequested, ...rest } = message;
+      const id = await ctx.db.insert("chatMessages", {
+        ...rest,
+        sessionId: newSessionId,
+        branchId: branchId ? branchMap.get(branchId) : undefined,
+      });
+      messageMap.set(_id, id);
+    }
+
+    // Second pass: the pointers that name another row of the same copy.
+    for (const message of messages) {
+      const copy = messageMap.get(message._id);
+      if (!copy) continue;
+      const altMessageId = message.altMessageId
+        ? messageMap.get(message.altMessageId)
+        : undefined;
+      const altBranchId = message.altBranchId
+        ? branchMap.get(message.altBranchId)
+        : undefined;
+      if (message.altMessageId || message.altBranchId) {
+        await ctx.db.patch(copy, { altMessageId, altBranchId });
+      }
+    }
+    for (const branch of branches) {
+      const copy = branchMap.get(branch._id);
+      const forked = branch.forkedAtMessageId
+        ? messageMap.get(branch.forkedAtMessageId)
+        : undefined;
+      if (copy && forked) {
+        await ctx.db.patch(copy, { forkedAtMessageId: forked });
+      }
+    }
+
+    return newSessionId;
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
@@ -466,11 +625,15 @@ export const searchSessions = query({
     const q = args.query.toLowerCase().trim();
     if (!q) return [];
 
-    // Search session titles
-    const sessions = await ctx.db
-      .query("chatSessions")
-      .withIndex("by_user", (qb) => qb.eq("userId", userId))
-      .collect();
+    // Search session titles — archived chats are deliberately out: they are
+    // parked, and a hit that jumps to a conversation hiding in a list the user
+    // is not looking at reads as a bug.
+    const sessions = (
+      await ctx.db
+        .query("chatSessions")
+        .withIndex("by_user", (qb) => qb.eq("userId", userId))
+        .collect()
+    ).filter((s) => !s.archivedAt);
 
     const matchedSessions = sessions
       .filter((s) => s.title.toLowerCase().includes(q))
