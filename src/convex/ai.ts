@@ -1381,7 +1381,8 @@ export interface DeepResearchResult {
 }
 
 /**
- * One web search across three providers: TinyFish, then serpstack, then SerApi.
+ * One web search across four providers:
+ * TinyFish → LangSearch → serpstack → SerApi.
  *
  * Errors are returned rather than thrown: a research run that already has
  * sources must not fail because a second provider is unhappy, and a round-two
@@ -1413,7 +1414,30 @@ async function webSearch(
     errors.push("tinyfish: TINYFISH_API_KEY not configured");
   }
 
-  // SerpStack — skipped when TinyFish already answered.
+  // LangSearch — second, and skipped once somebody above it answered. It is
+  // free-tier (token-based, resetting at 00:00 UTC, no card) and its quota is
+  // far larger than serpstack's or SerApi's, so it belongs ahead of the two
+  // keys that sit at roughly 100 searches a month.
+  const langsearchKey =
+    sources.length === 0
+      ? (process.env.LANGSEARCH_API_KEY ?? process.env.LANGSEARCH_KEY)?.trim()
+      : undefined;
+  if (langsearchKey) {
+    try {
+      sources = await langsearchSearch(langsearchKey, query);
+      console.log(
+        `[deep-research] langsearch returned ${sources.length} results`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "failed";
+      console.error("[deep-research] langsearch exception:", msg);
+      errors.push(`langsearch: ${msg}`);
+    }
+  } else if (sources.length === 0) {
+    errors.push("langsearch: LANGSEARCH_API_KEY not configured");
+  }
+
+  // SerpStack — skipped when a provider above already answered.
   const serpstackKey =
     sources.length === 0 ? process.env.SERPSTACK_API_KEY : undefined;
   if (serpstackKey) {
@@ -1769,6 +1793,75 @@ async function tinyFishSearch(key: string, query: string): Promise<Source[]> {
     throw new Error("tinyfish: no results");
   }
   return results;
+}
+
+/**
+ * LangSearch — POST /v1/web-search, Bearer auth, JSON body.
+ *
+ * Its response is shaped differently from every other provider here (a
+ * `data.webPages.value` array, title under `name`), so the normalization is
+ * not shared with the others. Order is significant — the docs say results come
+ * ranked and there is no score field — so the list is preserved as returned.
+ */
+async function langsearchSearch(key: string, query: string): Promise<Source[]> {
+  const res = await fetch("https://api.langsearch.com/v1/web-search", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      count: 10,
+      freshness: "noLimit",
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (res.status === 401) throw new Error("langsearch: invalid API key");
+  if (res.status === 429) throw new Error("langsearch: rate limited");
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`langsearch ${res.status}: ${text.slice(0, 120)}`);
+  }
+
+  const data = (await res.json()) as {
+    code?: number;
+    msg?: string | null;
+    data?: {
+      webPages?: {
+        value?: { name?: string; url?: string; snippet?: string }[];
+      };
+    };
+  };
+  // 200 arrives in the body as well as on the wire, so the two can disagree.
+  if (data.code && data.code !== 200) {
+    throw new Error(`langsearch: ${data.msg ?? `code ${data.code}`}`);
+  }
+
+  const results = (data.data?.webPages?.value ?? [])
+    .slice(0, 8)
+    .map((r) => ({
+      title: r.name ?? "Untitled result",
+      url: r.url ?? "",
+      // `displayUrl` can carry a path; the other providers hand back a bare
+      // site name, so derive one rather than showing a whole URL as a domain.
+      domain: r.url ? hostnameOf(r.url) : undefined,
+    }))
+    .filter((s) => s.url);
+
+  if (results.length === 0) {
+    throw new Error("langsearch: no results");
+  }
+  return results;
+}
+
+/** The bare host of a URL, without `www.` — for the credit line under a source. */
+function hostnameOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -2684,204 +2777,5 @@ export const askForTask = internalAction({
       systemPrompt,
       "No AI provider could answer, so the scheduled task could not run.",
     );
-  },
-});
-
-// ---------------------------------------------------------------------------
-// TEMPORARY DIAGNOSTIC — delete once the Gemini roster is confirmed.
-// Reports which key env var Google accepts, which models the free tier really
-// serves (a roster listing is not an entitlement), whether an image turn is
-// accepted, and whether streaming with usage accounting works.
-// ---------------------------------------------------------------------------
-export const probeGemini = internalAction({
-  args: {},
-  handler: async () => {
-    const names = [
-      "GEMINI_API_KEY",
-      "GOOGLE_GENERATIVE_AI_API_KEY",
-      "GOOGLE_API_KEY",
-    ];
-    const present = names.filter((n) => (process.env[n] ?? "").trim());
-    if (!present.length) return { ok: false, error: "no key env var set" };
-
-    const keyStatus: Record<string, number> = {};
-    let keyName: string | null = null;
-    let models: { id: string; in: number; out: number }[] = [];
-
-    for (const name of present) {
-      const key = (process.env[name] as string).trim();
-      const res = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
-        {
-          headers: { Authorization: `Bearer ${key}` },
-          signal: AbortSignal.timeout(15_000),
-        },
-      ).catch(() => null);
-      keyStatus[name] = res?.status ?? 0;
-      if (!res) continue;
-      if (res.ok && !keyName) {
-        keyName = name;
-        const data = (await res.json()) as {
-          models?: {
-            name?: string;
-            supportedGenerationMethods?: string[];
-            inputTokenLimit?: number;
-            outputTokenLimit?: number;
-          }[];
-        };
-        models = (data.models ?? [])
-          .filter((m) =>
-            (m.supportedGenerationMethods ?? []).includes("generateContent"),
-          )
-          .map((m) => ({
-            id: (m.name ?? "").replace(/^models\//, ""),
-            in: m.inputTokenLimit ?? 0,
-            out: m.outputTokenLimit ?? 0,
-          }));
-      } else {
-        await res.text().catch(() => "");
-      }
-    }
-    if (!keyName) return { ok: false, keyStatus };
-
-    const key = (process.env[keyName] as string).trim();
-    const priority = models.filter((m) =>
-      /flash|pro|lite|argon/.test(m.id),
-    );
-    const rest = models.filter((m) => !/flash|pro|lite/.test(m.id));
-    const target = [...priority, ...rest].slice(0, 14);
-
-    const results: { id: string; verdict: string; ms: number }[] = [];
-    for (const model of target) {
-      const started = Date.now();
-      try {
-        const res = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${key}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: model.id,
-              messages: [{ role: "user", content: "Say PONG." }],
-              max_tokens: 16,
-            }),
-            signal: AbortSignal.timeout(30_000),
-          },
-        );
-        const body = await res.text();
-        const ok = res.ok && /PONG/i.test(body);
-        results.push({
-          id: model.id,
-          verdict: ok ? "ok" : `HTTP ${res.status}: ${body.slice(0, 110)}`,
-          ms: Date.now() - started,
-        });
-      } catch (err) {
-        results.push({
-          id: model.id,
-          verdict: `error: ${err instanceof Error ? err.message : "failed"}`,
-          ms: Date.now() - started,
-        });
-      }
-    }
-
-    const firstOk = results.find((r) => r.verdict === "ok")?.id ?? null;
-
-    // Streaming with usage accounting — the app streams every reply and the
-    // inspector reads the usage frame, so an unsupported `stream_options`
-    // would break normal chat rather than one feature.
-    let stream = "skipped";
-    if (firstOk) {
-      try {
-        const res = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${key}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: firstOk,
-              messages: [{ role: "user", content: "Say PONG." }],
-              max_tokens: 16,
-              stream: true,
-              stream_options: { include_usage: true },
-            }),
-            signal: AbortSignal.timeout(30_000),
-          },
-        );
-        const text = await res.text();
-        stream = res.ok
-          ? `ok usage=${
-              /"usage"\s*:\s*\{[^}]*"completion_tokens"/.test(text)
-                ? "yes"
-                : "absent"
-            }`
-          : `HTTP ${res.status}: ${text.slice(0, 140)}`;
-      } catch (err) {
-        stream = `error: ${err instanceof Error ? err.message : "failed"}`;
-      }
-    }
-
-    // Vision: a 1x1 PNG, the same shape the app sends for an image turn.
-    const png =
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-    const vision: { id: string; verdict: string }[] = [];
-    const visionTargets = results
-      .filter((r) => r.verdict === "ok")
-      .slice(0, 3)
-      .map((r) => r.id);
-    for (const id of visionTargets) {
-      try {
-        const res = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${key}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: id,
-              messages: [
-                {
-                  role: "user",
-                  content: [
-                    { type: "text", text: "Reply OK." },
-                    { type: "image_url", image_url: { url: png } },
-                  ],
-                },
-              ],
-              max_tokens: 16,
-            }),
-            signal: AbortSignal.timeout(30_000),
-          },
-        );
-        const body = await res.text();
-        vision.push({
-          id,
-          verdict: res.ok ? "ok" : `HTTP ${res.status}: ${body.slice(0, 110)}`,
-        });
-      } catch (err) {
-        vision.push({
-          id,
-          verdict: `error: ${err instanceof Error ? err.message : "failed"}`,
-        });
-      }
-    }
-
-    return {
-      ok: true,
-      keyStatus,
-      keyName,
-      generateContentModels: models.length,
-      limits: models,
-      results,
-      stream,
-      vision,
-    };
   },
 });

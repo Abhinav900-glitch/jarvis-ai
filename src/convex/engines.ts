@@ -693,26 +693,18 @@ export const ENGINES: EngineSpec[] = [
   //  - gemini-2.5-flash / -pro / -lite — Google limits the 2.5 family to
   //    projects that have actively used them, so a new key typically 429s.
   //  - gemini-2.0-flash — shut down.
-  //  - gemini-3.1-pro-preview, gemini-4-argon — not on the free list.
+  //  - gemini-3.1-pro-preview — not on the free list.
   //
-  // Everything above is a claim until it is probed: the keys were not in the
-  // deployment when this block was written, so each engine below still needs
-  // one real completion (plus an image turn and a streamed reply) before it is
-  // honest to call it available. Context figures are Google's standard 1M
-  // input window for the 3.x line and should be re-read from
-  // GET /v1beta/models → inputTokenLimit at the same time.
-  {
-    id: "googleai/gemini-3.8-flash",
-    provider: "googleai",
-    modelId: "gemini-3.8-flash",
-    label: "Gemini 3.8 Flash",
-    vision: true,
-    reasoning: true,
-    quality: 0.93,
-    speed: 0.84,
-    context: 1_048_576,
-    bestFor: "Google's flagship free model — agents, code, long horizons",
-  },
+  // Every engine below was probed on 2026-10-29 through the OpenAI-compat
+  // endpoint: one completion plus one image turn each, context read from
+  // GET /v1beta/models → inputTokenLimit (1,048,576 in / 65,536 out for all
+  // five). Probed and rejected — do not re-add without a passing probe:
+  //  - gemini-3.8-flash — hung >90s twice (no answer, not a quota error).
+  //  - gemini-3.7-flash — HTTP 503 "overloaded"; gemini-flash-latest same.
+  //  - gemini-4-argon-flash — HTTP 429, paid-only on a free key.
+  //  - gemini-2.5-flash-lite, gemma-4-26b — HTTP 404, not served.
+  // Measured round-trips: 3.5-flash 1.1s, 3.5-flash-lite 3.0s,
+  // 3.6-flash 5.8s, 3-flash-preview 6.1s, 3.1-flash-lite 6.9s.
   {
     id: "googleai/gemini-3.6-flash",
     provider: "googleai",
@@ -720,10 +712,22 @@ export const ENGINES: EngineSpec[] = [
     label: "Gemini 3.6 Flash",
     vision: true,
     reasoning: true,
-    quality: 0.87,
-    speed: 0.88,
+    quality: 0.88,
+    speed: 0.72,
     context: 1_048_576,
-    bestFor: "balanced multimodal chat that answers quickly",
+    bestFor: "the surest Gemini choice — balanced multimodal reasoning",
+  },
+  {
+    id: "googleai/gemini-3.5-flash",
+    provider: "googleai",
+    modelId: "gemini-3.5-flash",
+    label: "Gemini 3.5 Flash",
+    vision: true,
+    reasoning: true,
+    quality: 0.85,
+    speed: 0.95,
+    context: 1_048_576,
+    bestFor: "fast multimodal chat — 1.1s measured, image turn accepted",
   },
   {
     id: "googleai/gemini-3-flash-preview",
@@ -732,10 +736,10 @@ export const ENGINES: EngineSpec[] = [
     label: "Gemini 3 Flash",
     vision: true,
     reasoning: true,
-    quality: 0.88,
-    speed: 0.74,
+    quality: 0.83,
+    speed: 0.7,
     context: 1_048_576,
-    bestFor: "frontier-class reasoning at a fraction of the cost",
+    bestFor: "frontier-class reasoning on the free tier",
   },
   {
     id: "googleai/gemini-3.1-flash-lite",
@@ -744,10 +748,10 @@ export const ENGINES: EngineSpec[] = [
     label: "Gemini 3.1 Flash-Lite",
     vision: true,
     reasoning: false,
-    quality: 0.82,
-    speed: 0.91,
+    quality: 0.81,
+    speed: 0.68,
     context: 1_048_576,
-    bestFor: "a near-frontier answer in well under a second",
+    bestFor: "a near-frontier answer when speed matters",
   },
   {
     id: "googleai/gemini-3.5-flash-lite",
@@ -757,7 +761,7 @@ export const ENGINES: EngineSpec[] = [
     vision: true,
     reasoning: false,
     quality: 0.78,
-    speed: 0.95,
+    speed: 0.9,
     context: 1_048_576,
     bestFor: "titles, summaries and other high-volume steps",
   },
