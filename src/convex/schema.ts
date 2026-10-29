@@ -128,6 +128,13 @@ const schema = defineSchema(
        * "Archived" list until it is restored or deleted. Absent = live.
        */
       archivedAt: v.optional(v.number()),
+      /**
+       * Set when the user deletes the chat. The row and its messages stay
+       * intact under a Trash list until restored or purged, so a mis-click
+       * costs one action instead of the conversation.
+       * Absent = not in the trash; every read path filters on that.
+       */
+      deletedAt: v.optional(v.number()),
       createdAt: v.number(),
       updatedAt: v.number(),
     })

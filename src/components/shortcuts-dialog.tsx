@@ -30,6 +30,7 @@ const GROUPS: {
     items: [
       { keys: ["⌘", "K"], label: "Command palette" },
       { keys: ["⌘", "/"], label: "Command palette" },
+      { keys: ["⌘", "F"], label: "Find in this conversation" },
       { keys: ["?"], label: "This list" },
       { keys: ["Esc"], label: "Close a panel or dialog" },
     ],

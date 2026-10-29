@@ -105,6 +105,9 @@ export const listSessions = query({
     return await ctx.db
       .query("chatSessions")
       .withIndex("by_user_updated", (q) => q.eq("userId", userId))
+      // Trashed chats are returned on purpose: the sidebar's Trash section
+      // reads the same list. Consumers split the rows by `deletedAt` — and
+      // anything that jumps to a chat (search) filters them out instead.
       .order("desc")
       .take(100);
   },
@@ -177,9 +180,45 @@ export const setSessionPersona = mutation({
 
     await ctx.db.patch(args.sessionId, { personaId: args.personaId ?? undefined });
   },
+});export const deleteSession = mutation({
+  args: { sessionId: v.id("chatSessions") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== userId) {
+      throw new Error("Chat not found.");
+    }
+    // Soft delete — the chat moves to the Trash with everything intact.
+    // The hard delete lives in `purgeSession`, behind its own confirm.
+    await ctx.db.patch(args.sessionId, { deletedAt: Date.now() });
+  },
 });
 
-export const deleteSession = mutation({
+/** Take a chat back out of the trash. */
+export const restoreSession = mutation({
+  args: { sessionId: v.id("chatSessions") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== userId) {
+      throw new Error("Chat not found.");
+    }
+    await ctx.db.patch(args.sessionId, { deletedAt: undefined });
+  },
+});
+
+/**
+ * Delete a chat forever — messages, branches, then the session itself.
+ *
+ * This is the only destructive path left in the app: `deleteSession` merely
+ * stamps `deletedAt`, so this runs only from the Trash's explicit
+ * "Delete forever".
+ */
+export const purgeSession = mutation({
   args: { sessionId: v.id("chatSessions") },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -190,14 +229,53 @@ export const deleteSession = mutation({
       throw new Error("Chat not found.");
     }
 
+    const branches = await ctx.db
+      .query("chatBranches")
+      .withIndex("by_session", (q) => q.eq("sessionId", args.sessionId))
+      .collect();
+    for (const b of branches) await ctx.db.delete(b._id);
+
     const messages = await ctx.db
       .query("chatMessages")
       .withIndex("by_session", (q) => q.eq("sessionId", args.sessionId))
       .collect();
-    for (const m of messages) {
-      await ctx.db.delete(m._id);
-    }
+    for (const m of messages) await ctx.db.delete(m._id);
+
     await ctx.db.delete(args.sessionId);
+  },
+});
+
+/**
+ * Empty a conversation without touching the chat itself.
+ *
+ * Deleting row by row — rather than the session — keeps the title, project,
+ * persona and pin, so “start over in this chat” does not cost the
+ * organisation the user built around it.
+ */
+export const clearMessages = mutation({
+  args: { sessionId: v.id("chatSessions") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== userId) {
+      throw new Error("Chat not found.");
+    }
+
+    const branches = await ctx.db
+      .query("chatBranches")
+      .withIndex("by_session", (q) => q.eq("sessionId", args.sessionId))
+      .collect();
+    for (const b of branches) await ctx.db.delete(b._id);
+
+    const messages = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_session", (q) => q.eq("sessionId", args.sessionId))
+      .collect();
+    for (const m of messages) await ctx.db.delete(m._id);
+
+    await ctx.db.patch(args.sessionId, { updatedAt: Date.now() });
   },
 });
 
@@ -633,7 +711,7 @@ export const searchSessions = query({
         .query("chatSessions")
         .withIndex("by_user", (qb) => qb.eq("userId", userId))
         .collect()
-    ).filter((s) => !s.archivedAt);
+    ).filter((s) => !s.archivedAt && !s.deletedAt);
 
     const matchedSessions = sessions
       .filter((s) => s.title.toLowerCase().includes(q))

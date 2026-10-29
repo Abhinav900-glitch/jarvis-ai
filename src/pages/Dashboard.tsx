@@ -13,6 +13,7 @@ import {
   Check,
   Code2,
   Download,
+  FileSearch,
   FileText,
   Equal,
   Copy,
@@ -1138,6 +1139,67 @@ export default function Dashboard() {
   const [inspecting, setInspecting] = useState<Id<"chatMessages"> | null>(null);
   /** A pinned message the transcript has just jumped to. */
   const [highlight, setHighlight] = useState<Id<"chatMessages"> | null>(null);
+
+  // ---- Find in this conversation ------------------------------------------
+  // ⌘F searches this transcript rather than the page: what is on screen is
+  // decrypted in this tab, while the browser's own find would only ever see
+  // the ciphertext underneath. Matches come from the same `messages` list the
+  // transcript renders, and the current hit borrows the pinned-message flash
+  // so it is still visible after the scroll lands.
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findIdx, setFindIdx] = useState(0);
+  const findInputRef = useRef<HTMLInputElement>(null);
+
+  const findMatches = useMemo(() => {
+    const needle = findQuery.trim().toLowerCase();
+    if (!findOpen || !needle) return [];
+    return (messages ?? [])
+      .filter((m) => m.content.toLowerCase().includes(needle))
+      .map((m) => m._id);
+  }, [findOpen, findQuery, messages]);
+
+  // Modulo instead of a clamp effect: backspacing can shrink the list under
+  // an index that is already past the end, and this keeps it valid on the
+  // render that changed rather than one tick later.
+  const findCount = findMatches.length;
+  const findCurrent = findCount === 0 ? null : (findMatches[findIdx % findCount] ?? null);
+
+  const openFind = useCallback((seed?: string) => {
+    setFindOpen(true);
+    if (seed !== undefined) setFindQuery(seed);
+    // After the bar paints, so the caret lands in the field.
+    window.setTimeout(() => findInputRef.current?.focus(), 0);
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindQuery("");
+    setFindIdx(0);
+    setHighlight(null);
+  }, []);
+
+  const stepFind = useCallback(
+    (dir: 1 | -1) => {
+      if (findCount === 0) return;
+      setFindIdx((i) => (i + dir + findCount) % findCount);
+    },
+    [findCount],
+  );
+
+  // Jump to the current hit whenever the query or the index changes. Runs
+  // only on the id — a reply streaming in does not move the row it is on.
+  useEffect(() => {
+    if (!findOpen || !findCurrent) return;
+    setHighlight(findCurrent);
+    const t = window.setTimeout(() => {
+      document
+        .querySelector<HTMLElement>(`[data-message-id="${findCurrent}"]`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [findOpen, findCurrent]);
+
   const [slashIndex, setSlashIndex] = useState(0);
   const [compareState, setCompareState] = useState<{
     left: CompareSide;
@@ -1701,11 +1763,30 @@ export default function Dashboard() {
         return;
       }
 
+      // ⌘F finds inside this conversation instead of the page — see the find
+      // bar above the transcript for why the browser's find cannot be used.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        e.key.toLowerCase() === "f"
+      ) {
+        e.preventDefault();
+        openFind();
+        return;
+      }
+
       // Escape stops generation — but only before anything else has claimed
       // it. Closing an open dialog should close the dialog, not kill the reply
       // behind it, so this is deliberately last and checked against live mode,
       // which installs its own Escape handler and owns the key while it is up.
       if (e.key === "Escape") {
+        // The find bar claims Escape first: it sits above the transcript and
+        // its field may not even hold focus when the key is pressed.
+        if (findOpen) {
+          e.preventDefault();
+          closeFind();
+          return;
+        }
         // Reading a thread is the one thing running that has no visible
         // "stop" affordance in the transcript, so Escape has to cover it.
         if (listeningActive) {
@@ -1737,7 +1818,7 @@ export default function Dashboard() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [live.active, listeningActive, stopListening]);
+  }, [live.active, listeningActive, stopListening, findOpen, openFind, closeFind]);
 
   // Refresh displayed time every second
   useEffect(() => {
@@ -3571,6 +3652,9 @@ export default function Dashboard() {
       case "stats":
         setShowStats(true);
         return;
+      case "find":
+        openFind(args || undefined);
+        return;
       case "new":
         setActiveId(null);
         return;
@@ -3649,6 +3733,14 @@ export default function Dashboard() {
         group: "Chat",
         icon: <Bookmark className="size-4" />,
         run: () => setShowPins(true),
+      },
+      {
+        id: "find",
+        label: "Find in this conversation",
+        shortcut: "⌘F",
+        group: "Chat",
+        icon: <FileSearch className="size-4" />,
+        run: () => openFind(),
       },
       {
         id: "listen-thread",
@@ -3929,6 +4021,17 @@ export default function Dashboard() {
                 onClick={() => setShowPalette(true)}
               >
                 <Search className="size-4" />
+              </Button>
+
+              {/* Find in this conversation — the page's own ⌘F would only
+                  ever see ciphertext. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Find in this conversation (⌘F)"
+                onClick={() => openFind()}
+              >
+                <FileSearch className="size-4" />
               </Button>
 
               {/* Keyboard shortcuts. A key that only works if you already know
@@ -4263,6 +4366,65 @@ export default function Dashboard() {
               </span>
             </div>
           </div>
+
+          {/* ---- Find in this conversation ---- */}
+          {findOpen && (
+            <div className="flex items-center gap-2 border-b border-border/60 bg-muted/30 px-3 py-2 sm:px-6">
+              <Search className="size-4 shrink-0 text-muted-foreground" />
+              <input
+                ref={findInputRef}
+                value={findQuery}
+                onChange={(e) => {
+                  setFindQuery(e.target.value);
+                  setFindIdx(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    stepFind(e.shiftKey ? -1 : 1);
+                  }
+                }}
+                placeholder="Find in this conversation…"
+                aria-label="Find in this conversation"
+                className="h-8 w-full max-w-xs rounded-md border border-input bg-background px-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              />
+              <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+                {findCount === 0
+                  ? findQuery.trim()
+                    ? "No matches"
+                    : ""
+                  : `${(findIdx % findCount) + 1} / ${findCount}`}
+              </span>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="Previous match (Shift+Enter)"
+                  onClick={() => stepFind(-1)}
+                  disabled={findCount === 0}
+                >
+                  <ArrowUp className="size-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="Next match (Enter)"
+                  onClick={() => stepFind(1)}
+                  disabled={findCount === 0}
+                >
+                  <ArrowDown className="size-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="Close find (Esc)"
+                  onClick={closeFind}
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+            </div>
+          )}
 
           {/* ---- Messages ---- */}
           <div ref={scrollRef} className="flex-1 overflow-y-auto">

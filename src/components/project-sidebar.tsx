@@ -5,15 +5,19 @@ import type { Id } from "@/convex/_generated/dataModel";
 import {
   Archive,
   ArchiveRestore,
+  ArrowUpDown,
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
+  Eraser,
   FolderPlus,
   MoreHorizontal,
   Pencil,
   Pin,
   Plus,
   Trash2,
+  Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -24,6 +28,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useDecryptedTitles } from "@/lib/use-e2e";
@@ -64,6 +78,23 @@ interface Project {
   color?: string | undefined;
   icon?: string | undefined;
   chatCount: number;
+}
+
+/** How the live chat list is ordered. Persisted — a preference you re-pick
+ *  after every reload is not a preference. */
+type SortMode = "recent" | "oldest" | "name";
+const SORT_KEY = "jarvis-chat-sort";
+
+function readSortMode(): SortMode {
+  try {
+    const stored = localStorage.getItem(SORT_KEY);
+    if (stored === "recent" || stored === "oldest" || stored === "name") {
+      return stored;
+    }
+  } catch {
+    // Storage can be unavailable (private mode); fall back to the default.
+  }
+  return "recent";
 }
 
 function FolderHeader({
@@ -120,18 +151,15 @@ export function ProjectSidebar({
   // Pinned chats sort above live ones inside their group; archived chats leave
   // the groups entirely and are listed once, under "Archived".
   const activeSessions = useMemo(
-    () =>
-      sessions
-        .filter((s) => !s.archivedAt)
-        .sort(
-          (a, b) =>
-            Number(!!b.pinned) - Number(!!a.pinned) ||
-            b.updatedAt - a.updatedAt,
-        ),
+    () => sessions.filter((s) => !s.archivedAt && !s.deletedAt),
     [sessions],
   );
   const archivedSessions = useMemo(
-    () => sessions.filter((s) => s.archivedAt),
+    () => sessions.filter((s) => s.archivedAt && !s.deletedAt),
+    [sessions],
+  );
+  const trashSessions = useMemo(
+    () => sessions.filter((s) => s.deletedAt),
     [sessions],
   );
   const createProject = useMutation(api.projects.createProject);
@@ -142,6 +170,9 @@ export function ProjectSidebar({
   const setSessionPinned = useMutation(api.chats.setSessionPinned);
   const setSessionArchived = useMutation(api.chats.setSessionArchived);
   const duplicateSession = useMutation(api.chats.duplicateSession);
+  const restoreSession = useMutation(api.chats.restoreSession);
+  const purgeSession = useMutation(api.chats.purgeSession);
+  const clearMessages = useMutation(api.chats.clearMessages);
   // Titles are ciphertext at rest, so every rename goes through the hook that
   // seals it with the user's key before it reaches the network.
   const renameSession = useRenameSession();
@@ -153,16 +184,40 @@ export function ProjectSidebar({
   const [editingId, setEditingId] = useState<Id<"projects"> | null>(null);
   const [renameFor, setRenameFor] = useState<Id<"chatSessions"> | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [archivedOpen, setArchivedOpen] = useState(false);
+  const [archivedCollapsed, setArchivedCollapsed] = useState(true);
+  const [trashCollapsed, setTrashCollapsed] = useState(true);
+  const [sortMode, setSortMode] = useState<SortMode>(readSortMode);
+  // One confirm dialog serves both irreversible actions — delete-forever and
+  // clear-conversation — so neither is ever one mis-click away.
+  const [confirmAsk, setConfirmAsk] = useState<{
+    kind: "purge" | "clear";
+    session: (typeof sessions)[number];
+  } | null>(null);
 
   const projects: Project[] = projectsQuery?.projects ?? [];
   // Titles are ciphertext in the database — see `useDecryptedTitles`.
   const titleOf = useDecryptedTitles(sessions);
 
+  // Ordering lives here rather than in `activeSessions` because two of the
+  // three modes need the *decrypted* title, which only exists after
+  // `useDecryptedTitles`. Pinned always floats above the chosen order — a pin
+  // is the user overriding the sort, not a fourth sort mode.
+  const orderedSessions = useMemo(() => {
+    const byName = sortMode === "name";
+    return [...activeSessions].sort((a, b) => {
+      const pinned = Number(!!b.pinned) - Number(!!a.pinned);
+      if (pinned !== 0) return pinned;
+      if (byName) return titleOf(a).localeCompare(titleOf(b));
+      return sortMode === "oldest"
+        ? a.updatedAt - b.updatedAt
+        : b.updatedAt - a.updatedAt;
+    });
+  }, [activeSessions, sortMode, titleOf]);
+
   const grouped = useMemo(() => {
     const byProject = new Map<Id<"projects">, Id<"chatSessions">[]>();
     const unfiled: Id<"chatSessions">[] = [];
-    for (const session of activeSessions) {
+    for (const session of orderedSessions) {
       if (session.projectId && byProject.has(session.projectId)) {
         byProject.get(session.projectId)!.push(session._id);
       } else if (session.projectId) {
@@ -172,7 +227,7 @@ export function ProjectSidebar({
       }
     }
     return { byProject, unfiled };
-  }, [activeSessions]);
+  }, [orderedSessions]);
 
   const openDialog = (project?: Project) => {
     setEditingId(project?._id ?? null);
@@ -250,6 +305,38 @@ export function ProjectSidebar({
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Could not duplicate chat.",
+      );
+    }
+  };
+
+  const changeSort = (mode: SortMode) => {
+    setSortMode(mode);
+    try {
+      localStorage.setItem(SORT_KEY, mode);
+    } catch {
+      // Preference is cosmetic; failing to persist it is not worth a toast.
+    }
+  };
+
+  /** Runs whichever confirmation the dialog was opened for. */
+  const runConfirm = async () => {
+    const ask = confirmAsk;
+    setConfirmAsk(null);
+    if (!ask) return;
+    try {
+      if (ask.kind === "purge") {
+        await purgeSession({ sessionId: ask.session._id });
+        if (activeId === ask.session._id) onNewChat();
+        toast.success("Chat deleted forever.");
+      } else {
+        await clearMessages({ sessionId: ask.session._id });
+        toast.success("Conversation cleared.");
+      }
+    } catch {
+      toast.error(
+        ask.kind === "purge"
+          ? "Could not delete that chat."
+          : "Could not clear that conversation.",
       );
     }
   };
@@ -339,14 +426,65 @@ export function ProjectSidebar({
           )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
+            onSelect={() => setConfirmAsk({ kind: "clear", session })}
+          >
+            <Eraser className="size-3.5" />
+            Clear conversation
+          </DropdownMenuItem>
+          <DropdownMenuItem
             className="text-destructive"
             onSelect={() => {
-              void deleteSession({ sessionId: session._id });
+              void deleteSession({ sessionId: session._id }).catch(() =>
+                toast.error("Could not move chat to trash."),
+              );
               if (activeId === session._id) onNewChat();
+              toast.success("Chat moved to trash.");
             }}
           >
             <Trash2 className="size-3.5" />
-            Delete chat
+            Move to trash
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </li>
+  );
+
+  // Trashed rows are not clickable: a chat in the trash is not openable, so
+  // the row exists only to carry the two ways out of it.
+  const renderTrashRow = (session: (typeof sessions)[number]) => (
+    <li key={session._id} className="group/chat relative">
+      <span className="flex w-full items-center gap-1.5 rounded-md px-3 py-2 pr-8 text-left text-sm text-muted-foreground">
+        <Trash2 className="size-3 shrink-0 opacity-60" />
+        <span className="truncate">{titleOf(session)}</span>
+      </span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:text-foreground group-hover/chat:opacity-100"
+            title="Trash options"
+          >
+            <MoreHorizontal className="size-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuItem
+            onSelect={() => {
+              void restoreSession({ sessionId: session._id }).catch(() =>
+                toast.error("Could not restore chat."),
+              );
+              toast.success("Chat restored.");
+            }}
+          >
+            <Undo2 className="size-3.5" />
+            Restore chat
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="text-destructive"
+            onSelect={() => setConfirmAsk({ kind: "purge", session })}
+          >
+            <Trash2 className="size-3.5" />
+            Delete forever
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -385,6 +523,42 @@ export function ProjectSidebar({
         >
           <FolderPlus className="size-4" />
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              title={`Sort chats — currently ${
+                sortMode === "name"
+                  ? "by name"
+                  : sortMode === "oldest"
+                    ? "oldest first"
+                    : "recent first"
+              }`}
+            >
+              <ArrowUpDown className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuLabel>Sort chats</DropdownMenuLabel>
+            {(
+              [
+                ["recent", "Recently updated"],
+                ["oldest", "Oldest first"],
+                ["name", "Name (A–Z)"],
+              ] as const
+            ).map(([mode, label]) => (
+              <DropdownMenuItem key={mode} onSelect={() => changeSort(mode)}>
+                {sortMode === mode ? (
+                  <Check className="size-3.5" />
+                ) : (
+                  <span className="size-3.5" aria-hidden />
+                )}
+                {label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <div className="flex-1 space-y-2 overflow-y-auto px-2 py-2">
@@ -472,12 +646,29 @@ export function ProjectSidebar({
               name="Archived"
               color="#64748b"
               count={archivedSessions.length}
-              collapsed={!archivedOpen}
-              onToggle={() => setArchivedOpen((v) => !v)}
+              collapsed={archivedCollapsed}
+              onToggle={() => setArchivedCollapsed((v) => !v)}
             />
-            {!archivedOpen && (
+            {!archivedCollapsed && (
               <ul className="space-y-0.5">
                 {archivedSessions.map((session) => renderRow(session))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {trashSessions.length > 0 && (
+          <section className="pt-1">
+            <FolderHeader
+              name="Trash"
+              color="#f87171"
+              count={trashSessions.length}
+              collapsed={trashCollapsed}
+              onToggle={() => setTrashCollapsed((v) => !v)}
+            />
+            {!trashCollapsed && (
+              <ul className="space-y-0.5">
+                {trashSessions.map((session) => renderTrashRow(session))}
               </ul>
             )}
           </section>
@@ -553,13 +744,40 @@ export function ProjectSidebar({
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRenameFor(null)}>
               Cancel
-            </Button>
-            <Button onClick={() => void submitRename()} disabled={!renameDraft.trim()}>
-              Save
-            </Button>
-          </DialogFooter>
+            </Button>          <Button onClick={() => void submitRename()} disabled={!renameDraft.trim()}>
+            Save
+          </Button>
+        </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={confirmAsk !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmAsk(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmAsk?.kind === "purge"
+                ? "Delete this chat forever?"
+                : "Clear this conversation?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmAsk?.kind === "purge"
+                ? "Every message and branch in it will be permanently deleted. This cannot be undone."
+                : "Every message will be removed — but the chat, its name, its project and its pin stay."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void runConfirm()}>
+              {confirmAsk?.kind === "purge" ? "Delete forever" : "Clear"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

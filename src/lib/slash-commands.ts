@@ -142,6 +142,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     example: "/stats",
   },
   {
+    name: "find",
+    aliases: ["search"],
+    group: "Session",
+    summary: "Find text in this conversation and jump between matches",
+    argHint: "<text>",
+    example: "/find invoice",
+  },
+  {
     name: "new",
     aliases: [],
     group: "Session",
