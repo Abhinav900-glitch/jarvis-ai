@@ -66,6 +66,7 @@ import { Link, useNavigate } from "react-router";
 import { JarvisIcon } from "@/components/jarvis-icon";
 import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud";
 import { ShortcutsDialog } from "@/components/shortcuts-dialog";
+import { ImageStudio } from "@/components/image-studio";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -818,6 +819,7 @@ export default function Dashboard() {
   const [showMemory, setShowMemory] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [showStudio, setShowStudio] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [showAeroTransform, setShowAeroTransform] = useState(false);
   // The overview surface. Separate from Dev, like Claude's chat versus its code
@@ -1081,6 +1083,21 @@ export default function Dashboard() {
     if (!prompt || generating) return;
     setInput("");
     await generateImageWithPrompt(prompt);
+  };
+
+  // The Image Studio hands a finished picture over the same way a chat
+  // generation does — as a pending attachment — rather than sending it. The
+  // caption stays the user's to edit, and nothing ships until they press Send.
+  const studioUseInChat = (
+    image: { url: string; publicId: string; provider?: string },
+    promptText: string,
+  ) => {
+    setPendingImages((prev) => [
+      ...prev,
+      { url: image.url, publicId: image.publicId, provider: image.provider },
+    ]);
+    setInput(promptText);
+    window.setTimeout(() => inputRef.current?.focus(), 60);
   };
 
   // /image <prompt> — generate AND send as a message in one step
@@ -3655,6 +3672,9 @@ export default function Dashboard() {
       case "find":
         openFind(args || undefined);
         return;
+      case "studio":
+        setShowStudio(true);
+        return;
       case "new":
         setActiveId(null);
         return;
@@ -3741,6 +3761,13 @@ export default function Dashboard() {
         group: "Chat",
         icon: <FileSearch className="size-4" />,
         run: () => openFind(),
+      },
+      {
+        id: "image-studio",
+        label: "Image Studio — styles, models, shapes",
+        group: "Create",
+        icon: <ImagePlus className="size-4" />,
+        run: () => setShowStudio(true),
       },
       {
         id: "listen-thread",
@@ -4021,6 +4048,17 @@ export default function Dashboard() {
                 onClick={() => setShowPalette(true)}
               >
                 <Search className="size-4" />
+              </Button>
+
+              {/* Image Studio — the workbench for prompts the chat's
+                  one-shot /image cannot steer. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Image Studio"
+                onClick={() => setShowStudio(true)}
+              >
+                <ImagePlus className="size-4" />
               </Button>
 
               {/* Find in this conversation — the page's own ⌘F would only
@@ -5363,6 +5401,16 @@ export default function Dashboard() {
               />
             )}
           </AnimatePresence>
+
+          {/* ---- Image Studio ---- */}
+          <ImageStudio
+            open={showStudio}
+            onOpenChange={setShowStudio}
+            generate={async ({ prompt: p, model: m, aspectRatio }) =>
+              await generateImageAction({ prompt: p, model: m, aspectRatio })
+            }
+            onUseInChat={studioUseInChat}
+          />
 
           {/* ---- Session stats ---- */}
           <SessionStatsDialog

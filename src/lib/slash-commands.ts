@@ -142,6 +142,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     example: "/stats",
   },
   {
+    name: "studio",
+    aliases: ["art"],
+    group: "Create",
+    summary: "Image Studio — styles, models and shapes before you render",
+    example: "/studio",
+  },
+  {
     name: "find",
     aliases: ["search"],
     group: "Session",
