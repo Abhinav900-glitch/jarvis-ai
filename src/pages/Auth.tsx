@@ -15,11 +15,16 @@ import {
 } from "@/components/ui/input-otp";
 
 import { useAuth } from "@/hooks/use-auth";
-import { GoogleAuthProvider, signInWithPopup } from "firebase/auth";
 import { firebaseAuth } from "@/lib/firebase";
+import {
+  getRedirectResult,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithRedirect,
+} from "firebase/auth";
 import { JarvisIcon } from "@/components/jarvis-icon";
 import { ArrowRight, Loader2, Mail, UserX } from "lucide-react";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 interface AuthProps {
@@ -87,6 +92,8 @@ function describeFirebaseSignInError(error: unknown): string {
       return `Google sign-in is not enabled on this Firebase project. Firebase Console → Authentication → Sign-in method → Google → Enable, then try again.`;
     case "auth/popup-blocked":
       return "Your browser blocked the Google popup. Allow popups for this site and try again.";
+    case "auth/access-blocked":
+      return "Google blocked the sign-in because the app is still in *Testing* on its OAuth consent screen. Google Cloud Console → APIs & Services → OAuth consent screen → either add this Google address under Test users, or Publish the app.";;
     default:
       return error instanceof Error
         ? `Google sign-in failed: ${error.message}`
@@ -112,6 +119,42 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
       navigate(redirect);
     }
   }, [authLoading, isAuthenticated, navigate, redirect]);
+
+  // Finish a Google sign-in that arrived by redirect instead of popup.
+  //
+  // The popup is the first choice everywhere, but two environments cannot run
+  // one: an Android WebView (inside the APK) blocks `window.open`, and a
+  // browser with popups disabled rejects it. Both are handled by falling back
+  // to `signInWithRedirect`, which comes back to this very page carrying the
+  // result — without this effect that round trip would land here and be
+  // silently dropped, leaving the user staring at the form again.
+  //
+  // The ref makes it run once even if `redirect` later changes: the second
+  // call would have nothing to resolve and would only re-run the effect body.
+  const redirectHandled = useRef(false);
+  useEffect(() => {
+    if (redirectHandled.current) return;
+    redirectHandled.current = true;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await getRedirectResult(firebaseAuth());
+        if (!result || cancelled) return;
+        const token = await result.user.getIdToken();
+        await signIn("firebase", { token });
+        if (!cancelled) navigate(redirect);
+      } catch (error) {
+        console.error("Google redirect sign-in error:", error);
+        if (!cancelled) {
+          setError(describeFirebaseSignInError(error));
+          setIsLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [signIn, navigate, redirect]);
   const handleEmailSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsLoading(true);
@@ -156,11 +199,13 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
   const handleGoogleLogin = async () => {
     setIsLoading(true);
     setError(null);
+    // Declared outside the try: the catch block reuses it for the redirect
+    // fallback when the popup could not be opened at all.
+    const provider = new GoogleAuthProvider();
     try {
       // Firebase owns the Google popup and mints the ID token; Convex Auth
       // trades that token for a session. Both halves are needed — the popup
       // must be opened straight from the click to keep the user gesture.
-      const provider = new GoogleAuthProvider();
       const credential = await signInWithPopup(firebaseAuth(), provider);
       const token = await credential.user.getIdToken();
       await signIn("firebase", { token });
@@ -174,6 +219,25 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
       ) {
         setIsLoading(false);
         return;
+      }
+      // No popup to close means no popup could be opened: the Android
+      // WebView inside the APK blocks window.open, and so do browsers with a
+      // popup blocker. The redirect flow runs in both — same click, same
+      // provider, it just navigates instead of opening a window — so retry
+      // that way rather than failing with something the user cannot fix.
+      if (
+        code === "auth/popup-blocked" ||
+        code === "auth/operation-not-supported-in-this-environment"
+      ) {
+        try {
+          await signInWithRedirect(firebaseAuth(), provider);
+          return;
+        } catch (redirectError) {
+          console.error("Google redirect fallback error:", redirectError);
+          setError(describeFirebaseSignInError(redirectError));
+          setIsLoading(false);
+          return;
+        }
       }
       setError(describeFirebaseSignInError(error));
       setIsLoading(false);
