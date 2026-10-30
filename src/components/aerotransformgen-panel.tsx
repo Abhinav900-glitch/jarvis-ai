@@ -13,7 +13,7 @@
 // it, and shows you the whole rulebook up front, is not.
 // ---------------------------------------------------------------------------
 
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -35,7 +35,7 @@ import {
 } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { GATE_RULES } from "@/lib/agent-contract";
+import { AUTO_WRITE_BUDGET, GATE_RULES } from "@/lib/agent-contract";
 import { diffLines, diffStats, withContext, type DiffLine } from "@/lib/agent-diff";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { cn } from "@/lib/utils";
@@ -295,10 +295,14 @@ export function AeroTransformGenPanel({
   const advance = useAction(api.agent.advance);
   const answer = useAction(api.agent.answer);
   const decideProposal = useAction(api.agent.decideProposal);
+  const decideAll = useAction(api.agent.decideAll);
   const rewind = useAction(api.agent.rewind);
   const cancel = useAction(api.agent.cancel);
   const loadRoster = useAction(api.agent.freeRoster);
   const loadQuota = useAction(api.agent.quota);
+  // Named for the switch, not for the state: `setMode` is already the setter
+  // of the local mode, and shadowing it would be a silent bug.
+  const changeMode = useMutation(api.agentStore.setMode);
   type Roster = Awaited<ReturnType<typeof loadRoster>>;
   type Quota = Awaited<ReturnType<typeof loadQuota>>;
 
@@ -308,7 +312,9 @@ export function AeroTransformGenPanel({
   const proposals = useQuery(api.agentStore.proposals, runIdArg(runId));
   const checkpoints = useQuery(api.agentStore.checkpoints, { limit: 8 });
 
-  const [mode, setMode] = useState<"readonly" | "ask" | "auto">("ask");
+  // The mode the *next* run will start in. While a run exists the switch
+  // shows and edits that run's own mode instead — see `activeMode` below.
+  const [mode, setMode] = useState<"readonly" | "ask" | "auto">("auto");
   const [viewing, setViewing] = useState<string | null>(null);
   const viewingFile = useQuery(
     api.agentStore.workspaceFile,
@@ -418,6 +424,21 @@ export function AeroTransformGenPanel({
     }
   };
 
+  const handleDecideAll = async (decision: "apply" | "reject") => {
+    if (!runId || busy || driving.current) return;
+    driving.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await decideAll({ runId, decision });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not record that.");
+    } finally {
+      driving.current = false;
+      setBusy(false);
+    }
+  };
+
   const handleRewind = async (checkpointId: string) => {
     if (busy) return;
     setBusy(true);
@@ -465,6 +486,9 @@ export function AeroTransformGenPanel({
   const gated = rows.find((s) => s.status === "needs_decision");
   const pending = (proposals ?? []).filter((p) => p.status === "pending");
   const files = tree ?? [];
+  // What the switch reflects: a live run's own mode, falling back to the
+  // preference held for the next one.
+  const activeMode = run?.mode ?? mode;
   const status = run ? (STATUS_TONE[run.status] ?? STATUS_TONE.running) : null;
   const working = run?.status === "running" || run?.status === "planning";
 
@@ -509,6 +533,9 @@ export function AeroTransformGenPanel({
             {run ? (
               <span className="hud-readout ml-auto text-[11px] text-muted-foreground">
                 {run.done}/{run.planned || "–"} steps · {run.calls} calls
+                {run.mode === "auto"
+                  ? ` · ${run.writes ?? 0}/${AUTO_WRITE_BUDGET} writes`
+                  : ""}
               </span>
             ) : null}
             <button
@@ -579,7 +606,9 @@ export function AeroTransformGenPanel({
                 {/* Codex's sandbox modes. Spelled out rather than an
                     abbreviation because "auto" here means the agent rewrites
                     your files without showing you, and that should never be a
-                    thing you picked by accident. */}
+                    thing you picked by accident. The switch is live: it edits
+                    the running run's mode, which is read again on every step,
+                    so "just write it" does not cost a new plan. */}
                 <div className="ml-1 inline-flex overflow-hidden rounded-md border border-border/70">
                   {(
                     [
@@ -591,18 +620,25 @@ export function AeroTransformGenPanel({
                     <button
                       key={value}
                       type="button"
-                      onClick={() => setMode(value)}
-                      disabled={busy || Boolean(runId)}
+                      onClick={() => {
+                        if (value === activeMode) return;
+                        setMode(value);
+                        if (!runId) return;
+                        void changeMode({ runId, mode: value }).catch(() =>
+                          setError("Could not switch the mode for this run."),
+                        );
+                      }}
+                      disabled={busy}
                       title={
                         value === "readonly"
                           ? "Jarvis can look but not touch anything"
                           : value === "ask"
                             ? "Every edit is shown as a diff and waits for you"
-                            : "Jarvis applies edits itself, rewinding still possible"
+                            : `Jarvis applies edits itself from the next step, rewinding still possible · ${AUTO_WRITE_BUDGET} changes max`
                       }
                       className={cn(
                         "px-2 py-1 text-[10px] font-medium uppercase tracking-widest transition-colors disabled:opacity-40",
-                        mode === value
+                        activeMode === value
                           ? "bg-primary text-primary-foreground"
                           : "text-muted-foreground hover:text-foreground",
                       )}
@@ -638,6 +674,33 @@ export function AeroTransformGenPanel({
                 onDecide={(id, decision) => void handleDecide(id, decision)}
               />
             ))}
+
+            {/* One click for a whole batch. The agent can propose several edits
+                in a single round, and approving them one at a time would turn
+                one decision into four. */}
+            {pending.length > 1 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="hud-readout text-[11px] text-muted-foreground">
+                  {pending.length} edits waiting
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleDecideAll("apply")}
+                  disabled={busy}
+                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-opacity disabled:opacity-40"
+                >
+                  Approve all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDecideAll("reject")}
+                  disabled={busy}
+                  className="rounded-md border border-border/70 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground disabled:opacity-40"
+                >
+                  Reject all
+                </button>
+              </div>
+            ) : null}
 
             {/* A pending edit and a pending question are different asks, so they
                 never appear together: the diff is the whole request. */}

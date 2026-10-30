@@ -335,8 +335,11 @@ const schema = defineSchema(
       /**
        * How much the agent may do without asking. Codex's sandbox modes.
        * `readonly` refuses every write, `ask` proposes each one for approval,
-       * `auto` applies them. Default is `ask` because an agent that can rewrite
-       * files and never shows you the rewrite is not a tool, it is a hazard.
+       * `auto` applies them. `auto` is the default because it is the mode the
+       * product is for — and it is safe to default to: every automatic write
+       * is checkpointed first (so any single change can be rewound), the whole
+       * mode can be switched mid-run, and {@link AUTO_WRITE_BUDGET} caps how
+       * much one run may rewrite at all.
        */
       mode: v.union(
         v.literal("readonly"),
@@ -351,6 +354,10 @@ const schema = defineSchema(
       done: v.number(),
       /** Free-tier calls this run has spent. */
       calls: v.number(),
+      /** File changes this run has applied itself (`auto` writes). */
+      writes: v.optional(v.number()),
+      /** Set once the verify step has been appended, so it is appended once. */
+      verified: v.optional(v.boolean()),
       answer: v.optional(v.string()),
       error: v.optional(v.string()),
       createdAt: v.number(),

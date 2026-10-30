@@ -27,6 +27,7 @@ import {
   type AgentMode,
   type ToolOutcome,
 } from "../lib/agent-tools";
+import { AUTO_WRITE_BUDGET } from "../lib/agent-contract";
 
 export interface ExecContext {
   ctx: GenericActionCtx<DataModel>;
@@ -302,6 +303,24 @@ async function commit(
     };
   }
 
+  // auto: the run's budget comes first, so a run that runs away with itself
+  // stops while it can still be read rather than after it has rewritten the
+  // workspace. The refusal is written for the model, which reads it as the
+  // tool result and finishes the run instead of retrying the write.
+  const run = (await ec.ctx.runQuery(internal.agentStore.getRun, {
+    runId: ec.runId,
+    userId: ec.userId,
+  })) as { writes?: number } | null;
+  const used = run?.writes ?? 0;
+  if (used >= AUTO_WRITE_BUDGET) {
+    return {
+      result: `This run has reached its limit of ${AUTO_WRITE_BUDGET} file changes, so no further edits can be applied. Do not retry. Finish now: summarise what is already in the workspace, what works, and what is left undone.`,
+      summary: `Refused ${path} (write budget reached)`,
+      mutated: false,
+      refused: true,
+    };
+  }
+
   // auto: snapshot first, so the change is always reversible.
   await ec.ctx.runMutation(internal.agentStore.recordCheckpoint, {
     userId: ec.userId,
@@ -325,11 +344,11 @@ async function commit(
     });
   }
 
-  // Bound the snapshot history. 500 undos is far past what anyone scrolls back
-  // through, and the table is otherwise unbounded.
-  await ec.ctx.runMutation(internal.agentStore.pruneCheckpoints, {
-    userId: ec.userId,
-    keep: 500,
+  // Counted against the budget, and checkpoint pruning now lives inside
+  // recordCheckpoint itself — the one place every snapshot is written is the
+  // one place that can bound them.
+  await ec.ctx.runMutation(internal.agentStore.countWrite, {
+    runId: ec.runId,
   });
 
   return {

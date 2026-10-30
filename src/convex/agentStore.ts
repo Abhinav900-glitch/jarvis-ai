@@ -13,15 +13,15 @@
 
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { internalMutation, internalQuery, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { runStatus, stepStatus } from "../lib/agent-contract";
+import { CHECKPOINT_KEEP, runStatus, stepStatus } from "../lib/agent-contract";
 
 /** A run id is not a capability. */
-function assertOwner(
-  run: { userId: string } | null | undefined,
+function assertOwner<T extends { userId: string } | null | undefined>(
+  run: T,
   userId: Id<"users">,
-): void {
+): asserts run is NonNullable<T> {
   if (!run || run.userId !== userId) throw new Error("Not your run.");
 }
 
@@ -104,10 +104,12 @@ export const createRun = internalMutation({
       goal: args.goal,
       title: args.title,
       status: "planning",
-      // "ask" is the default on purpose. An agent that can rewrite files and
-      // never shows you the rewrite is not a tool, it is a hazard — so the
-      // safe mode is what you get without choosing.
-      mode: args.mode ?? "ask",
+      // `auto` is what the modes default to: writing files is the job. What
+      // makes that safe to default to is that every automatic write is
+      // checkpointed before it lands (so it can be rewound), the mode can be
+      // switched mid-run, and AUTO_WRITE_BUDGET caps how much one run may
+      // rewrite. An explicit `readonly` or `ask` still wins.
+      mode: args.mode ?? "auto",
       cascade: args.cascade ?? false,
       planned: 0,
       done: 0,
@@ -201,6 +203,57 @@ export const bumpRun = internalMutation({
       calls: run.calls + args.calls,
       updatedAt: Date.now(),
     });
+  },
+});
+
+/** Count one applied write against the run's budget. */
+export const countWrite = internalMutation({
+  args: { runId: v.id("agentRuns") },
+  handler: async (ctx, args) => {
+    const run = await ctx.db.get(args.runId);
+    if (!run) throw new Error("Run is gone.");
+    await ctx.db.patch(args.runId, {
+      writes: (run.writes ?? 0) + 1,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+/**
+ * Append the verification step to an `auto` plan, once.
+ *
+ * Auto mode should prove its work rather than declare it, but a verify step
+ * paid for at plan time would spend a request on runs that wrote nothing to
+ * verify. So it is appended here — only when the run has actually changed
+ * files — and guarded by `verified` so the run cannot add a second one.
+ *
+ * Returns false when there is nothing to append, which the loop reads as
+ * "finish the run as it stands".
+ */
+export const appendVerifyStep = internalMutation({
+  args: { runId: v.id("agentRuns"), userId: v.id("users"), now: v.number() },
+  handler: async (ctx, args) => {
+    const run = await ctx.db.get(args.runId);
+    assertOwner(run, args.userId);
+    if (run.verified || run.mode !== "auto" || (run.writes ?? 0) === 0) {
+      return false;
+    }
+    await ctx.db.insert("agentSteps", {
+      runId: args.runId,
+      userId: args.userId,
+      position: run.planned,
+      title: "Verify the finished work by running it",
+      detail:
+        "Everything planned is written, so check it rather than asserting it: run the entry point with run_code, read the output, fix what fails, then run it again. Finish with status \"done\" and say in output exactly what you ran and what happened.",
+      status: "pending",
+      createdAt: args.now,
+    });
+    await ctx.db.patch(args.runId, {
+      verified: true,
+      planned: run.planned + 1,
+      updatedAt: args.now,
+    });
+    return true;
   },
 });
 
@@ -360,13 +413,32 @@ export const recordCheckpoint = internalMutation({
     now: v.number(),
   },
   handler: async (ctx, args) => {
-    return await ctx.db.insert("workspaceCheckpoints", {
+    const id = await ctx.db.insert("workspaceCheckpoints", {
       userId: args.userId,
       path: args.path,
       previous: args.previous,
       runId: args.runId,
       createdAt: args.now,
     });
+
+    // Bound the history here, in the one place every checkpoint is written,
+    // rather than in whichever caller happened to remember. Auto runs create a
+    // checkpoint per file change and each one stores the file's full previous
+    // contents, so without this the table grows with every write.
+    //
+    // The window is deliberately finite: prune on every write, so the steady
+    // state sits at the cap and a table left over from a looser limit is drawn
+    // down a window at a time instead of in one unbounded read.
+    const rows = await ctx.db
+      .query("workspaceCheckpoints")
+      .withIndex("by_user_time", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(CHECKPOINT_KEEP + 25);
+    for (const row of rows.slice(CHECKPOINT_KEEP)) {
+      await ctx.db.delete(row._id);
+    }
+
+    return id;
   },
 });
 
@@ -380,19 +452,6 @@ export const listCheckpoints = internalQuery({
       .withIndex("by_user_time", (q) => q.eq("userId", args.userId))
       .order("desc")
       .take(limit);
-  },
-});
-
-/** Drop checkpoints older than this, so the table cannot grow without bound. */
-export const pruneCheckpoints = internalMutation({
-  args: { userId: v.id("users"), keep: v.number() },
-  handler: async (ctx, args) => {
-    const rows = await ctx.db
-      .query("workspaceCheckpoints")
-      .withIndex("by_user_time", (q) => q.eq("userId", args.userId))
-      .order("desc")
-      .collect();
-    for (const row of rows.slice(args.keep)) await ctx.db.delete(row._id);
   },
 });
 
@@ -517,6 +576,39 @@ export const recent = query({
       .withIndex("by_user_time", (q) => q.eq("userId", userId))
       .order("desc")
       .take(limit);
+  },
+});
+
+/**
+ * Switch the mode of a live run.
+ *
+ * The mode is read fresh on every step, so this takes effect from the next
+ * step rather than needing a restart — which is the point of it: "this is
+ * going too slowly, just write it" is said once, mid-run, not by killing the
+ * run and paying for a new plan.
+ *
+ * Deliberately does *not* sweep up edits already waiting for approval. Moving
+ * to `auto` is permission for what happens next, not retroactive consent for
+ * what is already on the table — those are approved one by one, or all at once,
+ * in the panel.
+ */
+export const setMode = mutation({
+  args: {
+    runId: v.id("agentRuns"),
+    mode: v.union(
+      v.literal("readonly"),
+      v.literal("ask"),
+      v.literal("auto"),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
+    const run = await ctx.db.get(args.runId);
+    assertOwner(run, userId);
+    if (run.mode === args.mode) return { mode: args.mode };
+    await ctx.db.patch(args.runId, { mode: args.mode, updatedAt: Date.now() });
+    return { mode: args.mode };
   },
 });
 

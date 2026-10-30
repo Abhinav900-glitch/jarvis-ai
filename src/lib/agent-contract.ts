@@ -94,3 +94,31 @@ export function gateFor(text: string): string | null {
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Budgets
+// ---------------------------------------------------------------------------
+
+/**
+ * File changes one run may apply before it must stop and report.
+ *
+ * `auto` writes without asking, so the only thing standing between a stray
+ * prompt and a rewritten workspace is a limit. Forty is far past any honest
+ * plan — the planner caps a plan at six steps — while still small enough that
+ * a loop going wrong cannot spend a day's worth of requests or bury the
+ * Undo list before the user notices.
+ *
+ * Lives here rather than in the exec module so the panel can show the counter
+ * next to the mode switch: a budget nobody can see is not a budget.
+ */
+export const AUTO_WRITE_BUDGET = 40;
+
+/**
+ * Undo points kept per workspace.
+ *
+ * Each one stores a file's full previous contents, so this is both the storage
+ * ceiling and the length of the rewind history. The panel shows eight at a
+ * time; sixty is a generous scroll-back without letting the table grow
+ * without bound.
+ */
+export const CHECKPOINT_KEEP = 60;

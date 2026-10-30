@@ -356,14 +356,19 @@ async function runStepWithTools(
     }
 
     messages.push(assistantToolMessage(result.text, calls));
+    // The whole batch is worked before the pause, not just its first edit:
+    // four writes in one round become four proposals the user can approve in a
+    // single click. Nothing reasons over a half-applied batch either — these
+    // messages are discarded when we return, so the next turn starts from the
+    // workspace as it actually is after the decisions.
+    let proposed = false;
     for (const call of calls) {
       const outcome = await executeTool(ec, call);
       activity.push(`${call.name} → ${outcome.summary}`);
       messages.push(toolMessage(call.id, call.name, outcome.result));
-      if (outcome.proposed) {
-        return { env: null, proposed: true, activity };
-      }
+      if (outcome.proposed) proposed = true;
     }
+    if (proposed) return { env: null, proposed: true, activity };
   }
 
   return {
@@ -549,6 +554,19 @@ async function runLoop(
     budget--;
 
     if (env.status === "done") {
+      // Auto mode proves the work rather than asserting it. The verify step is
+      // appended here instead of at plan time because a run that wrote nothing
+      // has nothing to prove — and `appendVerifyStep` refuses a second one, so
+      // this cannot loop. Returning `running` hands straight back to the panel's
+      // driver, which pokes again because the run document just changed.
+      const appended = await ctx.runMutation(
+        internal.agentStore.appendVerifyStep,
+        { runId, userId, now: Date.now() },
+      );
+      if (appended) {
+        if (budget <= 0) return { status: "running", remaining: 0 };
+        continue;
+      }
       await ctx.runMutation(internal.agentStore.setRun, {
         runId,
         status: "done",
@@ -574,6 +592,108 @@ async function runLoop(
 
     if (budget <= 0) return { status: "running", remaining: 0 };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Deciding on proposals
+// ---------------------------------------------------------------------------
+
+interface PendingProposal {
+  _id: Id<"agentProposals">;
+  path: string;
+  before?: string;
+  after?: string;
+  status: string;
+}
+
+/**
+ * Apply or reject one proposal. Ownership has already been checked — this is
+ * the shared half of deciding, so a single approval and an approve-all cannot
+ * disagree about what "apply" means.
+ *
+ * Applying goes through the same checkpoint path `auto` mode uses, so an
+ * approved edit is exactly as reversible as an automatic one: the gate changes
+ * who decided, not whether it can be undone.
+ */
+async function decideOne(
+  ctx: GenericActionCtx<DataModel>,
+  userId: Id<"users">,
+  runId: Id<"agentRuns">,
+  proposal: PendingProposal,
+  decision: "apply" | "reject",
+  now: number,
+): Promise<void> {
+  if (decision === "apply") {
+    await ctx.runMutation(internal.agentStore.recordCheckpoint, {
+      userId,
+      path: proposal.path,
+      previous: proposal.before,
+      runId,
+      now,
+    });
+    if (proposal.after === undefined) {
+      await ctx.runMutation(internal.agentStore.removeFile, {
+        userId,
+        path: proposal.path,
+      });
+    } else {
+      await ctx.runMutation(internal.agentStore.putFile, {
+        userId,
+        path: proposal.path,
+        content: proposal.after,
+        now,
+      });
+    }
+  }
+
+  await ctx.runMutation(internal.agentStore.decideProposal, {
+    proposalId: proposal._id,
+    status: decision === "apply" ? "applied" : "rejected",
+  });
+}
+
+/**
+ * Un-park the step that asked, put the run back to `running`, resume the loop.
+ *
+ * The step goes back to `pending` rather than being marked done. Re-running it
+ * is deliberate: the model re-reads the file as it now actually is, so an
+ * approval lands as "the edit is there, carry on" and a rejection as "that did
+ * not happen, find another way". Marking it done would claim work that never
+ * happened.
+ *
+ * The loop is entered once, after every decision has been recorded — several
+ * approvals are one decision to the user, not one request each.
+ */
+async function resumeAfterDecision(
+  ctx: GenericActionCtx<DataModel>,
+  runId: Id<"agentRuns">,
+  userId: Id<"users">,
+  decision: "apply" | "reject",
+  now: number,
+): Promise<{ status: string; remaining: number }> {
+  const parked = (await ctx.runQuery(internal.agentStore.gatedStep, {
+    runId,
+    userId,
+  })) as StepRow | null;
+  if (parked) {
+    await ctx.runMutation(internal.agentStore.patchStep, {
+      stepId: parked._id,
+      patch: {
+        status: "pending",
+        question: undefined,
+        gateReason: undefined,
+        options: undefined,
+        answer: decision === "apply" ? "approved" : "rejected",
+      },
+    });
+  }
+
+  await ctx.runMutation(internal.agentStore.setRun, {
+    runId,
+    status: "running",
+    now,
+  });
+  return runLoop(ctx, runId, userId);
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +733,7 @@ export const start = action({
       userId,
       goal,
       title: goal.slice(0, 70),
-      mode: args.mode ?? "ask",
+      mode: args.mode ?? "auto",
       now,
     })) as Id<"agentRuns">;
 
@@ -696,9 +816,9 @@ export const answer = action({
 /**
  * Approve or reject one proposed edit, then carry straight on.
  *
- * Applying goes through the same checkpoint path the agent's own `auto` mode
- * uses, so an approved edit is exactly as reversible as an automatic one — the
- * approval gate changes who decided, not whether it can be undone.
+ * The applying and the resuming are `decideOne` and `resumeAfterDecision`,
+ * shared with `decideAll` so that one approval and a batch of them cannot drift
+ * apart about what "apply" means.
  */
 export const decideProposal = action({
   args: {
@@ -713,13 +833,7 @@ export const decideProposal = action({
     const rows = (await ctx.runQuery(internal.agentStore.pendingProposals, {
       runId: args.runId,
       userId,
-    })) as {
-      _id: Id<"agentProposals">;
-      path: string;
-      before?: string;
-      after?: string;
-      status: string;
-    }[];
+    })) as PendingProposal[];
     const proposal = rows.find((r) => r._id === args.proposalId);
     if (!proposal) throw new Error("That proposal is gone.");
     if (proposal.status !== "pending") {
@@ -727,65 +841,40 @@ export const decideProposal = action({
     }
 
     const now = Date.now();
-    if (args.decision === "apply") {
-      await ctx.runMutation(internal.agentStore.recordCheckpoint, {
-        userId,
-        path: proposal.path,
-        previous: proposal.before,
-        runId: args.runId,
-        now,
-      });
-      if (proposal.after === undefined) {
-        await ctx.runMutation(internal.agentStore.removeFile, {
-          userId,
-          path: proposal.path,
-        });
-      } else {
-        await ctx.runMutation(internal.agentStore.putFile, {
-          userId,
-          path: proposal.path,
-          content: proposal.after,
-          now,
-        });
-      }
-    }
+    await decideOne(ctx, userId, args.runId, proposal, args.decision, now);
+    return resumeAfterDecision(ctx, args.runId, userId, args.decision, now);
+  },
+});
 
-    await ctx.runMutation(internal.agentStore.decideProposal, {
-      proposalId: args.proposalId,
-      status: args.decision === "apply" ? "applied" : "rejected",
-    });
+/**
+ * Approve or reject every edit waiting on this run, then carry straight on.
+ *
+ * Worth having as its own call rather than a client-side loop over
+ * `decideProposal`: one action, one set of mutations, and exactly one entry
+ * into the loop at the end — so a batch of four approvals costs no more than
+ * one, and the driver guard in the panel cannot be re-entered between them.
+ */
+export const decideAll = action({
+  args: {
+    runId: v.id("agentRuns"),
+    decision: v.union(v.literal("apply"), v.literal("reject")),
+  },
+  handler: async (ctx, args): Promise<{ status: string; remaining: number }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
 
-    // The step that asked for approval goes back to `pending` rather than being
-    // marked done. Re-running it is deliberate: the model re-reads the file as
-    // it now actually is, so an approval lands as "the edit is there, carry on"
-    // and a rejection as "that did not happen, find another way". Marking it
-    // done would claim work that never happened.
-    const parked = (await ctx.runQuery(internal.agentStore.gatedStep, {
+    const rows = (await ctx.runQuery(internal.agentStore.pendingProposals, {
       runId: args.runId,
       userId,
-    })) as StepRow | null;
-    if (parked) {
-      await ctx.runMutation(internal.agentStore.patchStep, {
-        stepId: parked._id,
-        patch: {
-          status: "pending",
-          question: undefined,
-          gateReason: undefined,
-          options: undefined,
-          answer: args.decision === "apply" ? "approved" : "rejected",
-        },
-      });
+    })) as PendingProposal[];
+    const open = rows.filter((r) => r.status === "pending");
+    if (open.length === 0) throw new Error("Nothing is waiting on you.");
+
+    const now = Date.now();
+    for (const proposal of open) {
+      await decideOne(ctx, userId, args.runId, proposal, args.decision, now);
     }
-
-    await ctx.runMutation(internal.agentStore.setRun, {
-      runId: args.runId,
-      status: "running",
-      now,
-    });
-
-    // Rejecting several in a row is one decision, not one request each, so the
-    // loop is entered once at the end either way.
-    return runLoop(ctx, args.runId, userId);
+    return resumeAfterDecision(ctx, args.runId, userId, args.decision, now);
   },
 });
 
