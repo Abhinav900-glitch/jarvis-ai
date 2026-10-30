@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { v } from "convex/values";
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { runStatus, stepStatus } from "../lib/agent-contract";
@@ -475,13 +476,18 @@ export const dropCheckpoint = internalMutation({
 // Client-facing reads
 // ---------------------------------------------------------------------------
 
+// The identity's `subject` is `userId|sessionId`, not the user id — that is
+// precisely what `getAuthUserId` splits off. Comparing a stored `userId`
+// against the raw subject never matches, which silently returned null/empty
+// from every read below and stopped the panel's driver from ever calling
+// `advance`. One helper, used everywhere, so this cannot drift again.
 export const get = query({
   args: { runId: v.id("agentRuns") },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) return null;
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
     const run = await ctx.db.get(args.runId);
-    if (!run || run.userId !== identity.subject) return null;
+    if (!run || run.userId !== userId) return null;
     return run;
   },
 });
@@ -489,10 +495,10 @@ export const get = query({
 export const steps = query({
   args: { runId: v.id("agentRuns") },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) return [];
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
     const run = await ctx.db.get(args.runId);
-    if (!run || run.userId !== identity.subject) return [];
+    if (!run || run.userId !== userId) return [];
     return await ctx.db
       .query("agentSteps")
       .withIndex("by_run", (q) => q.eq("runId", args.runId))
@@ -503,14 +509,12 @@ export const steps = query({
 export const recent = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) return [];
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
     const limit = Math.min(Math.max(args.limit ?? 8, 1), 25);
     return await ctx.db
       .query("agentRuns")
-      .withIndex("by_user_time", (q) =>
-        q.eq("userId", identity.subject as Id<"users">),
-      )
+      .withIndex("by_user_time", (q) => q.eq("userId", userId))
       .order("desc")
       .take(limit);
   },
@@ -524,13 +528,11 @@ export const recent = query({
 export const workspaceTree = query({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) return [];
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
     const rows = await ctx.db
       .query("workspaceFiles")
-      .withIndex("by_user", (q) =>
-        q.eq("userId", identity.subject as Id<"users">),
-      )
+      .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
     return rows.map((r) => ({
       path: r.path,
@@ -543,12 +545,12 @@ export const workspaceTree = query({
 export const workspaceFile = query({
   args: { path: v.string() },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) return null;
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
     const row = await ctx.db
       .query("workspaceFiles")
       .withIndex("by_user_path", (q) =>
-        q.eq("userId", identity.subject as Id<"users">).eq("path", args.path),
+        q.eq("userId", userId).eq("path", args.path),
       )
       .first();
     return row ?? null;
@@ -559,10 +561,10 @@ export const workspaceFile = query({
 export const proposals = query({
   args: { runId: v.id("agentRuns") },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) return [];
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
     const run = await ctx.db.get(args.runId);
-    if (!run || run.userId !== identity.subject) return [];
+    if (!run || run.userId !== userId) return [];
     return await ctx.db
       .query("agentProposals")
       .withIndex("by_run", (q) => q.eq("runId", args.runId))
@@ -573,14 +575,12 @@ export const proposals = query({
 export const checkpoints = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) return [];
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
     const limit = Math.min(Math.max(args.limit ?? 20, 1), 100);
     const rows = await ctx.db
       .query("workspaceCheckpoints")
-      .withIndex("by_user_time", (q) =>
-        q.eq("userId", identity.subject as Id<"users">),
-      )
+      .withIndex("by_user_time", (q) => q.eq("userId", userId))
       .order("desc")
       .take(limit);
     return rows.map((r) => ({
