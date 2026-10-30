@@ -9,7 +9,11 @@
     "lint": "eslint .",
     "test": "bun test",
     "format": "prettier --write .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "icons": "bun scripts/gen-icons.ts",
+    "android:init": "cap add android && bun run icons",
+    "apk": "bun run build && cap sync android && cd android && ./gradlew assembleDebug",
+    "apk:release": "bun run build && cap sync android && cd android && ./gradlew assembleRelease"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.2",
@@ -91,6 +95,7 @@
   "devDependencies": {
     "@capacitor/cli": "^8.5.2",
     "@eslint/js": "^9.39.1",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/bun": "^1.4.2",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
