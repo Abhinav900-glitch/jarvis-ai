@@ -3877,6 +3877,15 @@ export default function Dashboard() {
         icon: isDark ? <Sun className="size-4" /> : <Moon className="size-4" />,
         run: toggleTheme,
       },
+      {
+        // Listed because the ? key is the only other way in, and a phone has
+        // no ? key.
+        id: "shortcuts",
+        label: "Keyboard shortcuts",
+        group: "Configure",
+        icon: <Keyboard className="size-4" />,
+        run: () => setShowShortcuts(true),
+      },
       ...sessions.slice(0, 8).map((session) => ({
         id: `session-${session._id}`,
         label: session.title,
@@ -3889,7 +3898,10 @@ export default function Dashboard() {
 
   return (
     <TooltipProvider>
-      <div className="flex h-screen bg-background text-foreground">
+      {/* dvh, not vh: on a phone the address bar shrinks the viewport, and a
+          vh shell pushes the composer behind it. h-screen stays as the
+          pre-dvh fallback in the same class list. */}
+      <div className="flex h-dvh bg-background text-foreground">
         {/* ---- Desktop sidebar ---- */}
         <aside className="hidden w-64 shrink-0 flex-col border-r bg-sidebar md:flex">
           <div className="flex items-center justify-between px-5 py-4">
@@ -4003,8 +4015,9 @@ export default function Dashboard() {
         >
           {/* ---- Menu bar ---- */}
           <header className="flex items-center justify-between border-b px-4 py-2 sm:px-6">
-            {/* Left: hamburger + title */}
-            <div className="flex items-center gap-2">
+            {/* Left: hamburger + title. min-w-0 is what lets the title
+                actually truncate instead of pushing the buttons sideways. */}
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <button
                 onClick={() => setSidebarOpen(true)}
                 className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
@@ -4016,7 +4029,7 @@ export default function Dashboard() {
                 <JarvisIcon className="size-4 text-muted-foreground" />
                 <Separator orientation="vertical" className="h-4" />
               </div>
-              <span className="max-w-[180px] truncate text-sm text-muted-foreground sm:max-w-none">
+              <span className="min-w-0 max-w-[38vw] truncate text-sm text-muted-foreground sm:max-w-[20rem]">
                 {sessionTitle}
               </span>
               {activeId ? (
@@ -4072,11 +4085,14 @@ export default function Dashboard() {
                 <FileSearch className="size-4" />
               </Button>
 
-              {/* Keyboard shortcuts. A key that only works if you already know
-                  it exists is not a shortcut; this makes it findable. */}
+              {/* Keyboard shortcuts, engines, pins and the WebSocket panel
+                  sit below sm: nine icon buttons will not fit next to a title
+                  on a phone, and every one of them is also a command-palette
+                  entry — so nothing becomes unreachable by hiding them. */}
               <Button
                 variant="ghost"
                 size="icon-sm"
+                className="hidden sm:inline-flex"
                 title="Keyboard shortcuts (?)"
                 onClick={() => setShowShortcuts(true)}
               >
@@ -4087,6 +4103,7 @@ export default function Dashboard() {
               <Button
                 variant="ghost"
                 size="icon-sm"
+                className="hidden sm:inline-flex"
                 title="Engines — smart routing and pinned models"
                 onClick={() => setShowEngines(true)}
               >
@@ -4094,7 +4111,7 @@ export default function Dashboard() {
               </Button>
 
               {/* Pinned messages from every chat. */}
-              <div className="relative">
+              <div className="relative hidden sm:block">
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -4110,6 +4127,7 @@ export default function Dashboard() {
               <Button
                 variant="ghost"
                 size="icon-sm"
+                className="hidden sm:inline-flex"
                 title="Local live session (WebSocket pipeline)"
                 onClick={() => setShowLivePanel(true)}
               >
@@ -4424,7 +4442,7 @@ export default function Dashboard() {
                 }}
                 placeholder="Find in this conversation…"
                 aria-label="Find in this conversation"
-                className="h-8 w-full max-w-xs rounded-md border border-input bg-background px-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                className="h-8 min-w-0 w-full flex-1 rounded-md border border-input bg-background px-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 sm:max-w-xs"
               />
               <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
                 {findCount === 0
@@ -4467,7 +4485,7 @@ export default function Dashboard() {
           {/* ---- Messages ---- */}
           <div ref={scrollRef} className="flex-1 overflow-y-auto">
             {!messages || messages.length === 0 ? (
-              <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-6">
+              <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-4 sm:px-6">
                 <div className="hud-panel hud-corners relative flex size-20 items-center justify-center rounded-full">
                   <div
                     aria-hidden
@@ -4565,7 +4583,7 @@ export default function Dashboard() {
                 </div>
               </div>
             ) : (
-              <div className="mx-auto max-w-2xl px-6 py-8">
+              <div className="mx-auto max-w-2xl px-4 py-8 sm:px-6">
                 {activeId ? (
                   <BranchBar
                     sessionId={activeId}
@@ -5133,7 +5151,7 @@ export default function Dashboard() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 8 }}
                 transition={{ duration: 0.2 }}
-                className="border-t border-primary/15 bg-accent/20 px-6 py-4"
+                className="border-t border-primary/15 bg-accent/20 px-4 py-4 sm:px-6"
               >
                 <div className="mx-auto max-w-2xl">
                   {/* Search console. The field is the hero: a lit cyan
@@ -5250,7 +5268,7 @@ export default function Dashboard() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 8 }}
                 transition={{ duration: 0.2 }}
-                className="border-t px-6 py-3"
+                className="border-t px-4 py-3 sm:px-6"
               >
                 <div className="mx-auto max-w-2xl">
                   <div className="mb-2 flex items-center gap-2">
@@ -5312,7 +5330,7 @@ export default function Dashboard() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 8 }}
                 transition={{ duration: 0.2 }}
-                className="border-t px-6 py-3"
+                className="border-t px-4 py-3 sm:px-6"
               >
                 <div className="mx-auto max-w-2xl">
                   {regionBusy && (
@@ -5428,7 +5446,7 @@ export default function Dashboard() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 8 }}
                 transition={{ duration: 0.2 }}
-                className="border-t px-6 py-3"
+                className="border-t px-4 py-3 sm:px-6"
               >
                 <div className="mx-auto max-w-2xl">
                   {assistantError && (
@@ -5695,6 +5713,53 @@ export default function Dashboard() {
                             <span className="text-[10px] text-muted-foreground">PDFs, docs, images</span>
                           </span>
                         </DropdownMenuItem>
+                        {/* Voice, translate and sound are icon-only on
+                            desktop and live to the right of the field; below
+                            sm those icons are hidden to stop the send row
+                            from overflowing, so they get labelled entries here
+                            instead — the features stay one tap away. */}
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setShowVoices(true);
+                            setShowTranslate(false);
+                            setShowSounds(false);
+                          }}
+                          className="sm:hidden"
+                        >
+                          <Volume2 className="size-3.5" />
+                          <span className="flex flex-col">
+                            <span>Voice options</span>
+                            <span className="text-[10px] text-muted-foreground">{describeVoice(voicePref)}</span>
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setShowTranslate(true);
+                            setShowVoices(false);
+                            setShowSounds(false);
+                          }}
+                          className="sm:hidden"
+                        >
+                          <Languages className="size-3.5" />
+                          <span className="flex flex-col">
+                            <span>Translate replies</span>
+                            <span className="text-[10px] text-muted-foreground">answer in another language</span>
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setShowSounds(true);
+                            setShowVoices(false);
+                            setShowTranslate(false);
+                          }}
+                          className="sm:hidden"
+                        >
+                          <Waves className="size-3.5" />
+                          <span className="flex flex-col">
+                            <span>Sound effects</span>
+                            <span className="text-[10px] text-muted-foreground">generated, not described</span>
+                          </span>
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => void handleGenerateImage()} disabled={generating || !input.trim()}>
                           <Wand2 className="size-3.5" />
                           <span className="flex flex-col">
@@ -5774,7 +5839,7 @@ export default function Dashboard() {
                             : "Message Jarvis… or / for commands"
                     }
                     rows={1}
-                    className="max-h-40 w-full resize-none bg-transparent pl-12 pr-28 py-3 text-sm outline-none placeholder:text-muted-foreground/70"
+                    className="max-h-40 w-full resize-none bg-transparent pl-12 pr-32 py-3 text-sm outline-none placeholder:text-muted-foreground/70 sm:pr-48"
                   />
                 <div className="absolute right-1.5 bottom-1.5 flex items-center gap-0.5">
                   <button
@@ -5784,7 +5849,7 @@ export default function Dashboard() {
                       setShowSounds(false);
                     }}
                     title={`Voice — ${describeVoice(voicePref)}`}
-                    className={`inline-flex size-7 items-center justify-center rounded-lg transition-colors ${
+                    className={`hidden size-7 items-center justify-center rounded-lg transition-colors sm:inline-flex ${
                       showVoices
                         ? "bg-accent text-foreground"
                         : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -5799,7 +5864,7 @@ export default function Dashboard() {
                       setShowSounds(false);
                     }}
                     title="Translate replies into another language"
-                    className={`inline-flex size-7 items-center justify-center rounded-lg transition-colors ${
+                    className={`hidden size-7 items-center justify-center rounded-lg transition-colors sm:inline-flex ${
                       showTranslate
                         ? "bg-accent text-foreground"
                         : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -5814,7 +5879,7 @@ export default function Dashboard() {
                       setShowTranslate(false);
                     }}
                     title="Sound effects — hear a real animal or object sound"
-                    className={`inline-flex size-7 items-center justify-center rounded-lg transition-colors ${
+                    className={`hidden size-7 items-center justify-center rounded-lg transition-colors sm:inline-flex ${
                       showSounds
                         ? "bg-accent text-foreground"
                         : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -6250,7 +6315,9 @@ export default function Dashboard() {
                   {camera.error}
                 </div>
               )}
-              <div className="mt-2.5 flex items-center justify-between text-[11px] text-muted-foreground">
+              {/* Wraps rather than overflowing: four pills plus the hint do
+                  not fit on one line at 360px. */}
+              <div className="mt-2.5 flex flex-wrap items-center justify-between gap-y-1.5 text-[11px] text-muted-foreground">
                 {recorder.recording ? (
                   <span className="flex items-center gap-1.5 text-destructive">
                     <span className="size-1.5 animate-pulse rounded-full bg-destructive" />
@@ -6263,7 +6330,7 @@ export default function Dashboard() {
                     Enter to send · Shift+Enter for newline · / for commands
                   </span>
                 )}
-                <div className="flex items-center gap-1">
+                <div className="flex flex-wrap items-center justify-end gap-1">
                   <button
                     onClick={() => (live.active ? live.stop() : void live.start())}
                     disabled={sending && !live.active}

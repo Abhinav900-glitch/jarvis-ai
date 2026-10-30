@@ -334,7 +334,7 @@ export function ImageStudio({
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value as StudioModel)}
-                className="h-8 cursor-pointer rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="h-8 max-w-[15rem] cursor-pointer rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {MODELS.map((m) => (
                   <option key={m.id} value={m.id}>

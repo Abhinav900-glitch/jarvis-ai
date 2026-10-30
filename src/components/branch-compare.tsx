@@ -156,7 +156,9 @@ export function BranchCompare({ open, left, right, onClose, onKeep }: BranchComp
           </div>
         ) : null}
 
-        <div className="grid min-h-0 flex-1 grid-cols-2 divide-x overflow-hidden">
+        {/* Stacked on a phone: two prose columns at 180px each are unreadable,
+            so the divide flips to horizontal until there is room side by side. */}
+        <div className="grid min-h-0 flex-1 grid-cols-1 divide-y overflow-hidden md:grid-cols-2 md:divide-x md:divide-y-0">
           {(["left", "right"] as const).map((tone) => {
             const side = tone === "left" ? left : right;
             return (
