@@ -12,6 +12,7 @@
  * Options (data attributes):
  *   data-label      button text          (default "Ask Jarvis")
  *   data-position   "right" | "left"     (default "right")
+ *   data-accent     highlight colour, hex (default "#22d3ee")
  *   data-open       "true" to open on load
  *
  * Programmatic control, for hosts that want their own trigger:
@@ -36,8 +37,15 @@
   }
 
   var data = script.dataset || {};
-  var label = data.label || "Ask Jarvis";
+  var label = (data.label || "Ask Jarvis").slice(0, 40);
   var position = data.position === "left" ? "left" : "right";
+  // Accent drives every highlight in the widget. Accepting nothing but a hex
+  // triple/sextet keeps a hostile data attribute from injecting arbitrary CSS
+  // into the stylesheet below.
+  var accent = /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(data.accent || "")
+    ? data.accent
+    : "#22d3ee";
+  var accentSoft = accent.length === 7 ? accent + "66" : accent;
   var frameUrl = origin + "/embed";
 
   var host = document.createElement("div");
@@ -50,15 +58,16 @@
   var style = document.createElement("style");
   style.textContent = [
     ".jv-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;",
-    "border-radius:999px;border:1px solid rgba(34,211,238,.45);background:#04121f;",
+    "border-radius:999px;border:1px solid " + accent + ";background:#04121f;",
     "color:#e6f6ff;font:600 13px/1 ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;",
     "cursor:pointer;box-shadow:0 10px 30px rgba(0,0,0,.45);transition:transform .15s ease,box-shadow .15s ease;}",
     ".jv-btn:hover{transform:translateY(-1px);box-shadow:0 14px 34px rgba(0,0,0,.5);}",
-    ".jv-dot{width:8px;height:8px;border-radius:50%;background:#22d3ee;box-shadow:0 0 8px #22d3ee;}",
+    ".jv-dot{width:8px;height:8px;border-radius:50%;background:" + accent +
+      ";box-shadow:0 0 8px " + accent + ";}",
     ".jv-card{position:absolute;bottom:58px;" +
       (position === "left" ? "left:0;" : "right:0;") +
       "width:min(420px,calc(100vw - 32px));height:min(680px,calc(100vh - 120px));",
-    "border-radius:16px;overflow:hidden;border:1px solid rgba(34,211,238,.35);",
+    "border-radius:16px;overflow:hidden;border:1px solid " + accentSoft + ";",
     "background:#020a14;box-shadow:0 24px 60px rgba(0,0,0,.55);",
     "opacity:0;transform:translateY(8px) scale(.98);pointer-events:none;",
     "transition:opacity .18s ease,transform .18s ease;}",

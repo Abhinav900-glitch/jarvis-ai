@@ -257,17 +257,79 @@ function RunRow({
 // ---------------------------------------------------------------------------
 
 /**
- * The publishable plugin: the one script a third-party site pastes.
+ * The publishable plugin, now a builder: pick the label, corner and accent,
+ * watch the button at true scale, copy the snippet those choices produce.
  *
- * Shown rather than described in docs because the snippet *is* the product —
- * everything it needs (auth, runs, the console) is already inside the frame it
- * loads, and a plugin you cannot copy in five seconds never gets installed.
+ * Every choice maps one-for-one onto a loader data attribute, so a "custom
+ * plugin" is just a customised snippet — no server round trip, nothing to
+ * configure on the host page, and the copied tag carries the whole config.
  */
+type EmbedConfig = {
+  label: string;
+  position: "right" | "left";
+  accent: string;
+};
+
+const DEFAULT_EMBED: EmbedConfig = {
+  label: "Ask Jarvis",
+  position: "right",
+  accent: "#22d3ee",
+};
+
+const ACCENT_SWATCHES = ["#22d3ee", "#34d399", "#f59e0b", "#f472b6"];
+
+function loadEmbedConfig(): EmbedConfig {
+  if (typeof window === "undefined") return DEFAULT_EMBED;
+  try {
+    const saved = JSON.parse(
+      window.localStorage.getItem("jarvis-embed-config") ?? "null",
+    ) as Partial<EmbedConfig> | null;
+    if (saved && typeof saved.label === "string") {
+      return {
+        label: saved.label.slice(0, 40),
+        position: saved.position === "left" ? "left" : "right",
+        // Six digits only: that is the form <input type="color"> produces and
+        // reads back, so a stale three-digit value would desync the picker.
+        accent:
+          typeof saved.accent === "string" &&
+          /^#[0-9a-fA-F]{6}$/.test(saved.accent)
+            ? saved.accent
+            : DEFAULT_EMBED.accent,
+      };
+    }
+  } catch {
+    /* corrupt or blocked storage: the defaults are fine */
+  }
+  return DEFAULT_EMBED;
+}
+
 function PluginCard() {
+  const [config, setConfig] = useState<EmbedConfig>(loadEmbedConfig);
   const [copied, setCopied] = useState(false);
   const origin =
     typeof window !== "undefined" ? window.location.origin : "https://your-host";
-  const snippet = `<script src="${origin}/jarvis-embed.js" async data-label="Ask Jarvis"></script>`;
+
+  // Persisted so a tuned widget survives a reload; a browser that refuses
+  // storage just makes the copied snippet the record of the choice.
+  const update = (patch: Partial<EmbedConfig>) =>
+    setConfig((prev) => {
+      const next = { ...prev, ...patch };
+      try {
+        window.localStorage.setItem(
+          "jarvis-embed-config",
+          JSON.stringify(next),
+        );
+      } catch {
+        /* private mode: ignore */
+      }
+      return next;
+    });
+
+  // The label lands in a script attribute on someone else's page, so quotes
+  // and angle brackets are stripped before it can break their markup.
+  const safeLabel =
+    config.label.replace(/["<>&]/g, "").trim() || DEFAULT_EMBED.label;
+  const snippet = `<script src="${origin}/jarvis-embed.js" async data-label="${safeLabel}" data-position="${config.position}" data-accent="${config.accent}"></script>`;
 
   const copy = async () => {
     try {
@@ -285,7 +347,7 @@ function PluginCard() {
         <div className="flex flex-wrap items-center gap-2">
           <Puzzle className="size-4 text-primary" />
           <span className="hud-label" data-tone="cyan">
-            Put your AI on any website
+            Build your widget
           </span>
           <button
             type="button"
@@ -295,20 +357,118 @@ function PluginCard() {
             {copied ? "Copied" : "Copy snippet"}
           </button>
         </div>
+
+        {/* Knobs and a true-scale preview: the frame on the right renders the
+            button exactly as jarvis-embed.js will paint it on the host. */}
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div className="space-y-2.5">
+            <label className="block">
+              <span className="hud-label">Button text</span>
+              <input
+                type="text"
+                value={config.label}
+                maxLength={40}
+                placeholder={DEFAULT_EMBED.label}
+                onChange={(e) => update({ label: e.target.value })}
+                className="mt-1 w-full rounded-md border border-border/70 bg-background/70 px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-primary/60"
+              />
+            </label>
+
+            <div>
+              <span className="hud-label">Corner</span>
+              <div className="mt-1 inline-flex overflow-hidden rounded-md border border-border/70">
+                {(["right", "left"] as const).map((side) => (
+                  <button
+                    key={side}
+                    type="button"
+                    onClick={() => update({ position: side })}
+                    className={cn(
+                      "px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest transition-colors",
+                      config.position === side
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {side}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <span className="hud-label">Accent</span>
+              <div className="mt-1 flex items-center gap-1.5">
+                {ACCENT_SWATCHES.map((hex) => (
+                  <button
+                    key={hex}
+                    type="button"
+                    title={hex}
+                    aria-label={`Use ${hex}`}
+                    onClick={() => update({ accent: hex })}
+                    className={cn(
+                      "size-5 rounded-full border-2 transition-transform",
+                      config.accent === hex
+                        ? "scale-110 border-foreground"
+                        : "border-border/60",
+                    )}
+                    style={{ background: hex }}
+                  />
+                ))}
+                <input
+                  type="color"
+                  value={config.accent}
+                  aria-label="Custom accent colour"
+                  onChange={(e) => update({ accent: e.target.value })}
+                  className="size-6 cursor-pointer rounded border border-border/70 bg-transparent p-0"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col rounded-lg border border-border/60 bg-background/70 p-3">
+            <span className="hud-label text-muted-foreground/60">Preview</span>
+            <div
+              className={cn(
+                "mt-2 flex flex-1 items-end py-3",
+                config.position === "left" ? "justify-start" : "justify-end",
+              )}
+            >
+              <span
+                className="inline-flex items-center gap-2 rounded-full bg-[#04121f] px-4 py-2.5 text-[13px] font-semibold text-[#e6f6ff] shadow-md"
+                style={{
+                  borderWidth: 1,
+                  borderStyle: "solid",
+                  borderColor: config.accent,
+                }}
+              >
+                <span
+                  className="size-2 rounded-full"
+                  style={{
+                    background: config.accent,
+                    boxShadow: `0 0 8px ${config.accent}`,
+                  }}
+                />
+                {safeLabel}
+              </span>
+            </div>
+          </div>
+        </div>
+
         <pre className="mt-3 overflow-x-auto rounded border border-border/60 bg-background/70 px-3 py-2.5 font-mono text-[11px] leading-5 text-foreground/90">
           {snippet}
         </pre>
         <p className="mt-2.5 text-[11px] leading-5 text-muted-foreground/80">
           Paste it before <span className="font-mono">&lt;/body&gt;</span> on any
-          site — your docs, a Canva-style app, a blog, a dashboard. A button
-          appears bottom-right; clicking it opens this agent in a sandboxed
-          frame where visitors sign in as usual. The host page never gets a
-          handle on the frame: it runs on your origin with your auth, and the
-          only thing it reports back is "ready" and "close".
+          site — your docs, a Canva-style app, a blog, a dashboard. The button
+          appears in the corner and colour you picked above; clicking it opens
+          this agent in a sandboxed frame where visitors sign in as usual. The
+          host page never gets a handle on the frame: it runs on your origin
+          with your auth, and the only thing it reports back is "ready" and
+          "close".
         </p>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <div className="hud-panel px-3 py-2.5">
           <span className="hud-label">data-label</span>
           <p className="mt-1 text-[11px] text-muted-foreground/80">
@@ -322,6 +482,12 @@ function PluginCard() {
           </p>
         </div>
         <div className="hud-panel px-3 py-2.5">
+          <span className="hud-label">data-accent</span>
+          <p className="mt-1 text-[11px] text-muted-foreground/80">
+            Hex colour for the glow.
+          </p>
+        </div>
+        <div className="hud-panel px-3 py-2.5">
           <span className="hud-label">JarvisEmbed.open()</span>
           <p className="mt-1 text-[11px] text-muted-foreground/80">
             Wire it to your own button.
@@ -331,10 +497,13 @@ function PluginCard() {
 
       <div className="hud-panel px-3 py-2.5">
         <p className="text-[11px] leading-5 text-muted-foreground/70">
-          Next rungs: serve <span className="font-mono">jarvis-embed.js</span>{" "}
-          from a CDN so any origin can load it fast, wrap the same frame as a
-          Chrome extension, or expose the agent as an MCP server so Claude and
-          Cursor can drive it directly — same product, different host.
+          Also in this repo: <span className="font-mono">plugins/aerotransformgen</span>{" "}
+          — a Claude Code plugin folder that teaches an assistant to install
+          this widget in any project. Next rungs from there: serve{" "}
+          <span className="font-mono">jarvis-embed.js</span> from a CDN, wrap
+          the frame as a Chrome extension, or expose the agent as an MCP server
+          so Claude and Cursor can drive it directly — same product, different
+          host.
         </p>
       </div>
     </div>

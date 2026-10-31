@@ -1,0 +1,15 @@
+{
+  "name": "aerotransformgen",
+  "owner": { "name": "AeroTransformGen" },
+  "description": "Plugins for the AeroTransformGen agent: embed it on any site.",
+  "plugins": [
+    {
+      "name": "aerotransformgen",
+      "source": "./plugins/aerotransformgen",
+      "description": "Install the AeroTransformGen widget on any site and give the agent the product's knowledge.",
+      "version": "1.0.0",
+      "category": "development",
+      "tags": ["embed", "widget", "agent"]
+    }
+  ]
+}

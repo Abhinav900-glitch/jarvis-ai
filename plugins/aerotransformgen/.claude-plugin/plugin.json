@@ -1,0 +1,7 @@
+{
+  "name": "aerotransformgen",
+  "version": "1.0.0",
+  "description": "Installs the AeroTransformGen (Jarvis) widget on any site and teaches the agent how the product, its embed protocol, and its console work.",
+  "author": { "name": "AeroTransformGen" },
+  "keywords": ["embed", "widget", "agent", "aerotransformgen", "jarvis"]
+}
