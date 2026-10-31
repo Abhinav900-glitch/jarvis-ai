@@ -82,6 +82,30 @@ const schema = defineSchema(
       updatedAt: v.optional(v.number()),
     }).index("by_user", ["userId"]),
 
+    // The account's plugin archive: a zip holding a Claude-style plugin folder
+    // and/or MCP server definitions, kept in file storage exactly as it was
+    // handed over. One row per zip; `manifests` records what was detected
+    // inside at upload time so the list can render without re-reading the
+    // file. Nothing here executes — the flag is forward state for the day the
+    // agent's MCP endpoint reads it.
+    plugins: defineTable({
+      userId: v.id("users"),
+      /** Display name: the first manifest inside, else the file name. */
+      name: v.string(),
+      /** What the zip holds — a plugin folder, or MCP server definitions. */
+      kind: v.union(v.literal("plugin"), v.literal("mcp")),
+      version: v.optional(v.string()),
+      description: v.optional(v.string()),
+      fileName: v.string(),
+      storageId: v.id("_storage"),
+      sizeBytes: v.number(),
+      fileCount: v.optional(v.number()),
+      /** JSON array of { path, kind, name, version?, description? }. */
+      manifests: v.optional(v.string()),
+      enabled: v.boolean(),
+      createdAt: v.number(),
+    }).index("by_user", ["userId"]),
+
     // Recurring or one-off jobs Jarvis runs on its own: a morning digest, a
     // nightly backup check, a reminder to stretch. The cron sweeps for due
     // rows, so the schedule is stored rather than held in memory.

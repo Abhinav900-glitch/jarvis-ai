@@ -34,6 +34,7 @@ import {
   CornerDownRight,
   Keyboard,
   Search,
+  Puzzle,
   Settings,
   Shapes,
   Square,
@@ -165,6 +166,7 @@ import { BranchCompare, type CompareSide } from "@/components/branch-compare";
 import { ProviderHealth } from "@/components/provider-health";
 import { LiveTuning } from "@/components/live-tuning";
 import { EnginePanel } from "@/components/engine-panel";
+import { PluginsDialog } from "@/components/plugins-dialog";
 import { LiveSessionPanel } from "@/live/live-session-panel";
 import { useListeningQueue } from "@/hooks/use-listening-queue";
 import {
@@ -1150,6 +1152,7 @@ export default function Dashboard() {
 
   const [showPins, setShowPins] = useState(false);
   const [showEngines, setShowEngines] = useState(false);
+  const [showPlugins, setShowPlugins] = useState(false);
   const [showTuning, setShowTuning] = useState(false);
   const [showLivePanel, setShowLivePanel] = useState(false);
   /** Which reply's provenance card is open, if any. */
@@ -4222,6 +4225,10 @@ export default function Dashboard() {
                       <Check className="ml-auto size-4" />
                     ) : null}
                   </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowPlugins(true)}>
+                    <Puzzle className="size-4" />
+                    Plugins &amp; MCP
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setShowSearch((v) => !v)}>
                     <Search className="size-4" />
@@ -6485,6 +6492,10 @@ export default function Dashboard() {
         onUnlocked={() => setPassphraseOpen(null)}
       />
       <EnginePanel open={showEngines} onClose={() => setShowEngines(false)} />
+      <PluginsDialog
+        open={showPlugins}
+        onClose={() => setShowPlugins(false)}
+      />
       <PinnedPanel
         open={showPins}
         onClose={() => setShowPins(false)}
