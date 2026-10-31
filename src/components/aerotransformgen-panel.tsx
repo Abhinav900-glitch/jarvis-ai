@@ -38,6 +38,10 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { AUTO_WRITE_BUDGET, GATE_RULES } from "@/lib/agent-contract";
 import { diffLines, diffStats, withContext, type DiffLine } from "@/lib/agent-diff";
 import { MarkdownMessage } from "@/components/markdown-message";
+import {
+  AgentConsole,
+  WorkspacePreview,
+} from "@/components/aerotransformgen-console";
 import { cn } from "@/lib/utils";
 
 export interface AeroTransformGenPanelProps {
@@ -290,6 +294,9 @@ export function AeroTransformGenPanel({
   const [quota, setQuota] = useState<Quota | null>(null);
   const [showRoster, setShowRoster] = useState(false);
   const [poke, setPoke] = useState(0);
+  // Three surfaces: the work, the log of how it is being done, and the result
+  // running. Swapped rather than stacked — each is a screenful on its own.
+  const [tab, setTab] = useState<"work" | "console" | "preview">("work");
 
   const startRun = useAction(api.agent.start);
   const advance = useAction(api.agent.advance);
@@ -303,6 +310,7 @@ export function AeroTransformGenPanel({
   // Named for the switch, not for the state: `setMode` is already the setter
   // of the local mode, and shadowing it would be a silent bug.
   const changeMode = useMutation(api.agentStore.setMode);
+  const changeDebug = useMutation(api.agentStore.setDebug);
   type Roster = Awaited<ReturnType<typeof loadRoster>>;
   type Quota = Awaited<ReturnType<typeof loadQuota>>;
 
@@ -319,6 +327,12 @@ export function AeroTransformGenPanel({
   const viewingFile = useQuery(
     api.agentStore.workspaceFile,
     viewing ? { path: viewing } : "skip",
+  );
+  // File bodies are subscribed only while the preview is on screen — keeping
+  // every byte of the workspace live for a tab nobody has opened is waste.
+  const workspaceContents = useQuery(
+    api.agentStore.workspaceContents,
+    tab === "preview" ? {} : "skip",
   );
 
   // Guards against two concurrent advances. On a 50-requests-a-day budget a
@@ -464,6 +478,21 @@ export function AeroTransformGenPanel({
     }
   };
 
+  const handleToggleDebug = async (enabled: boolean) => {
+    if (!runId || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await changeDebug({ runId, enabled });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not change recording.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleRoster = async () => {
     setShowRoster((v) => !v);
     if (roster) return;
@@ -548,6 +577,45 @@ export function AeroTransformGenPanel({
             </button>
           </div>
 
+          {/* ---- view switch ---- */}
+          <nav className="flex items-center gap-4 border-b border-border/60 px-4">
+            {(
+              [
+                ["work", "Work"],
+                ["console", "Console"],
+                ["preview", "Preview"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                className={cn(
+                  "relative py-2 text-[10px] font-medium uppercase tracking-widest transition-colors",
+                  tab === id
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+                {id === "console" && rows.length ? (
+                  <span className="ml-1 text-muted-foreground/60">
+                    ·{rows.length}
+                  </span>
+                ) : null}
+                {id === "preview" && files.length ? (
+                  <span className="ml-1 text-muted-foreground/60">
+                    ·{files.length}
+                  </span>
+                ) : null}
+                {tab === id ? (
+                  <span className="absolute inset-x-0 -bottom-px h-px bg-primary" />
+                ) : null}
+              </button>
+            ))}
+          </nav>
+
+          {tab === "work" ? (
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto px-4 py-4 lg:grid-cols-[minmax(0,1fr)_300px]">
             {/* ---- the agent ---- */}
             <div className="min-w-0 space-y-4">
@@ -1032,6 +1100,30 @@ export function AeroTransformGenPanel({
               ) : null}
             </aside>
           </div>
+          ) : null}
+
+          {/* ---- B + D: what it is doing, and what is being sent ---- */}
+          {tab === "console" ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-4">
+              <AgentConsole
+                steps={rows}
+                run={run ?? null}
+                busy={busy}
+                onToggleDebug={(enabled) => void handleToggleDebug(enabled)}
+              />
+            </div>
+          ) : null}
+
+          {/* ---- C: code on the left, the page and its console on the right ---- */}
+          {tab === "preview" ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-4">
+              <WorkspacePreview
+                contents={workspaceContents ?? []}
+                viewing={viewing}
+                onView={setViewing}
+              />
+            </div>
+          ) : null}
         </motion.div>
       </motion.div>
     </AnimatePresence>

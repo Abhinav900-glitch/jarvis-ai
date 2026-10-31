@@ -358,6 +358,12 @@ const schema = defineSchema(
       writes: v.optional(v.number()),
       /** Set once the verify step has been appended, so it is appended once. */
       verified: v.optional(v.boolean()),
+      /**
+       * Opt-in request/response recording for the trace inspector. Off by
+       * default: a request body is the largest string this feature stores, and
+       * most runs are watched, not debugged.
+       */
+      debug: v.optional(v.boolean()),
       answer: v.optional(v.string()),
       error: v.optional(v.string()),
       createdAt: v.number(),
@@ -395,6 +401,46 @@ const schema = defineSchema(
       options: v.optional(v.array(v.string())),
       /** What the user picked, or free text. */
       answer: v.optional(v.string()),
+      /**
+       * The console: model rounds and tool calls, appended as they happen
+       * rather than collected at the end — a log that only appears when the
+       * step finishes is a report, not a console. Capped by the store.
+       */
+      log: v.optional(
+        v.array(
+          v.object({
+            at: v.number(),
+            kind: v.union(v.literal("model"), v.literal("tool")),
+            /** `provider/model` for a round, the tool's name for a call. */
+            label: v.string(),
+            detail: v.optional(v.string()),
+            /** Wall-clock milliseconds for that round or call. */
+            ms: v.optional(v.number()),
+            promptTokens: v.optional(v.number()),
+            completionTokens: v.optional(v.number()),
+          }),
+        ),
+      ),
+      /**
+       * What was actually sent to the model and what it replied, per round.
+       * Recorded only while the run's `debug` flag is on.
+       */
+      trace: v.optional(
+        v.array(
+          v.object({
+            round: v.number(),
+            engineId: v.optional(v.string()),
+            model: v.optional(v.string()),
+            ms: v.optional(v.number()),
+            promptTokens: v.optional(v.number()),
+            completionTokens: v.optional(v.number()),
+            request: v.optional(v.string()),
+            response: v.optional(v.string()),
+            /** Tool names the model asked for in that round. */
+            toolCalls: v.optional(v.string()),
+          }),
+        ),
+      ),
       createdAt: v.number(),
     }).index("by_run", ["runId"]),
 

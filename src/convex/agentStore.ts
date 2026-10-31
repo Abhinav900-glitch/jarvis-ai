@@ -174,6 +174,73 @@ export const patchStep = internalMutation({
   },
 });
 
+// Console bounds. Both are small enough that a step can hold its whole story
+// and large enough that no real step hits them — but they are bounds, not
+// conventions, because an uncapped log on a tool-happy step is the one field
+// here that grows without anyone deciding it should.
+const LOG_CAP = 80;
+const TRACE_CAP = 12;
+
+/**
+ * Append one entry to a step's console log.
+ *
+ * Written per call rather than flushed when the step ends: the point of a
+ * console is watching the work happen, and a log that only lands with the
+ * result is a report.
+ */
+export const logStep = internalMutation({
+  args: {
+    stepId: v.id("agentSteps"),
+    entry: v.object({
+      at: v.number(),
+      kind: v.union(v.literal("model"), v.literal("tool")),
+      label: v.string(),
+      detail: v.optional(v.string()),
+      ms: v.optional(v.number()),
+      promptTokens: v.optional(v.number()),
+      completionTokens: v.optional(v.number()),
+    }),
+  },
+  handler: async (ctx, args) => {
+    const step = await ctx.db.get(args.stepId);
+    if (!step) return;
+    await ctx.db.patch(args.stepId, {
+      log: [...(step.log ?? []), args.entry].slice(-LOG_CAP),
+    });
+  },
+});
+
+/**
+ * Append one request/response round to a step's trace.
+ *
+ * The caller decides whether to record at all — this mutation only enforces
+ * the cap, so a run with recording on for an hour cannot become the largest
+ * thing in the database.
+ */
+export const appendTrace = internalMutation({
+  args: {
+    stepId: v.id("agentSteps"),
+    entry: v.object({
+      round: v.number(),
+      engineId: v.optional(v.string()),
+      model: v.optional(v.string()),
+      ms: v.optional(v.number()),
+      promptTokens: v.optional(v.number()),
+      completionTokens: v.optional(v.number()),
+      request: v.optional(v.string()),
+      response: v.optional(v.string()),
+      toolCalls: v.optional(v.string()),
+    }),
+  },
+  handler: async (ctx, args) => {
+    const step = await ctx.db.get(args.stepId);
+    if (!step) return;
+    await ctx.db.patch(args.stepId, {
+      trace: [...(step.trace ?? []), args.entry].slice(-TRACE_CAP),
+    });
+  },
+});
+
 export const gateStep = internalMutation({
   args: {
     stepId: v.id("agentSteps"),
@@ -612,9 +679,54 @@ export const setMode = mutation({
   },
 });
 
+/**
+ * Turn the trace inspector on or off for this run.
+ *
+ * Deliberately a live toggle rather than a start-time choice: recording is
+ * something you decide you want five minutes into a step that is behaving
+ * strangely, and asking for a restart to get it would miss exactly the run
+ * you needed.
+ */
+export const setDebug = mutation({
+  args: { runId: v.id("agentRuns"), enabled: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to use AeroTransformGen Dev.");
+    const run = await ctx.db.get(args.runId);
+    assertOwner(run, userId);
+    if (Boolean(run.debug) === args.enabled) return;
+    await ctx.db.patch(args.runId, {
+      debug: args.enabled,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Client-facing workspace reads
 // ---------------------------------------------------------------------------
+
+/**
+ * Every file's contents, for the preview pane.
+ *
+ * Unlike {@link workspaceTree} this carries the bodies, so the caller asks for
+ * it only while the preview is on screen — a reactive subscription to the
+ * whole workspace would otherwise be paying for bytes nobody is looking at.
+ */
+export const workspaceContents = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const rows = await ctx.db
+      .query("workspaceFiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return rows
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map((r) => ({ path: r.path, content: r.content }));
+  },
+});
 
 /** The tree. Contents are excluded — listing a workspace should be cheap. */
 export const workspaceTree = query({

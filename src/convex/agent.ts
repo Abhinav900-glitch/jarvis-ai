@@ -77,6 +77,19 @@ const CONTEXT_CHARS = 600;
  * model should summarise what it has instead.
  */
 const MAX_TOOL_ITERATIONS = 4;
+/**
+ * Characters of one request or response kept for the trace inspector.
+ *
+ * A step's message list carries tool output the model has read, so it runs to
+ * tens of kilobytes; clipping keeps a recorded step the same size as an
+ * unrecorded one, give or take, while still showing what was actually sent.
+ */
+const TRACE_CHARS = 12_000;
+
+const clip = (s: string) =>
+  s.length > TRACE_CHARS
+    ? `${s.slice(0, TRACE_CHARS)}\n…[truncated ${s.length - TRACE_CHARS} characters]`
+    : s;
 
 // ---------------------------------------------------------------------------
 // Prompts
@@ -280,6 +293,8 @@ interface RunRow {
   done: number;
   calls: number;
   mode: AgentMode;
+  /** Whether request/response bodies are being recorded for this run. */
+  debug?: boolean;
 }
 
 interface StepRow {
@@ -350,21 +365,74 @@ async function runStepWithTools(
       { tools, temperature: 0.2 },
     );
 
-    const calls = result.toolCalls ?? [];
-    if (calls.length === 0) {
+    // Two writes per round, both live: the console log is always kept because
+    // it is small and it is the product, and the request/response trace only
+    // when the run has recording on, because bodies are the largest strings
+    // this app stores.
+    const roundCalls = result.toolCalls ?? [];
+    await ctx.runMutation(internal.agentStore.logStep, {
+      stepId: step._id,
+      entry: {
+        at: Date.now(),
+        kind: "model",
+        label: result.engineId ?? result.model,
+        detail: roundCalls.length
+          ? `${roundCalls.length} tool call${roundCalls.length === 1 ? "" : "s"}`
+          : "answered in prose",
+        ms: result.latencyMs,
+        promptTokens: result.promptTokens,
+        completionTokens: result.completionTokens,
+      },
+    });
+    if (run.debug) {
+      await ctx.runMutation(internal.agentStore.appendTrace, {
+        stepId: step._id,
+        entry: {
+          round: i + 1,
+          engineId: result.engineId,
+          model: result.model,
+          ms: result.latencyMs,
+          promptTokens: result.promptTokens,
+          completionTokens: result.completionTokens,
+          // The messages as they were sent for this round — captured before
+          // the replies below are pushed onto the same array.
+          request: clip(JSON.stringify(messages, null, 2)),
+          response: clip(
+            result.text ||
+              `[${roundCalls.length} tool call${roundCalls.length === 1 ? "" : "s"}: ${roundCalls.map((c) => c.name).join(", ")}]`,
+          ),
+          toolCalls: roundCalls.map((c) => c.name).join(", ") || undefined,
+        },
+      });
+    }
+
+    if (roundCalls.length === 0) {
       return { env: parseEnvelope(result.text), proposed: false, activity };
     }
 
-    messages.push(assistantToolMessage(result.text, calls));
+    messages.push(assistantToolMessage(result.text, roundCalls));
     // The whole batch is worked before the pause, not just its first edit:
     // four writes in one round become four proposals the user can approve in a
     // single click. Nothing reasons over a half-applied batch either — these
     // messages are discarded when we return, so the next turn starts from the
     // workspace as it actually is after the decisions.
     let proposed = false;
-    for (const call of calls) {
+    for (const call of roundCalls) {
+      const called = Date.now();
       const outcome = await executeTool(ec, call);
       activity.push(`${call.name} → ${outcome.summary}`);
+      // Timed around the call itself, so `run_code` shows what a slow program
+      // actually cost instead of being booked against the model round above.
+      await ctx.runMutation(internal.agentStore.logStep, {
+        stepId: step._id,
+        entry: {
+          at: Date.now(),
+          kind: "tool",
+          label: call.name,
+          detail: outcome.summary,
+          ms: Date.now() - called,
+        },
+      });
       messages.push(toolMessage(call.id, call.name, outcome.result));
       if (outcome.proposed) proposed = true;
     }
