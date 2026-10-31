@@ -33,6 +33,7 @@ import {
   Gauge,
   History,
   Loader2,
+  Puzzle,
   Undo2,
   X,
 } from "lucide-react";
@@ -48,7 +49,7 @@ export interface AeroTransformGenDashboardProps {
   onOpenRun: (runId: Id<"agentRuns">) => void;
 }
 
-type Tab = "runs" | "workspace";
+type Tab = "runs" | "workspace" | "embed";
 
 const RUN_TONE: Record<string, string> = {
   planning: "bg-[var(--signal-blue)]",
@@ -255,6 +256,91 @@ function RunRow({
 
 // ---------------------------------------------------------------------------
 
+/**
+ * The publishable plugin: the one script a third-party site pastes.
+ *
+ * Shown rather than described in docs because the snippet *is* the product —
+ * everything it needs (auth, runs, the console) is already inside the frame it
+ * loads, and a plugin you cannot copy in five seconds never gets installed.
+ */
+function PluginCard() {
+  const [copied, setCopied] = useState(false);
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "https://your-host";
+  const snippet = `<script src="${origin}/jarvis-embed.js" async data-label="Ask Jarvis"></script>`;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="hud-panel px-4 py-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Puzzle className="size-4 text-primary" />
+          <span className="hud-label" data-tone="cyan">
+            Put your AI on any website
+          </span>
+          <button
+            type="button"
+            onClick={() => void copy()}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity"
+          >
+            {copied ? "Copied" : "Copy snippet"}
+          </button>
+        </div>
+        <pre className="mt-3 overflow-x-auto rounded border border-border/60 bg-background/70 px-3 py-2.5 font-mono text-[11px] leading-5 text-foreground/90">
+          {snippet}
+        </pre>
+        <p className="mt-2.5 text-[11px] leading-5 text-muted-foreground/80">
+          Paste it before <span className="font-mono">&lt;/body&gt;</span> on any
+          site — your docs, a Canva-style app, a blog, a dashboard. A button
+          appears bottom-right; clicking it opens this agent in a sandboxed
+          frame where visitors sign in as usual. The host page never gets a
+          handle on the frame: it runs on your origin with your auth, and the
+          only thing it reports back is "ready" and "close".
+        </p>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="hud-panel px-3 py-2.5">
+          <span className="hud-label">data-label</span>
+          <p className="mt-1 text-[11px] text-muted-foreground/80">
+            The button's text.
+          </p>
+        </div>
+        <div className="hud-panel px-3 py-2.5">
+          <span className="hud-label">data-position</span>
+          <p className="mt-1 text-[11px] text-muted-foreground/80">
+            <span className="font-mono">left</span> flips the corner.
+          </p>
+        </div>
+        <div className="hud-panel px-3 py-2.5">
+          <span className="hud-label">JarvisEmbed.open()</span>
+          <p className="mt-1 text-[11px] text-muted-foreground/80">
+            Wire it to your own button.
+          </p>
+        </div>
+      </div>
+
+      <div className="hud-panel px-3 py-2.5">
+        <p className="text-[11px] leading-5 text-muted-foreground/70">
+          Next rungs: serve <span className="font-mono">jarvis-embed.js</span>{" "}
+          from a CDN so any origin can load it fast, wrap the same frame as a
+          Chrome extension, or expose the agent as an MCP server so Claude and
+          Cursor can drive it directly — same product, different host.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function AeroTransformGenDashboard({
   open,
   onClose,
@@ -344,6 +430,7 @@ export function AeroTransformGenDashboard({
                 [
                   ["runs", "Runs", Activity],
                   ["workspace", "Workspace", FolderTree],
+                  ["embed", "Plugin", Puzzle],
                 ] as const
               ).map(([value, label, Icon]) => (
                 <button
@@ -374,7 +461,9 @@ export function AeroTransformGenDashboard({
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            {tab === "runs" ? (
+            {tab === "embed" ? (
+              <PluginCard />
+            ) : tab === "runs" ? (
               <div className="space-y-4">
                 {/* Cost is the headline here, not a footnote: every one of
                     these runs spent real free-tier requests, and this is the
@@ -553,9 +642,11 @@ export function AeroTransformGenDashboard({
 
           <div className="flex items-center gap-2 border-t border-border/60 px-4 py-2">
             <span className="hud-label text-muted-foreground/60">
-              {tab === "runs"
-                ? "AeroTransformGen Dev runs the work · this reads it"
-                : "Workspace is shared with Dev"}
+              {tab === "embed"
+                ? "One script tag and any site can run your agent"
+                : tab === "runs"
+                  ? "AeroTransformGen Dev runs the work · this reads it"
+                  : "Workspace is shared with Dev"}
             </span>
             {tab === "runs" && stats.waiting > 0 ? (
               <span className="ml-auto inline-flex items-center gap-1.5">

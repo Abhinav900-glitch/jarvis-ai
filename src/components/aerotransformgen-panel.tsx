@@ -52,6 +52,13 @@ export interface AeroTransformGenPanelProps {
    * undefined are the same thing here — "start fresh".
    */
   initialRunId?: Id<"agentRuns"> | null;
+  /**
+   * Rendered full-bleed inside a host page's iframe (the /embed route)
+   * instead of floating over the app. In an iframe there is no page behind
+   * the panel, so the backdrop goes and so does click-to-dismiss — the host
+   * widget owns visibility, and a stray click would close it.
+   */
+  embed?: boolean;
 }
 
 const STATUS_TONE: Record<string, { tone: string; label: string }> = {
@@ -274,6 +281,7 @@ export function AeroTransformGenPanel({
   open,
   onClose,
   initialRunId,
+  embed = false,
 }: AeroTransformGenPanelProps) {
   // State first: the queries below are keyed off runId, so it has to exist
   // before they are declared or the first render reads it in its temporal dead
@@ -526,9 +534,13 @@ export function AeroTransformGenPanel({
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[#020a14]/75 p-4 pt-[6vh] backdrop-blur-sm"
-        onClick={onClose}
+        exit={{ opacity: 0 }}          className={cn(
+            "flex items-start justify-center overflow-y-auto",
+            embed
+              ? "h-screen w-screen bg-background p-0"
+              : "fixed inset-0 z-50 bg-[#020a14]/75 p-4 pt-[6vh] backdrop-blur-sm",
+          )}
+          onClick={embed ? undefined : onClose}
       >
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.99 }}
@@ -536,7 +548,10 @@ export function AeroTransformGenPanel({
           exit={{ opacity: 0, y: 12, scale: 0.99 }}
           transition={{ duration: 0.18 }}
           onClick={(e) => e.stopPropagation()}
-          className="hud-panel hud-corners flex max-h-[86vh] w-full max-w-6xl flex-col"
+          className={cn(
+            "hud-panel hud-corners flex flex-col",
+            embed ? "h-full w-full max-w-none" : "max-h-[86vh] w-full max-w-6xl",
+          )}
           role="dialog"
           aria-modal="true"
           aria-label="AeroTransformGen Dev"

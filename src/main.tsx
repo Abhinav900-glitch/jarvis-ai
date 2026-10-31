@@ -19,6 +19,11 @@ const CloudinaryCallback = lazy(
 );
 const CanvaCallback = lazy(() => import("./pages/CanvaCallback.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
+// The embeddable surface other sites load in an iframe. Lazy like the rest,
+// but unlike the rest it is reachable without being signed in first — the
+// route below wraps it in RequireAuth, which bounces to /auth inside the
+// frame and returns here afterwards.
+const Embed = lazy(() => import("./pages/Embed.tsx"));
 
 // Simple loading fallback for route transitions
 function RouteLoading() {
@@ -150,6 +155,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <CanvaCallback />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/embed"
+                element={
+                  <RequireAuth>
+                    <Embed />
                   </RequireAuth>
                 }
               />
