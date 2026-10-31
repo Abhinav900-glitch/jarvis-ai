@@ -1,20 +1,5 @@
-// ---------------------------------------------------------------------------
-// Syntax highlighting for the code runner.
-//
-// highlight.js ships as a core plus 190 language packs; only the languages
-// the runner offers are registered, so the bundle does not pay for the rest.
-// `language.fence` already carries the Markdown fence tag for each language —
-// it exists so pasted code renders correctly — and hljs resolves the aliases
-// those tags use ("js", "html", "sh", "py") itself, so there is no second
-// mapping table to keep in sync.
-//
-// Highlighting is a nicety, never a gate: an unknown fence, an illegal token
-// or a failure inside hljs all return null and the caller falls back to plain
-// escaped text.
-// ---------------------------------------------------------------------------
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
-import c from "highlight.js/lib/languages/c";
 import cpp from "highlight.js/lib/languages/cpp";
 import csharp from "highlight.js/lib/languages/csharp";
 import css from "highlight.js/lib/languages/css";
@@ -39,37 +24,30 @@ import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 
-const LANGUAGES: Record<string, hljs.LanguageFn> = {
-  bash,
-  c,
-  cpp,
-  csharp,
-  css,
-  go,
-  java,
-  javascript,
-  json,
-  kotlin,
-  lua,
-  markdown,
-  perl,
-  php,
-  powershell,
-  python,
-  r,
-  ruby,
-  rust,
-  scala,
-  sql,
-  swift,
-  typescript,
-  xml,
-  yaml,
-};
-
-for (const [name, definition] of Object.entries(LANGUAGES)) {
-  hljs.registerLanguage(name, definition);
-}
+hljs.registerLanguage("bash", bash as Parameters<typeof hljs.registerLanguage>[1]);
+hljs.registerLanguage("cpp", cpp);
+hljs.registerLanguage("csharp", csharp);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("go", go);
+hljs.registerLanguage("java", java);
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("kotlin", kotlin);
+hljs.registerLanguage("lua", lua);
+hljs.registerLanguage("markdown", markdown);
+hljs.registerLanguage("perl", perl);
+hljs.registerLanguage("php", php);
+hljs.registerLanguage("powershell", powershell);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("r", r);
+hljs.registerLanguage("ruby", ruby);
+hljs.registerLanguage("rust", rust);
+hljs.registerLanguage("scala", scala);
+hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("swift", swift as Parameters<typeof hljs.registerLanguage>[1]);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("yaml", yaml);
 
 /** HTML-escape text for the plain-text fallback of the editor mirror. */
 export function escapeHtml(text: string): string {
@@ -81,15 +59,15 @@ export function escapeHtml(text: string): string {
 }
 
 /**
- * Highlight code for a fence tag, or null when this build has no grammar for
- * it — the caller then shows escaped plain text instead.
+ * Highlight code for a fence tag. When this build has no grammar for the fence,
+ * or highlighting fails for any reason, the whole block is returned as escaped
+ * plain text — so the mirror is always valid HTML.
  */
-export function highlightCode(code: string, fence: string): string | null {
+export function highlightCode(code: string, fence: string): string {
   if (!code) return "";
-  if (!hljs.getLanguage(fence)) return null;
   try {
     return hljs.highlight(code, { language: fence, ignoreIllegals: true }).value;
   } catch {
-    return null;
+    return escapeHtml(code);
   }
 }

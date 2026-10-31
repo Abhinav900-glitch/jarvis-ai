@@ -108,10 +108,8 @@ async function buildZip(files: TestFile[]): Promise<ArrayBuffer> {
     u32(centralSize),
     u32(offset),
     u16(0),
-  );
-
-  const all = cat(...locals, ...centrals, eocd);
-  return all.buffer.slice(all.byteOffset, all.byteOffset + all.byteLength);
+  );    const all = cat(...locals, ...centrals, eocd);
+  return all.buffer.slice(all.byteOffset, all.byteOffset + all.byteLength) as ArrayBuffer;
 }
 
 const HAS_DEFLATE =
@@ -162,7 +160,10 @@ describe("readZipText", () => {
   test("refuses entries larger than the caller allows", async () => {
     const buffer = await buildZip([{ name: "big.txt", content: "0123456789" }]);
     const [entry] = readZipEntries(buffer);
-    expect(await readZipText(buffer, entry, 5)).toBeNull();
+    // 5 < uncompressedSize (10) ⇒ the reader declines to inflate.
+    expect(readZipText(buffer, entry, 5)).toBeNull();
+    // 10 >= uncompressedSize (10) ⇒ it reads normally.
+    expect(await readZipText(buffer, entry, 10)).toBe("0123456789");
   });
 });
 
