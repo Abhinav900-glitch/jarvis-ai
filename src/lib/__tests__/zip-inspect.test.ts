@@ -11,7 +11,6 @@ import {
   inspectZip,
   readZipEntries,
   readZipText,
-  type ZipEntry,
 } from "../zip-inspect";
 
 const enc = new TextEncoder();
@@ -161,7 +160,7 @@ describe("readZipText", () => {
     const buffer = await buildZip([{ name: "big.txt", content: "0123456789" }]);
     const [entry] = readZipEntries(buffer);
     // 5 < uncompressedSize (10) ⇒ the reader declines to inflate.
-    expect(readZipText(buffer, entry, 5)).toBeNull();
+    expect(await readZipText(buffer, entry, 5)).toBeNull();
     // 10 >= uncompressedSize (10) ⇒ it reads normally.
     expect(await readZipText(buffer, entry, 10)).toBe("0123456789");
   });

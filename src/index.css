@@ -390,6 +390,110 @@
   font-size: 1.06em;
 }
 
+/* --------------------------------------------------------------------------
+   Code-runner syntax highlighting — mirrors the Markdown palette used by the
+   chat renderer so inline code and run output share one voice. Scoped to
+   `.code-hl` so it never leaks into the editor textarea or the chat body.
+   -------------------------------------------------------------------------- */
+
+.code-hl {
+  line-height: 1.45rem;
+  font-variant-ligatures: none;
+}
+
+.code-hl code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.code-hl .hljs-comment,
+.code-hl .hljs-quote {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.code-hl .hljs-keyword,
+.code-hl .hljs-selector-tag,
+.code-hl .hljs-meta .hljs-keyword,
+.code-hl .hljs-doctag,
+.code-hl .hljs-section,
+.code-hl .hljs-selector-id,
+.code-hl .hljs-title {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.code-hl .hljs-string,
+.code-hl .hljs-regexp,
+.code-hl .hljs-symbol,
+.code-hl .hljs-bullet,
+.code-hl .hljs-link,
+.code-hl .hljs-addition {
+  color: oklch(0.52 0.06 155);
+}
+.dark .code-hl .hljs-string,
+.dark .code-hl .hljs-regexp,
+.dark .code-hl .hljs-symbol,
+.dark .code-hl .hljs-bullet,
+.dark .code-hl .hljs-link,
+.dark .code-hl .hljs-addition {
+  color: oklch(0.75 0.08 155);
+}
+
+.code-hl .hljs-number,
+.code-hl .hljs-literal,
+.code-hl .hljs-type,
+.code-hl .hljs-template-variable,
+.code-hl .hljs-variable,
+.code-hl .hljs-attr,
+.code-hl .hljs-attribute,
+.code-hl .hljs-selector-attr,
+.code-hl .hljs-selector-class,
+.code-hl .hljs-meta {
+  color: oklch(0.5 0.07 250);
+}
+.dark .code-hl .hljs-number,
+.dark .code-hl .hljs-literal,
+.dark .code-hl .hljs-type,
+.dark .code-hl .hljs-template-variable,
+.dark .code-hl .hljs-variable,
+.dark .code-hl .hljs-attr,
+.dark .code-hl .hljs-attribute,
+.dark .code-hl .hljs-selector-attr,
+.dark .code-hl .hljs-selector-class,
+.dark .code-hl .hljs-meta {
+  color: oklch(0.74 0.07 250);
+}
+
+.code-hl .hljs-built_in,
+.code-hl .hljs-class .hljs-title,
+.code-hl .hljs-title.class_,
+.code-hl .hljs-title.function_,
+.code-hl .hljs-name,
+.code-hl .hljs-tag {
+  color: oklch(0.5 0.07 25);
+}
+.dark .code-hl .hljs-built_in,
+.dark .code-hl .hljs-class .hljs-title,
+.dark .code-hl .hljs-title.class_,
+.dark .code-hl .hljs-title.function_,
+.dark .code-hl .hljs-name,
+.dark .code-hl .hljs-tag {
+  color: oklch(0.76 0.07 25);
+}
+
+.code-hl .hljs-deletion {
+  color: var(--destructive);
+}
+.code-hl .hljs-emphasis {
+  font-style: italic;
+}
+.code-hl .hljs-strong {
+  font-weight: 600;
+}
+
 .md-body .katex-display {
   margin: 1.1em 0;
   padding: 0.9em 0.6em;

@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { highlightCode } from "@/lib/highlight";
 import {
   AlertTriangle,
   BookOpen,
@@ -48,13 +49,7 @@ import {
 
 const INDENT = "  ";
 
-/**
- * How each probe verdict is worded and coloured.
- *
- * "Unconfigured" is grey rather than red on purpose: it is not a fault, just a
- * choice not to add a key, and colouring it as an error makes a working setup
- * look broken.
- */
+/** How each probe verdict is worded and coloured. */
 const PROBE_LABELS: Record<EngineProbe["state"], string> = {
   ok: "working",
   rejected: "key rejected",
@@ -113,15 +108,10 @@ export function CodePanel({
   const getRunnerStatus = useAction(api.codeRunner.runnerStatus);
   const probeEngines = useAction(api.codeRunner.probeEngines);
 
-  // Which engines have their credentials, and why one might be missing. Fetched
-  // on demand rather than on mount: a key is often pasted while the panel is
-  // already open, and a stale "not configured" badge would be worse than none.
   const [engines, setEngines] = useState<EngineStatus[] | null>(null);
   const [showEngines, setShowEngines] = useState(false);
   const [checkingEngines, setCheckingEngines] = useState(false);
 
-  // The result of actually running a program through each engine, which is the
-  // only way to tell a working key from a saved one that no longer is.
   const [probes, setProbes] = useState<EngineProbe[] | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
@@ -139,24 +129,13 @@ export function CodePanel({
     }
   };
 
-  /**
-   * Run a known-good program through every configured engine.
-   *
-   * This costs a real run from each provider's quota, so it is a deliberate
-   * button rather than something that happens on open.
-   */
   const runSelfTest = async () => {
     if (probing) return;
     setProbing(true);
     setProbeError(null);
     try {
-      // Probed against the language currently selected, because an engine being
-      // healthy does not mean it can run whatever is in the editor. Read from
-      // state rather than the derived `language` object, so this callback does
-      // not capture it.
       const report = await probeEngines({ language: languageId });
       setProbes(report.engines);
-      // The configured/not-configured view can now be stale in either direction.
       setEngines(null);
     } catch (err) {
       setProbeError(
@@ -183,6 +162,7 @@ export function CodePanel({
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<CodeRunResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [outputCopied, setOutputCopied] = useState(false);
 
   // Starter library.
   const [showLibrary, setShowLibrary] = useState(false);
@@ -190,6 +170,7 @@ export function CodePanel({
   const [libraryCategory, setLibraryCategory] = useState<string | null>(null);
 
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const mirrorRef = useRef<HTMLPreElement>(null);
 
   const language = useMemo(
     () => getCodeLanguage(languageId) ?? CODE_LANGUAGES[0],
@@ -288,6 +269,20 @@ export function CodePanel({
     }
   };
 
+  const handleCopyOutput = async () => {
+    const text = result
+      ? [result.output, result.error].filter(Boolean).join("\n")
+      : "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setOutputCopied(true);
+      window.setTimeout(() => setOutputCopied(false), 1600);
+    } catch {
+      setOutputCopied(false);
+    }
+  };
+
   // Tab inserts spaces rather than leaving the editor, and the caret lands
   // after them. Shift+Tab still moves focus out, so the panel stays usable
   // from the keyboard alone.
@@ -328,6 +323,16 @@ export function CodePanel({
   // thousands of nodes for a very long program.
   const lineCount = Math.min(source ? source.split("\n").length : 1, 400);
 
+  // The editor's own fence tag drives highlighting; when the build has no
+  // grammar for it (or highlighting fails) highlightCode falls back to
+  // escaped plain text, so the mirror is always valid HTML.
+  const highlightedHtml = useMemo<string | null>(
+    () => (typeof window !== "undefined" ? null : highlightCode(source, language.fence)),
+    // Force a re-computation whenever the source or the language changes, so
+    // the mirror tracks edits as you type.
+    [source, language.fence],
+  );
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -342,14 +347,15 @@ export function CodePanel({
           <Code2 className="size-3.5 text-muted-foreground" />
           <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
             Code runner
-          </span>              <span className="text-[10px] text-muted-foreground/60">
-                {language.label} {version.label}
-              </span>
-              {libs.length > 0 && (
-                <span className="rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
-                  installs {libs.join(", ")}
-                </span>
-              )}
+          </span>
+          <span className="text-[10px] text-muted-foreground/60">
+            {language.label} {version.label}
+          </span>
+          {libs.length > 0 && (
+            <span className="rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
+              installs {libs.join(", ")}
+            </span>
+          )}
           <button
             onClick={toggleEngines}
             className="ml-auto flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground"
@@ -545,8 +551,6 @@ export function CodePanel({
             ) : (
               <div className="space-y-1">
                 {engines.map((engine) => {
-                  // An engine with no key is still usable as a fallback for the
-                  // languages it covers, so it is shown as limited, not broken.
                   const usable = engine.configured;
                   return (
                     <div key={engine.provider} className="text-[11px] leading-snug">
@@ -682,7 +686,7 @@ export function CodePanel({
             <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
               {starters.length === 0 && (
                 <p className="px-1 py-2 text-xs text-muted-foreground">
-                  Nothing matches “{libraryQuery}”.
+                  Nothing matches "{libraryQuery}".
                 </p>
               )}
               {starters.map((program) => (
@@ -718,6 +722,7 @@ export function CodePanel({
 
         {/* ---- Editor ---- */}
         <div className="flex overflow-hidden rounded-lg border bg-background">
+          {/* Line-number gutter: one div per line, mirrored width. */}
           <div
             aria-hidden
             className="select-none overflow-hidden border-r bg-muted/40 px-2 py-2 text-right font-mono text-[11px] leading-[1.45rem] text-muted-foreground/50"
@@ -726,20 +731,41 @@ export function CodePanel({
               <div key={i}>{i + 1}</div>
             ))}
           </div>
-          <Textarea
-            ref={editorRef}
-            value={source}
-            onChange={(e) => handleEdit(e.target.value)}
-            onKeyDown={handleEditorKeyDown}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            placeholder={
-              "Write code here, or open Examples to start from a program.\n" +
-              "Ctrl/Cmd + Enter runs it."
-            }
-            className="max-h-72 min-h-44 resize-y rounded-none border-0 font-mono text-[12.5px] leading-[1.45rem] focus-visible:ring-0 md:text-[12.5px]"
-          />
+
+          {/* Editor with a syntax-highlighted mirror underneath the text. */}
+          <div className="relative flex min-w-0 flex-1">
+            <pre
+              ref={mirrorRef}
+              className="pointer-events-none absolute inset-0 z-0 m-0 flex max-w-none grow basis-0 overflow-hidden rounded-none border-0 bg-transparent p-0 font-mono text-[12.5px] leading-[1.45rem] md:text-[12.5px] whitespace-pre-wrap break-words code-hl"
+              aria-hidden="true"
+            >
+              {highlightedHtml ? (
+                <code
+                  dangerouslySetInnerHTML={{
+                    __html: highlightedHtml,
+                  }}
+                />
+              ) : null}
+            </pre>
+            <Textarea
+              ref={editorRef}
+              value={source}
+              onChange={(e) => handleEdit(e.target.value)}
+              onKeyDown={handleEditorKeyDown}
+              onScroll={(e) => {
+                const pre = mirrorRef.current;
+                if (pre) pre.scrollTop = e.currentTarget.scrollTop;
+              }}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              placeholder={
+                "Write code here, or open Examples to start from a program.\n" +
+                "Ctrl/Cmd + Enter runs it."
+              }
+              className="relative z-10 min-h-44 max-h-72 resize-y rounded-none border-0 bg-transparent px-3 py-2 text-[12.5px] leading-[1.45rem] font-mono text-transparent caret-foreground md:text-[12.5px] placeholder:text-muted-foreground/40 focus-visible:ring-0"
+            />
+          </div>
         </div>
 
         {/* ---- stdin ---- */}
@@ -774,6 +800,18 @@ export function CodePanel({
               <span className="ml-auto text-[10px] text-muted-foreground/60">
                 {(result.elapsedMs / 1000).toFixed(1)}s round trip
               </span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Copy output"
+                onClick={() => void handleCopyOutput()}
+              >
+                {outputCopied ? (
+                  <Check className="size-3.5 text-emerald-500" />
+                ) : (
+                  <Copy className="size-3.5" />
+                )}
+              </Button>
             </div>
             <div className="max-h-56 overflow-y-auto p-2 font-mono text-[12px] leading-[1.45rem]">
               {result.requestError ? (
