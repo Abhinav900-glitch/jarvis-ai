@@ -3,11 +3,13 @@ import { motion } from "framer-motion";
 import { useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
 import type { GenericId } from "convex/values";
+import type { Id } from "@/convex/_generated/dataModel";
 import {
   AlertTriangle,
   Archive,
   Check,
   Download,
+  FileText,
   Loader2,
   Puzzle,
   Trash2,
@@ -53,10 +55,14 @@ function manifestNames(manifests: string | undefined): string[] {
 export function PluginsDialog({
   open,
   onClose,
+  onOpenSkill,
 }: {
   open: boolean;
   onClose: () => void;
+  /** Called with the chosen skill when the user picks one from a stored plugin. */
+  onOpenSkill?: (pluginId: Id<"plugins">, skillName: string) => void;
 }) {
+}
   const plugins = useQuery(api.plugins.list, open ? {} : "skip");
   const uploadUrl = useMutation(api.plugins.uploadUrl);
   const save = useMutation(api.plugins.save);
@@ -381,7 +387,24 @@ export function PluginsDialog({
                         ) : (
                           <Trash2 className="size-3.5" />
                         )}
-                      </button>
+                      </button>                        <button
+                          type="button"
+                          className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+                          title={`Open a skill from ${plugin.name}`}
+                          disabled={plugin.kind !== "plugin" || !plugin.manifests}
+                          onClick={() => {
+                            const names = manifestNames(plugin.manifests);
+                            const firstSkill = names.find(
+                              (n) => n.endsWith(".md") || !n.includes("/"),
+                            );
+                            if (firstSkill) {
+                              onOpenSkill?.(plugin._id as Id<"plugins">, firstSkill);
+                              onClose();
+                            }
+                          }}
+                        >
+                          <FileText className="size-3.5" />
+                        </button>
                     </div>
                   </li>
                 );

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { highlightCode } from "@/lib/highlight";
@@ -11,6 +11,7 @@ import {
   Code2,
   Copy,
   Eraser,
+  FileText,
   Info,
   Loader2,
   Play,
@@ -99,10 +100,35 @@ function formatKb(raw: string | null): string {
 export function CodePanel({
   onClose,
   onSendToJarvis,
+  onInsertSkill,
+  skill,
+  setSkill,
+  skillCopied,
+  setSkillCopied,
+  onEditorInserted,
 }: {
   onClose: () => void;
   /** Hands a composed message to the chat so the model can interpret the run. */
   onSendToJarvis: (text: string) => void;
+  /** Surfaces a stored plugin's writing skill into the runner's insert surface. */
+  onInsertSkill?: (skill: {
+    skillName: string;
+    text: string;
+    bytes: number;
+  }) => void;
+  skill: {
+    skillName: string;
+    text: string;
+    bytes: number;
+  } | null;
+  setSkill: (skill: {
+    skillName: string;
+    text: string;
+    bytes: number;
+  } | null) => void;
+  skillCopied: boolean;
+  setSkillCopied: (copied: boolean) => void;
+  onEditorInserted?: () => void;
 }) {
   const runCode = useAction(api.codeRunner.runCode);
   const getRunnerStatus = useAction(api.codeRunner.runnerStatus);
@@ -163,6 +189,16 @@ export function CodePanel({
   const [result, setResult] = useState<CodeRunResult | null>(null);
   const [copied, setCopied] = useState(false);
   const [outputCopied, setOutputCopied] = useState(false);
+
+  const handleOpenSkill = useCallback(() => {
+    // Opens the skill picker in the dashboard; the actual skill text is fetched
+    // there and handed back through `onInsertSkill`.
+    void onInsertSkill?.({
+      skillName: skill?.skillName ?? "writing-skill",
+      text: skill?.text ?? "",
+      bytes: skill?.bytes ?? 0,
+    });
+  }, [onInsertSkill]);
 
   // Starter library.
   const [showLibrary, setShowLibrary] = useState(false);
@@ -456,22 +492,32 @@ export function CodePanel({
                 <ChevronDown className="size-3" />
               )}
             </Button>
-          )}
+          )}            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setShowLibrary((v) => !v)}
+            >
+              <BookOpen className="size-3.5" />
+              Examples
+              {showLibrary ? (
+                <ChevronUp className="size-3" />
+              ) : (
+                <ChevronDown className="size-3" />
+              )}
+            </Button>
 
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            onClick={() => setShowLibrary((v) => !v)}
-          >
-            <BookOpen className="size-3.5" />
-            Examples
-            {showLibrary ? (
-              <ChevronUp className="size-3" />
-            ) : (
-              <ChevronDown className="size-3" />
-            )}
-          </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={handleOpenSkill}
+              disabled={!onInsertSkill}
+              title="Insert a writing skill from a stored plugin"
+            >
+              <BookOpen className="size-3.5" />
+              Skills
+            </Button>
 
           <div className="ml-auto flex items-center gap-1.5">
             <Button
@@ -718,15 +764,76 @@ export function CodePanel({
               ))}
             </div>
           </div>
-        )}
+        )}          {skill && (
+            <div className="mb-2 flex items-center gap-2">
+              <BookOpen className="size-3.5 text-muted-foreground" />
+              <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                Writing skill loaded
+              </span>
+              <span className="text-[10px] text-muted-foreground/60">
+                {skill.skillName}
+              </span>
+              <span className="ml-auto text-[10px] text-muted-foreground/60">
+                {formatKb(String(skill.bytes))}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2.5 text-xs"
+                onClick={() => {
+                  setSource((prev) => `${prev.trimEnd()}\n\n${skill.text}`);
+                  setSkill(null);
+                  onEditorInserted?.();
+                }}
+              >
+                <FileText className="size-3" />
+                Insert into editor
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Copy skill text"
+                onClick={() => {
+                  void navigator.clipboard.writeText(skill.text);
+                  setSkillCopied(true);
+                  window.setTimeout(() => setSkillCopied(false), 1600);
+                }}
+              >
+                {skillCopied ? (
+                  <Check className="size-3 text-emerald-500" />
+                ) : (
+                  <Copy className="size-3" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Dismiss skill"
+                onClick={() => {
+                  setSkill(null);
+                  onEditorInserted?.();
+                }}
+              >
+                <X className="size-3" />
+              </Button>
+            </div>
+          )}
 
-        {/* ---- Editor ---- */}
-        <div className="flex overflow-hidden rounded-lg border bg-background">
-          {/* Line-number gutter: one div per line, mirrored width. */}
-          <div
-            aria-hidden
-            className="select-none overflow-hidden border-r bg-muted/40 px-2 py-2 text-right font-mono text-[11px] leading-[1.45rem] text-muted-foreground/50"
-          >
+          {!skill && (
+            <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground/70">
+              <span>No writing skill loaded.</span>
+              <span className="font-mono">Ctrl/Cmd + B</span>
+              <span>to open the skill picker.</span>
+            </div>
+          )}
+
+          {/* ---- Editor ---- */}
+          <div className="flex overflow-hidden rounded-lg border bg-background">
+            {/* Line-number gutter: one div per line, mirrored width. */}
+            <div
+              aria-hidden
+              className="select-none overflow-hidden border-r bg-muted/40 px-2 py-2 text-right font-mono text-[11px] leading-[1.45rem] text-muted-foreground/50"
+            >
             {Array.from({ length: lineCount }, (_, i) => (
               <div key={i}>{i + 1}</div>
             ))}

@@ -59,6 +59,7 @@ import {
   Sparkles,
   Bot,
   Gauge,
+  BookOpen,
   ThumbsUp,
   ThumbsDown,
 } from "lucide-react";
@@ -824,6 +825,30 @@ export default function Dashboard() {
   const [showStudio, setShowStudio] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [showAeroTransform, setShowAeroTransform] = useState(false);
+  const [editorSource, setEditorSource] = useState("");
+
+  // Writing-skill surfaced from a stored plugin into the code runner.
+  const [selectedSkill, setSelectedSkill] = useState<{
+    skillName: string;
+    text: string;
+    bytes: number;
+  } | null>(null);
+  const [skillCopied, setSkillCopied] = useState(false);
+  const [textInserted, setTextInserted] = useState(false);
+
+  const clearSkill = useCallback(() => {
+    setSelectedSkill(null);
+    setTextInserted(false);
+    clearLoadingSkill();
+  }, [clearLoadingSkill]);
+
+  const insertSkill = useCallback(
+    (skill: { skillName: string; text: string; bytes: number }) => {
+      setSelectedSkill(skill);
+      setTextInserted(false);
+    },
+    [],
+  );
   // The overview surface. Separate from Dev, like Claude's chat versus its code
   // view — one drives a run, the other reads the estate.
   const [showAeroOverview, setShowAeroOverview] = useState(false);
@@ -875,6 +900,13 @@ export default function Dashboard() {
     index: number;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function formatKb(raw: string | null): string {
+    const bytes = Number(raw);
+    if (raw === null || !Number.isFinite(bytes)) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
 
   // ---- File upload: any type, signed upload to Cloudinary (multi) ----
   const uploadFile = async (
@@ -1153,7 +1185,30 @@ export default function Dashboard() {
   const [showPins, setShowPins] = useState(false);
   const [showEngines, setShowEngines] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
-  const [showTuning, setShowTuning] = useState(false);
+  const handleOpenSkillFromDialog = useCallback(
+    async (pluginId: Id<"plugins">, skillName: string) => {
+      setLoadingSkill({ pluginId, skillName });
+      try {
+        const result = await runOpenSkill({ pluginId, skillName });
+        if (result) {
+          insertSkill({
+            skillName: result.skillName,
+            text: result.text,
+            bytes: result.text.length,
+          });
+        }
+      } finally {
+        setLoadingSkill(null);
+      }
+    },
+    [runOpenSkill, insertSkill],
+  );
+
+  const handleDismissLoadingSkill = useCallback(() => {
+    setLoadingSkill(null);
+  }, []);
+  const clearLoadingSkill = handleDismissLoadingSkill;
+
   const [showLivePanel, setShowLivePanel] = useState(false);
   /** Which reply's provenance card is open, if any. */
   const [inspecting, setInspecting] = useState<Id<"chatMessages"> | null>(null);
@@ -1185,34 +1240,37 @@ export default function Dashboard() {
   const findCount = findMatches.length;
   const findCurrent = findCount === 0 ? null : (findMatches[findIdx % findCount] ?? null);
 
-  const openFind = useCallback((seed?: string) => {
-    setFindOpen(true);
-    if (seed !== undefined) setFindQuery(seed);
-    // After the bar paints, so the caret lands in the field.
-    window.setTimeout(() => findInputRef.current?.focus(), 0);
-  }, []);
+  const openFind = useCallback(
+    (seed?: string) => {
+      setFindOpen(true);
+      if (seed !== undefined) setFindQuery(seed);
+      // After the bar paints, so the caret lands in the field.
+      window.setTimeout(() => findInputRef.current?.focus(), 0);
+    },
+    [setFindOpen, setFindQuery],
+  );
 
   const closeFind = useCallback(() => {
     setFindOpen(false);
     setFindQuery("");
     setFindIdx(0);
     setHighlight(null);
-  }, []);
+  }, [setFindOpen, setFindQuery, setFindIdx, setHighlight]);
 
   const stepFind = useCallback(
     (dir: 1 | -1) => {
       if (findCount === 0) return;
-      setFindIdx((i) => (i + dir + findCount) % findCount);
+      setFindIdx((prev: number) => (prev + dir + findCount) % findCount);
     },
-    [findCount],
+    [findCount, setFindIdx],
   );
 
   // Jump to the current hit whenever the query or the index changes. Runs
   // only on the id — a reply streaming in does not move the row it is on.
   useEffect(() => {
     if (!findOpen || !findCurrent) return;
-    setHighlight(findCurrent);
     const t = window.setTimeout(() => {
+      setHighlight(findCurrent);
       document
         .querySelector<HTMLElement>(`[data-message-id="${findCurrent}"]`)
         ?.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -5392,29 +5450,106 @@ export default function Dashboard() {
             <AnimatePresence>
               {showCode && (
                 <CodePanel
-                  onClose={() => setShowCode(false)}
+                  onClose={() => {
+                    setShowCode(false);
+                    setSelectedSkill(null);
+                    setTextInserted(false);
+                    setEditorSource("");
+                  }}
                   onSendToJarvis={(text) => {
                     setShowCode(false);
                     void runSendWithText(text);
                   }}
+                  onInsertSkill={insertSkill}
+                  skill={selectedSkill}
+                  setSkill={setSelectedSkill}
+                  skillCopied={skillCopied}
+                  setSkillCopied={setSkillCopied}
+                  onEditorInserted={() => setTextInserted(true)}
                 />
               )}
             </AnimatePresence>
 
-          {/* ---- Export panel ---- */}
-          <AnimatePresence>
-            {showExport && messages && messages.length > 0 && (
-              <ExportPanel
-                session={{
-                  title:
-                    sessions?.find((s) => s._id === activeId)?.title ??
-                    "Jarvis chat",
-                  messages: messages.map((m) => ({
-                    role: m.role,
-                    content: m.content,
-                    model: m.model,
-                    createdAt: m.createdAt,
-                    imageUrl: m.imageUrl,
+            {/* ---- Stored writing skills (insert into the editor) ---- */}
+            {showCode && selectedSkill && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                className="border-t px-4 py-3 sm:px-6"
+              >
+                <div className="mx-auto max-w-4xl">
+                  <div className="mb-2 flex items-center gap-2">
+                    <BookOpen className="size-3.5 text-muted-foreground" />
+                    <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                      Writing skill inserted
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/60">
+                      {selectedSkill.skillName}
+                    </span>
+                    <span className="ml-auto text-[10px] text-muted-foreground/60">
+                      {formatKb(String(selectedSkill.bytes))}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => {
+                        setEditorSource((prev: string) => `${prev.trimEnd()}\n\n${selectedSkill.text}`);
+                        setTextInserted(true);
+                      }}
+                    >
+                      <FileText className="size-3" />
+                      Insert into editor
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title="Copy skill text"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(selectedSkill.text);
+                        setSkillCopied(true);
+                        window.setTimeout(() => setSkillCopied(false), 1600);
+                      }}
+                    >
+                      {skillCopied ? (
+                        <Check className="size-3 text-emerald-500" />
+                      ) : (
+                        <Copy className="size-3" />
+                      )}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title="Dismiss skill"
+                      onClick={clearSkill}
+                    >
+                      <X className="size-3" />
+                    </Button>
+                  </div>
+                  <pre className="max-h-48 overflow-y-auto rounded-md bg-muted/30 p-3 font-mono text-xs leading-6 whitespace-pre-wrap break-words">
+                    {selectedSkill.text}
+                  </pre>
+                </div>
+              </motion.div>
+            )}
+
+            {/* ---- End stored writing skills ---- */}
+
+            {/* ---- Export panel ---- */}
+            <AnimatePresence>
+              {showExport && messages && messages.length > 0 && (
+                <ExportPanel
+                  session={{
+                    title:
+                      sessions?.find((s) => s._id === activeId)?.title ??
+                      "Jarvis chat",
+                    messages: messages.map((m) => ({
+                      role: m.role,
+                      content: m.content,
+                      model: m.model,
+                      createdAt: m.createdAt,
+                      imageUrl: m.imageUrl,
                     images: m.images,
                     fileUrl: m.fileUrl,
                     fileName: m.fileName,
@@ -6491,10 +6626,13 @@ export default function Dashboard() {
         onClose={() => setPassphraseOpen(null)}
         onUnlocked={() => setPassphraseOpen(null)}
       />
-      <EnginePanel open={showEngines} onClose={() => setShowEngines(false)} />
-      <PluginsDialog
+      <EnginePanel open={showEngines} onClose={() => setShowEngines(false)} />      <PluginsDialog
         open={showPlugins}
         onClose={() => setShowPlugins(false)}
+        onOpenSkill={(pluginId, skillName) =>
+          handleOpenSkillFromDialog(pluginId as Id<"plugins">, skillName)
+        }
+        onDismissLoadingSkill={handleDismissLoadingSkill}
       />
       <PinnedPanel
         open={showPins}

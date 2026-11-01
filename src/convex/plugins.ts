@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { mutation, query, action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { readZipEntries, readZipText } from "../lib/zip-inspect";
-
+import { api } from "./_generated/api";
 
 // ---------------------------------------------------------------------------
 // Plugins & MCP — the account's zip archive.
@@ -128,23 +128,11 @@ export const remove = mutation({
   },
 });
 
-// ---------------------------------------------------------------------------
-// skill content read from a stored zip, surfaced into the code runner.
-//
-// This is the honest path for "the plugin should respond": it opens one of
-// the stored zip's skill files (a Markdown writing skill, in practice) as text
-// the runner can show or insert. It does not rewrite the user's text, and
-// nothing else in the app auto-applies it.
-// ---------------------------------------------------------------------------
-
-/** Everything we keep in memory at once for a single applySkill call. */
-const MAX_SKILL_BYTES = 256 * 1024;
-
 /**
- * A public but internal-only query that returns a plugin row only when the
- * caller owns it. Kept as an internal query (not an action helper) so the
- * caller gets a genuinely server-side owner check even though the plugin row
- * itself is not secret.
+ * Public but internal-only query that returns a plugin row only when the
+ * caller owns it. Defined on the same module as `applySkill` so the
+ * generated internal API can reference it through `api.plugins` without
+ * a same-file cycle.
  */
 export const getPluginRowForSkill = query({
   args: { pluginId: v.id("plugins") },
@@ -156,6 +144,18 @@ export const getPluginRowForSkill = query({
     return row;
   },
 });
+
+// ---------------------------------------------------------------------------
+// skill content read from a stored zip, surfaced into the code runner.
+//
+// This is the honest path for "the plugin should respond": it opens one of
+// the stored zip's skill files (a Markdown writing skill, in practice) as text
+// the runner can show or insert. It does not rewrite the user's text, and
+// nothing else in the app auto-applies it.
+// ---------------------------------------------------------------------------
+
+/** Everything we keep in memory at once for a single applySkill call. */
+const MAX_SKILL_BYTES = 256 * 1024;
 
 export const applySkill = action({
   args: {
@@ -170,14 +170,9 @@ export const applySkill = action({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Not signed in.");
 
-    const row = (await getPluginRowForSkill(ctx, { pluginId: args.pluginId })) as
-      | {
-          _id: string;
-          userId: string;
-          storageId: string;
-          manifests?: string | null | undefined;
-        }
-      | null;
+    const row = await ctx.runQuery(api.plugins.getPluginRowForSkill, {
+      pluginId: args.pluginId,
+    });
     if (!row) throw new Error("Not found or not yours.");
 
     const url = await ctx.storage.getUrl(row.storageId);
@@ -202,4 +197,3 @@ export const applySkill = action({
     };
   },
 });
-
