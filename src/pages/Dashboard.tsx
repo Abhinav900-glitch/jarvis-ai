@@ -143,7 +143,7 @@ import {
 } from "@/lib/messages";
 import { PassphraseGate } from "@/components/passphrase-gate";
 import { SessionStatsDialog } from "@/components/session-stats-dialog";
-import { Radio } from "lucide-react";
+import { Radio, ExternalLink } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
 import { ExportPanel } from "@/components/export-panel";
@@ -168,6 +168,7 @@ import { ProviderHealth } from "@/components/provider-health";
 import { LiveTuning } from "@/components/live-tuning";
 import { EnginePanel } from "@/components/engine-panel";
 import { PluginsDialog } from "@/components/plugins-dialog";
+import { McpPanel } from "@/components/mcp-panel";
 import { LiveSessionPanel } from "@/live/live-session-panel";
 import { useListeningQueue } from "@/hooks/use-listening-queue";
 import {
@@ -1184,6 +1185,7 @@ export default function Dashboard() {
   const [showPins, setShowPins] = useState(false);
   const [showEngines, setShowEngines] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
+  const [showMcp, setShowMcp] = useState(false);
   const [showTuning, setShowTuning] = useState(false);
   const runOpenSkill = useAction(api.plugins.applySkill);
   const handleOpenSkillFromDialog = useCallback(
@@ -3798,6 +3800,14 @@ export default function Dashboard() {
         run: () => void handleForkLatest(),
       },
       {
+        id: "mcp",
+        label: "MCP servers",
+        group: "Configure",
+        keywords: "tools integrations connect",
+        icon: <ExternalLink className="size-4" />,
+        run: () => setShowMcp(true),
+      },
+      {
         id: "engines",
         label: "Engines — smart routing and pinned models",
         group: "Chat",
@@ -3868,6 +3878,14 @@ export default function Dashboard() {
         keywords: "custom prompt system behaviour rules persona mode",
         icon: <Sparkles className="size-4" />,
         run: () => setShowPersona(true),
+      },
+      {
+        id: "mcp",
+        label: "MCP servers",
+        group: "Configure",
+        keywords: "tools integrations connect",
+        icon: <ExternalLink className="size-4" />,
+        run: () => setShowMcp(true),
       },
       {
         id: "tasks",
@@ -4281,7 +4299,11 @@ export default function Dashboard() {
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setShowPlugins(true)}>
                     <Puzzle className="size-4" />
-                    Plugins &amp; MCP
+                    Plugins
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowMcp(true)}>
+                    <ExternalLink className="size-4" />
+                    MCP servers
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setShowSearch((v) => !v)}>
@@ -6573,6 +6595,7 @@ export default function Dashboard() {
           handleOpenSkillFromDialog(pluginId as Id<"plugins">, skillName)
         }
       />
+      <McpPanel open={showMcp} onClose={() => setShowMcp(false)} />
       <PinnedPanel
         open={showPins}
         onClose={() => setShowPins(false)}

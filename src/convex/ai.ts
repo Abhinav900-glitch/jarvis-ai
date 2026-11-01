@@ -854,6 +854,24 @@ export const ask = action({
       prompt: args.prompt,
     });
 
+    // MCP tools (Canva, any env server, and the user's own registered servers)
+    // are available on the non-streaming ask path too, so live mode gets the same
+    // tool access as the streaming chat. Best-effort: if nothing is reachable,
+    // runProviderChain runs without tools, exactly as before.
+    try {
+      const mcp = await buildMcpToolSpecs(await mcpServersFor(ctx));
+      if (mcp.specs.length > 0) {
+        return await runMcpToolRound({
+          turns: [...history, { role: "user", content: userContent }],
+          systemPrompt,
+          plan,
+          mcp,
+        });
+      }
+    } catch {
+      // MCP is best-effort — fall through to a plain reply.
+    }
+
     return await runProviderChain(
       [...history, { role: "user", content: userContent }],
       systemPrompt,
@@ -964,10 +982,8 @@ interface McpBundle {
 }
 
 /**
- * The MCP servers available to this user right now.
- *
- * Two sources, both best-effort — an unconfigured or unreachable server is
- * simply absent rather than an error:
+ * The MCP servers available to this user right now, merged from three sources
+ * that the user controls:
  *
  *   1. Canva's official MCP, authenticated with the per-user OAuth token the
  *      app already stores and refreshes (canva.ts / canvaOAuth.ts). No new
@@ -976,11 +992,18 @@ interface McpBundle {
  *   2. A generic server — an aggregator (Composio, Pipedream) or any custom
  *      Streamable-HTTP MCP — pointed at by MCP_SERVER_URL + MCP_SERVER_TOKEN
  *      in the Keys tab. One aggregator key unlocks many integrations at once.
+ *
+ *   3. The user's own persisted MCP server registry (mcpServers table): each
+ *      row is a server the user authored in Settings → MCP, with its endpoint
+ *      and auth. This is what makes "many MCP servers" real for one account.
+ *
+ * Every source is best-effort: an unconfigured or unreachable server is simply
+ * absent rather than an error, so a flaky server never blocks a reply.
  */
 async function mcpServersFor(ctx: ActionCtx): Promise<McpServerConfig[]> {
   const servers: McpServerConfig[] = [];
 
-  // Canva — reuse the connected account's token (refreshing if stale).
+  // --- 1. Canva (per-user OAuth) ---
   try {
     const token = await getFreshAccessToken(ctx);
     servers.push({
@@ -993,7 +1016,7 @@ async function mcpServersFor(ctx: ActionCtx): Promise<McpServerConfig[]> {
     // Canva not connected, or no Canva app is configured — skip it.
   }
 
-  // Generic / aggregator server, configured entirely through env keys.
+  // --- 2. Generic / aggregator server from the Keys tab ---
   const genericUrl = process.env.MCP_SERVER_URL;
   const genericToken = process.env.MCP_SERVER_TOKEN;
   if (genericUrl && genericToken) {
@@ -1007,6 +1030,37 @@ async function mcpServersFor(ctx: ActionCtx): Promise<McpServerConfig[]> {
         [headerName]: isAuthHeader ? `Bearer ${genericToken}` : genericToken,
       },
     });
+  }
+
+  // --- 3. The user's own persisted MCP servers (many, per-account) ---
+  try {
+    const rows = await ctx.runQuery(api.mcpServers.list, {});
+    for (const row of rows) {
+      const authHeaderName =
+        row.authType === "header" && row.authHeaderName
+          ? row.authHeaderName
+          : "Authorization";
+      const authValue =
+        row.authType === "bearer"
+          ? row.authValue
+          : row.authType === "header"
+            ? row.authValue
+            : undefined;
+      const headers: Record<string, string> = {};
+      if (authValue && row.authType !== "none") {
+        headers[authHeaderName] =
+          row.authType === "bearer" ? `Bearer ${authValue}` : authValue;
+      }
+      servers.push({
+        id: row._id,
+        prefix: row.prefix || (row.name || "mcp").toLowerCase().replace(/[^a-z0-9_-]/g, "_"),
+        url: row.url,
+        headers,
+      });
+    }
+  } catch {
+    // If the registry can't be read for any reason, fall back to the other
+    // two sources — never fail a reply because of the registry.
   }
 
   return servers;
@@ -1081,16 +1135,14 @@ async function dispatchMcpCall(
 }
 
 /**
- * Ask the model with MCP tools attached and work the tool loop until it
- * answers, then write the finished reply to the streaming message.
+ * Run the MCP tool loop: hand the model the available tools, replay any tool
+ * calls back, and stop as soon as a round returns without tool calls.
  *
- * This mirrors the agent's proven loop: replay the transcript, hand the tool
- * results back, run again — stopping as soon as a round comes back with no
- * tool calls. The answer is written once, at the end.
+ * The same core is shared by both the streaming path (which then writes the
+ * finished text to the message via finalizeStream) and the non-streaming `ask`
+ * path (which just returns the LlmResult to the caller).
  */
-async function runMcpChatLoop(
-  ctx: ActionCtx,
-  messageId: Id<"chatMessages">,
+async function runMcpToolRound(
   input: {
     turns: ChatTurn[];
     systemPrompt: string;
@@ -1148,17 +1200,6 @@ async function runMcpChatLoop(
   const text = last?.text?.trim()
     ? last.text
     : "I couldn't complete that request.";
-  await ctx.runMutation(internal.chats.finalizeStream, {
-    messageId,
-    content: text,
-    model: last?.model ?? "none",
-    engineId: last?.engineId,
-    decisionReason: last?.reason,
-    latencyMs: last?.latencyMs,
-    promptTokens: last?.promptTokens,
-    completionTokens: last?.completionTokens,
-    usedFallback: last?.usedFallback ?? false,
-  });
   return {
     text,
     model: last?.model ?? "none",
@@ -1169,6 +1210,40 @@ async function runMcpChatLoop(
     promptTokens: last?.promptTokens,
     completionTokens: last?.completionTokens,
   };
+}
+
+/**
+ * Ask the model with MCP tools attached and work the tool loop until it
+ * answers, then write the finished reply to the streaming message.
+ *
+ * This is the streaming path only: it reuses the shared tool loop above and
+ * then persists the result into the already-created assistant message so the
+ * chat UI shows the reply. The non-streaming `ask` action uses
+ * `runMcpToolRound` directly (no message to write into).
+ */
+async function runMcpChatLoop(
+  ctx: ActionCtx,
+  messageId: Id<"chatMessages">,
+  input: {
+    turns: ChatTurn[];
+    systemPrompt: string;
+    plan: EnginePlan;
+    mcp: McpBundle;
+  },
+): Promise<LlmResult> {
+  const result = await runMcpToolRound(input);
+  await ctx.runMutation(internal.chats.finalizeStream, {
+    messageId,
+    content: result.text,
+    model: result.model,
+    engineId: result.engineId,
+    decisionReason: result.reason,
+    latencyMs: result.latencyMs,
+    promptTokens: result.promptTokens,
+    completionTokens: result.completionTokens,
+    usedFallback: result.usedFallback,
+  });
+  return result;
 }
 
 /**

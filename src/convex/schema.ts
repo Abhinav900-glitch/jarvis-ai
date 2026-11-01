@@ -596,10 +596,37 @@ const schema = defineSchema(
       createdAt: v.number(),
     }).index("by_user", ["userId"]),
 
-    // tableName: defineTable({
-    //   ...
-    //   // table fields
-    // }).index("by_field", ["field"])
+    // ------------------------------------------------------------------------
+    // Per-user MCP server connections.
+    //
+    // A user can hold many MCP servers (Canva is one special case below the
+    // fold; these are for every other MCP — aggregators, self-hosted, remote).
+    // The token is stored so the assistant can call the server on the user's
+    // behalf. Open MCP endpoints don't need a token: an empty token means
+    // "no auth header" for that server.
+    // ------------------------------------------------------------------------
+    mcpServers: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      url: v.string(),
+      prefix: v.optional(v.string()),
+      // Auth kind: "none", "bearer" (Bearer token in authValue), or
+      // "header" (custom header name in authHeaderName, value in authValue).
+      authType: v.optional(
+        v.union(
+          v.literal("none"),
+          v.literal("bearer"),
+          v.literal("header"),
+        ),
+      ),
+      authValue: v.optional(v.string()),
+      authHeaderName: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+      lastTestedAt: v.optional(v.number()),
+      toolCount: v.optional(v.number()),
+      lastError: v.optional(v.string()),
+    }).index("by_user", ["userId"]),
   },
   {
     schemaValidation: false,
