@@ -1,6 +1,8 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { readZipEntries, readZipText } from "../lib/zip-inspect";
+import { internal } from "./_generated/api";
 
 // ---------------------------------------------------------------------------
 // Plugins & MCP — the account's zip archive.
@@ -125,3 +127,63 @@ export const remove = mutation({
     await ctx.storage.delete(row.storageId);
   },
 });
+
+// ---------------------------------------------------------------------------
+// skill content read from a stored zip, surfaced into the code runner.
+//
+// This is the honest path for "the plugin should respond": it opens one of
+// the stored zip's skill files (a Markdown writing skill, in practice) as text
+// the runner can show or insert. It does not rewrite the user's text, and
+// nothing else in the app auto-applies it.
+//
+// The row is loaded through a small internal query living in its own module,
+// called through the generated internal API once this module compiles.
+// ---------------------------------------------------------------------------
+
+const MAX_SKILL_BYTES = 256 * 1024;
+
+export const applySkill = action({
+  args: {
+    pluginId: v.id("plugins"),
+    skillName: v.string(),
+  },
+  handler: async (ctx, args): Promise<{
+    skillName: string;
+    text: string;
+    manifests: string | null;
+  }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+    const row = (await ctx.runQuery(internal.pluginsInternal.getPluginRow, {
+      pluginId: args.pluginId,
+    })) as {
+      _id: string;
+      userId: string;
+      storageId: string;
+      manifests?: string | null | undefined;
+    } | null;
+    if (!row) throw new Error("Not found or not yours.");
+
+    const url = await ctx.storage.getUrl(row.storageId);
+    if (url === null) throw new Error("That zip is unavailable right now.");
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Could not read the stored zip.");
+    const blob = await res.arrayBuffer();
+
+    const entries = readZipEntries(blob);
+    const match = entries.find(
+      (e) => e.name === args.skillName || e.name.endsWith(`/${args.skillName}`),
+    );
+    if (!match) throw new Error(`That skill is not in this zip.`);
+    const text = await readZipText(blob, match, MAX_SKILL_BYTES);
+    if (text === null) throw new Error("That skill is too large to open here.");
+
+    return {
+      skillName: match.name,
+      text,
+      manifests: row.manifests ?? null,
+    };
+  },
+});
+
