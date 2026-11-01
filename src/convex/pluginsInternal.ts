@@ -1,14 +1,7 @@
-import { v } from "convex/values";
-import { query } from "./_generated/server";
-import { getAuthUserId } from "@convex-dev/auth/server";
-
-export const getPluginRow = query({
-  args: { pluginId: v.id("plugins") },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null) return null;
-    const row = await ctx.db.get(args.pluginId);
-    if (!row || row.userId !== userId) return null;
-    return row;
-  },
-});
+// This file is intentionally left empty.
+//
+// getPluginRowForSkill now lives in plugins.ts next to applySkill, so this
+// module no longer needs to export anything. A previous attempt split the
+// helper into its own file so the generated internal reference would exist, but
+// Convex generated the type side (api.d.ts) without the runtime module, so
+// the internal.pluginsInternal call never resolved to anything callable.

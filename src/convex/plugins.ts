@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { mutation, query, action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { readZipEntries, readZipText } from "../lib/zip-inspect";
-import { internal } from "./_generated/api";
+
 
 // ---------------------------------------------------------------------------
 // Plugins & MCP — the account's zip archive.
@@ -135,12 +135,27 @@ export const remove = mutation({
 // the stored zip's skill files (a Markdown writing skill, in practice) as text
 // the runner can show or insert. It does not rewrite the user's text, and
 // nothing else in the app auto-applies it.
-//
-// The row is loaded through a small internal query living in its own module,
-// called through the generated internal API once this module compiles.
 // ---------------------------------------------------------------------------
 
+/** Everything we keep in memory at once for a single applySkill call. */
 const MAX_SKILL_BYTES = 256 * 1024;
+
+/**
+ * A public but internal-only query that returns a plugin row only when the
+ * caller owns it. Kept as an internal query (not an action helper) so the
+ * caller gets a genuinely server-side owner check even though the plugin row
+ * itself is not secret.
+ */
+export const getPluginRowForSkill = query({
+  args: { pluginId: v.id("plugins") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+    const row = await ctx.db.get(args.pluginId);
+    if (!row || row.userId !== userId) return null;
+    return row;
+  },
+});
 
 export const applySkill = action({
   args: {
@@ -154,14 +169,15 @@ export const applySkill = action({
   }> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Not signed in.");
-    const row = (await ctx.runQuery(internal.pluginsInternal.getPluginRow, {
-      pluginId: args.pluginId,
-    })) as {
-      _id: string;
-      userId: string;
-      storageId: string;
-      manifests?: string | null | undefined;
-    } | null;
+
+    const row = (await getPluginRowForSkill(ctx, { pluginId: args.pluginId })) as
+      | {
+          _id: string;
+          userId: string;
+          storageId: string;
+          manifests?: string | null | undefined;
+        }
+      | null;
     if (!row) throw new Error("Not found or not yours.");
 
     const url = await ctx.storage.getUrl(row.storageId);
