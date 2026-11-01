@@ -62,7 +62,6 @@ export function PluginsDialog({
   /** Called with the chosen skill when the user picks one from a stored plugin. */
   onOpenSkill?: (pluginId: Id<"plugins">, skillName: string) => void;
 }) {
-}
   const plugins = useQuery(api.plugins.list, open ? {} : "skip");
   const uploadUrl = useMutation(api.plugins.uploadUrl);
   const save = useMutation(api.plugins.save);

@@ -100,7 +100,7 @@ function formatKb(raw: string | null): string {
 export function CodePanel({
   onClose,
   onSendToJarvis,
-  onInsertSkill,
+  onOpenSkillPicker,
   skill,
   setSkill,
   skillCopied,
@@ -110,12 +110,8 @@ export function CodePanel({
   onClose: () => void;
   /** Hands a composed message to the chat so the model can interpret the run. */
   onSendToJarvis: (text: string) => void;
-  /** Surfaces a stored plugin's writing skill into the runner's insert surface. */
-  onInsertSkill?: (skill: {
-    skillName: string;
-    text: string;
-    bytes: number;
-  }) => void;
+  /** Opens the dashboard's stored-plugin skill picker. */
+  onOpenSkillPicker?: () => void;
   skill: {
     skillName: string;
     text: string;
@@ -191,14 +187,10 @@ export function CodePanel({
   const [outputCopied, setOutputCopied] = useState(false);
 
   const handleOpenSkill = useCallback(() => {
-    // Opens the skill picker in the dashboard; the actual skill text is fetched
-    // there and handed back through `onInsertSkill`.
-    void onInsertSkill?.({
-      skillName: skill?.skillName ?? "writing-skill",
-      text: skill?.text ?? "",
-      bytes: skill?.bytes ?? 0,
-    });
-  }, [onInsertSkill]);
+    // Opens the dashboard's skill picker; the chosen skill is fetched there and
+    // handed back through the `skill` prop.
+    onOpenSkillPicker?.();
+  }, [onOpenSkillPicker]);
 
   // Starter library.
   const [showLibrary, setShowLibrary] = useState(false);
@@ -512,7 +504,7 @@ export function CodePanel({
               size="sm"
               className="h-7 px-2 text-xs"
               onClick={handleOpenSkill}
-              disabled={!onInsertSkill}
+              disabled={!onOpenSkillPicker}
               title="Insert a writing skill from a stored plugin"
             >
               <BookOpen className="size-3.5" />

@@ -825,7 +825,6 @@ export default function Dashboard() {
   const [showStudio, setShowStudio] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [showAeroTransform, setShowAeroTransform] = useState(false);
-  const [editorSource, setEditorSource] = useState("");
 
   // Writing-skill surfaced from a stored plugin into the code runner.
   const [selectedSkill, setSelectedSkill] = useState<{
@@ -834,18 +833,25 @@ export default function Dashboard() {
     bytes: number;
   } | null>(null);
   const [skillCopied, setSkillCopied] = useState(false);
-  const [textInserted, setTextInserted] = useState(false);
+
+  // Writing-skill load state: which stored skill the runner is pulling in.
+  const [loadingSkill, setLoadingSkill] = useState<{
+    pluginId: Id<"plugins">;
+    skillName: string;
+  } | null>(null);
+  const handleDismissLoadingSkill = useCallback(() => {
+    setLoadingSkill(null);
+  }, []);
+  const clearLoadingSkill = handleDismissLoadingSkill;
 
   const clearSkill = useCallback(() => {
     setSelectedSkill(null);
-    setTextInserted(false);
     clearLoadingSkill();
   }, [clearLoadingSkill]);
 
   const insertSkill = useCallback(
     (skill: { skillName: string; text: string; bytes: number }) => {
       setSelectedSkill(skill);
-      setTextInserted(false);
     },
     [],
   );
@@ -900,13 +906,6 @@ export default function Dashboard() {
     index: number;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  function formatKb(raw: string | null): string {
-    const bytes = Number(raw);
-    if (raw === null || !Number.isFinite(bytes)) return "";
-    if (bytes < 1024) return `${bytes} B`;
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
 
   // ---- File upload: any type, signed upload to Cloudinary (multi) ----
   const uploadFile = async (
@@ -1185,6 +1184,8 @@ export default function Dashboard() {
   const [showPins, setShowPins] = useState(false);
   const [showEngines, setShowEngines] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
+  const [showTuning, setShowTuning] = useState(false);
+  const runOpenSkill = useAction(api.plugins.applySkill);
   const handleOpenSkillFromDialog = useCallback(
     async (pluginId: Id<"plugins">, skillName: string) => {
       setLoadingSkill({ pluginId, skillName });
@@ -1203,11 +1204,6 @@ export default function Dashboard() {
     },
     [runOpenSkill, insertSkill],
   );
-
-  const handleDismissLoadingSkill = useCallback(() => {
-    setLoadingSkill(null);
-  }, []);
-  const clearLoadingSkill = handleDismissLoadingSkill;
 
   const [showLivePanel, setShowLivePanel] = useState(false);
   /** Which reply's provenance card is open, if any. */
@@ -5452,89 +5448,32 @@ export default function Dashboard() {
                 <CodePanel
                   onClose={() => {
                     setShowCode(false);
-                    setSelectedSkill(null);
-                    setTextInserted(false);
-                    setEditorSource("");
+                    clearSkill();
                   }}
                   onSendToJarvis={(text) => {
                     setShowCode(false);
                     void runSendWithText(text);
                   }}
-                  onInsertSkill={insertSkill}
+                  onOpenSkillPicker={() => setShowPlugins(true)}
                   skill={selectedSkill}
                   setSkill={setSelectedSkill}
                   skillCopied={skillCopied}
                   setSkillCopied={setSkillCopied}
-                  onEditorInserted={() => setTextInserted(true)}
                 />
               )}
             </AnimatePresence>
 
-            {/* ---- Stored writing skills (insert into the editor) ---- */}
-            {showCode && selectedSkill && (
-              <motion.div
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 6 }}
-                className="border-t px-4 py-3 sm:px-6"
-              >
-                <div className="mx-auto max-w-4xl">
-                  <div className="mb-2 flex items-center gap-2">
-                    <BookOpen className="size-3.5 text-muted-foreground" />
-                    <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-                      Writing skill inserted
-                    </span>
-                    <span className="text-[10px] text-muted-foreground/60">
-                      {selectedSkill.skillName}
-                    </span>
-                    <span className="ml-auto text-[10px] text-muted-foreground/60">
-                      {formatKb(String(selectedSkill.bytes))}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2.5 text-xs"
-                      onClick={() => {
-                        setEditorSource((prev: string) => `${prev.trimEnd()}\n\n${selectedSkill.text}`);
-                        setTextInserted(true);
-                      }}
-                    >
-                      <FileText className="size-3" />
-                      Insert into editor
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      title="Copy skill text"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(selectedSkill.text);
-                        setSkillCopied(true);
-                        window.setTimeout(() => setSkillCopied(false), 1600);
-                      }}
-                    >
-                      {skillCopied ? (
-                        <Check className="size-3 text-emerald-500" />
-                      ) : (
-                        <Copy className="size-3" />
-                      )}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      title="Dismiss skill"
-                      onClick={clearSkill}
-                    >
-                      <X className="size-3" />
-                    </Button>
-                  </div>
-                  <pre className="max-h-48 overflow-y-auto rounded-md bg-muted/30 p-3 font-mono text-xs leading-6 whitespace-pre-wrap break-words">
-                    {selectedSkill.text}
-                  </pre>
-                </div>
-              </motion.div>
+            {showCode && loadingSkill && (
+              <div className="flex items-center gap-2 border-t px-4 py-3 text-[11px] text-muted-foreground sm:px-6">
+                <Loader2 className="size-3.5 animate-spin" />
+                <BookOpen className="size-3.5" />
+                <span>
+                  Loading skill{" "}
+                  <span className="font-medium">{loadingSkill.skillName}</span>
+                  …
+                </span>
+              </div>
             )}
-
-            {/* ---- End stored writing skills ---- */}
 
             {/* ---- Export panel ---- */}
             <AnimatePresence>
@@ -6626,13 +6565,13 @@ export default function Dashboard() {
         onClose={() => setPassphraseOpen(null)}
         onUnlocked={() => setPassphraseOpen(null)}
       />
-      <EnginePanel open={showEngines} onClose={() => setShowEngines(false)} />      <PluginsDialog
+      <EnginePanel open={showEngines} onClose={() => setShowEngines(false)} />
+      <PluginsDialog
         open={showPlugins}
         onClose={() => setShowPlugins(false)}
         onOpenSkill={(pluginId, skillName) =>
           handleOpenSkillFromDialog(pluginId as Id<"plugins">, skillName)
         }
-        onDismissLoadingSkill={handleDismissLoadingSkill}
       />
       <PinnedPanel
         open={showPins}
