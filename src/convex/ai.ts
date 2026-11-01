@@ -8,7 +8,7 @@ import {
   detectTextMood,
 } from "../lib/emotional-intelligence";
 import type { FunctionReference } from "convex/server";
-import { action, internalAction } from "./_generated/server";
+import { action, internalAction, type ActionCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { memoryContextFor } from "./memory";
@@ -24,6 +24,8 @@ import {
   type ProviderSpec,
   type RankedEngine,
 } from "./engines";
+import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
+import { getFreshAccessToken } from "./canva";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -939,6 +941,236 @@ async function routingFor(
   });
 }
 
+// ---------------------------------------------------------------------------
+// MCP tools — Canva and any configured MCP server
+// ---------------------------------------------------------------------------
+
+/** Canva's official remote MCP endpoint (Streamable HTTP, per-user OAuth). */
+const CANVA_MCP_URL = "https://api.canva.com/connect/v1/mcp";
+/** How many tool rounds a single chat turn may spend before it just answers. */
+const MAX_MCP_ITERATIONS = 8;
+
+/** A resolved link from a prefixed tool name to the client that serves it. */
+interface McpBinding {
+  client: McpClient;
+  toolName: string;
+}
+
+/** Everything one chat turn needs to use MCP: the specs and the live clients. */
+interface McpBundle {
+  specs: ToolSpec[];
+  bindings: Map<string, McpBinding>;
+  clients: McpClient[];
+}
+
+/**
+ * The MCP servers available to this user right now.
+ *
+ * Two sources, both best-effort — an unconfigured or unreachable server is
+ * simply absent rather than an error:
+ *
+ *   1. Canva's official MCP, authenticated with the per-user OAuth token the
+ *      app already stores and refreshes (canva.ts / canvaOAuth.ts). No new
+ *      credential is needed beyond the existing Connect Canva flow.
+ *
+ *   2. A generic server — an aggregator (Composio, Pipedream) or any custom
+ *      Streamable-HTTP MCP — pointed at by MCP_SERVER_URL + MCP_SERVER_TOKEN
+ *      in the Keys tab. One aggregator key unlocks many integrations at once.
+ */
+async function mcpServersFor(ctx: ActionCtx): Promise<McpServerConfig[]> {
+  const servers: McpServerConfig[] = [];
+
+  // Canva — reuse the connected account's token (refreshing if stale).
+  try {
+    const token = await getFreshAccessToken(ctx);
+    servers.push({
+      id: "canva",
+      prefix: "canva",
+      url: CANVA_MCP_URL,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    // Canva not connected, or no Canva app is configured — skip it.
+  }
+
+  // Generic / aggregator server, configured entirely through env keys.
+  const genericUrl = process.env.MCP_SERVER_URL;
+  const genericToken = process.env.MCP_SERVER_TOKEN;
+  if (genericUrl && genericToken) {
+    const headerName = process.env.MCP_SERVER_HEADER || "Authorization";
+    const isAuthHeader = headerName.toLowerCase() === "authorization";
+    servers.push({
+      id: "mcp",
+      prefix: process.env.MCP_SERVER_PREFIX || "mcp",
+      url: genericUrl,
+      headers: {
+        [headerName]: isAuthHeader ? `Bearer ${genericToken}` : genericToken,
+      },
+    });
+  }
+
+  return servers;
+}
+
+/**
+ * Connect to each server, list its tools, and convert them to model specs.
+ *
+ * A server that fails to connect is skipped and its client closed, so one
+ * broken integration never blocks the others or the reply itself.
+ */
+async function buildMcpToolSpecs(
+  servers: McpServerConfig[],
+): Promise<McpBundle> {
+  const specs: ToolSpec[] = [];
+  const bindings = new Map<string, McpBinding>();
+  const clients: McpClient[] = [];
+
+  for (const server of servers) {
+    const client = new McpClient(server.url, server.headers);
+    try {
+      const tools = await client.listTools();
+      let added = false;
+      for (const tool of tools) {
+        const spec = mcpToolToSpec(tool, server.prefix);
+        if (bindings.has(spec.function.name)) continue; // name collision
+        bindings.set(spec.function.name, { client, toolName: tool.name });
+        specs.push(spec);
+        added = true;
+      }
+      if (added) clients.push(client);
+      else await client.close();
+    } catch {
+      try {
+        await client.close();
+      } catch {
+        // Ignore — the server is unreachable either way.
+      }
+    }
+  }
+
+  return { specs, bindings, clients };
+}
+
+/** Run one tool call against its MCP server and hand the result back as text. */
+async function dispatchMcpCall(
+  mcp: McpBundle,
+  call: ToolCall,
+): Promise<string> {
+  const binding = mcp.bindings.get(call.name);
+  if (!binding) return `Unknown tool "${call.name}".`;
+
+  let args: unknown = {};
+  try {
+    args = call.arguments ? JSON.parse(call.arguments) : {};
+  } catch {
+    return `The arguments for ${call.name} were not valid JSON.`;
+  }
+  if (args === null || typeof args !== "object" || Array.isArray(args)) args = {};
+
+  try {
+    const res = await binding.client.callTool(
+      binding.toolName,
+      args as Record<string, unknown>,
+    );
+    return res.isError
+      ? `The tool reported an error:\n${res.content}`
+      : res.content || "(the tool returned no output)";
+  } catch (err) {
+    return `The tool failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/**
+ * Ask the model with MCP tools attached and work the tool loop until it
+ * answers, then write the finished reply to the streaming message.
+ *
+ * This mirrors the agent's proven loop: replay the transcript, hand the tool
+ * results back, run again — stopping as soon as a round comes back with no
+ * tool calls. The answer is written once, at the end.
+ */
+async function runMcpChatLoop(
+  ctx: ActionCtx,
+  messageId: Id<"chatMessages">,
+  input: {
+    turns: ChatTurn[];
+    systemPrompt: string;
+    plan: EnginePlan;
+    mcp: McpBundle;
+  },
+): Promise<LlmResult> {
+  const { turns, systemPrompt, plan, mcp } = input;
+  const messages: ChatTurn[] = [...turns];
+  let last: LlmResult | null = null;
+
+  try {
+    for (let i = 0; i < MAX_MCP_ITERATIONS; i++) {
+      const result = await runProviderChain(
+        messages,
+        systemPrompt,
+        "All models failed automatically.",
+        plan,
+        { tools: mcp.specs },
+      );
+      last = result;
+      const calls = result.toolCalls ?? [];
+      if (calls.length === 0) break;
+
+      // Echo the requesting turn back verbatim — providers reject a `tool`
+      // message with no matching assistant `tool_calls` ahead of it.
+      messages.push({
+        role: "assistant",
+        content: result.text || null,
+        tool_calls: calls.map((c) => ({
+          id: c.id,
+          type: "function" as const,
+          function: { name: c.name, arguments: c.arguments },
+        })),
+      });
+      for (const call of calls) {
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          name: call.name,
+          content: await dispatchMcpCall(mcp, call),
+        });
+      }
+    }
+  } finally {
+    for (const client of mcp.clients) {
+      try {
+        await client.close();
+      } catch {
+        // Best-effort cleanup.
+      }
+    }
+  }
+
+  const text = last?.text?.trim()
+    ? last.text
+    : "I couldn't complete that request.";
+  await ctx.runMutation(internal.chats.finalizeStream, {
+    messageId,
+    content: text,
+    model: last?.model ?? "none",
+    engineId: last?.engineId,
+    decisionReason: last?.reason,
+    latencyMs: last?.latencyMs,
+    promptTokens: last?.promptTokens,
+    completionTokens: last?.completionTokens,
+    usedFallback: last?.usedFallback ?? false,
+  });
+  return {
+    text,
+    model: last?.model ?? "none",
+    usedFallback: last?.usedFallback ?? false,
+    engineId: last?.engineId,
+    reason: last?.reason,
+    latencyMs: last?.latencyMs,
+    promptTokens: last?.promptTokens,
+    completionTokens: last?.completionTokens,
+  };
+}
+
 /**
  * Stream a reply from whichever engine the router ranked first, writing each
  * delta straight into an assistant message the caller has already created. The
@@ -1023,6 +1255,28 @@ export const askStream = action({
       hasImages,
       prompt: args.prompt,
     });
+
+    // MCP tools — Canva and any configured server (an aggregator or a custom
+    // Streamable-HTTP endpoint). Only entered when a server is actually
+    // reachable: with none connected this is a no-op and the streaming path
+    // below runs exactly as it always has.
+    try {
+      const mcp = await buildMcpToolSpecs(await mcpServersFor(ctx));
+      if (mcp.specs.length > 0) {
+        return await runMcpChatLoop(ctx, args.messageId, {
+          turns: [
+            ...history,
+            { role: "user", content: buildUserContent(prompt, args.imageUrls) },
+          ],
+          systemPrompt,
+          plan,
+          mcp,
+        });
+      }
+    } catch {
+      // MCP is best-effort — a flaky or unreachable server must never block a
+      // reply, so we fall through to the normal streaming path.
+    }
 
     const failures: string[] = [];
 
