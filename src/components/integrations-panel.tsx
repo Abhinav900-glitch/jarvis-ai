@@ -83,7 +83,7 @@ function normalizeUrl(url: string): string {
 function authTone(auth: McpPreset["auth"]): string {
   if (auth === "none") return "border-emerald-400/30 bg-emerald-400/10 text-emerald-300";
   if (auth === "oauth") return "border-border/70 bg-muted/40 text-muted-foreground";
-  return "border-sky-400/30 bg-sky-400/10 text-sky-300";
+  return "border-primary/30 bg-primary/10 text-primary";
 }
 
 export function IntegrationsPanel({

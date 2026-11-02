@@ -119,7 +119,7 @@ export function LiveTuning({ live, open, onClose }: LiveTuningProps) {
                   type="checkbox"
                   checked={live.noiseCancel}
                   onChange={(e) => live.setNoiseCancel(e.target.checked)}
-                  className="size-3 accent-cyan-400"
+                  className="size-3 accent-primary"
                 />
                 <span className="text-[10px] text-muted-foreground">
                   {live.noiseCancel ? "On" : "Off — the browser filter only"}
@@ -146,7 +146,7 @@ export function LiveTuning({ live, open, onClose }: LiveTuningProps) {
                   disabled={!live.noiseCancel}
                   onChange={(e) => live.setNoiseStrength(Number(e.target.value))}
                   aria-label="Noise suppression strength"
-                  className="h-1 flex-1 cursor-pointer accent-cyan-400 disabled:opacity-40"
+                  className="h-1 flex-1 cursor-pointer accent-primary disabled:opacity-40"
                 />
               </div>
               <p className="text-[10px] leading-4 text-muted-foreground">
@@ -166,7 +166,7 @@ export function LiveTuning({ live, open, onClose }: LiveTuningProps) {
                   value={bargeIn}
                   onChange={(e) => setBargeIn(Number(e.target.value))}
                   aria-label="Barge-in hold time"
-                  className="h-1 flex-1 cursor-pointer accent-cyan-400"
+                  className="h-1 flex-1 cursor-pointer accent-primary"
                 />
               </div>
               <p className="text-[10px] leading-4 text-muted-foreground">
@@ -183,7 +183,7 @@ export function LiveTuning({ live, open, onClose }: LiveTuningProps) {
                     type="checkbox"
                     checked={live.autoRestart}
                     onChange={(e) => live.setAutoRestart(e.target.checked)}
-                    className="size-3 accent-cyan-400"
+                    className="size-3 accent-primary"
                   />
                   <span className="text-[10px] text-muted-foreground">
                     Reopen the mic by itself after every reply
@@ -194,7 +194,7 @@ export function LiveTuning({ live, open, onClose }: LiveTuningProps) {
                 <button
                   type="button"
                   onClick={live.resumeListening}
-                  className="mt-1 w-full rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] text-cyan-300 transition-colors hover:bg-cyan-500/20"
+                  className="mt-1 w-full rounded-md border border-primary/40 bg-primary/10 px-2 py-1 text-[10px] text-primary transition-colors hover:bg-primary/20"
                 >
                   Resume listening
                 </button>

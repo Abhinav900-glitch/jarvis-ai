@@ -165,7 +165,7 @@ export function EnginePanel({ open, onClose }: EnginePanelProps) {
                               {engine.provider}
                             </span>
                             {engine.vision ? (
-                              <span className="shrink-0 rounded bg-cyan-500/15 px-1 text-[9px] text-cyan-400">
+                              <span className="shrink-0 rounded bg-primary/15 px-1 text-[9px] text-primary">
                                 vision
                               </span>
                             ) : null}
@@ -224,7 +224,7 @@ function Toggle({
         onClick={() => onChange(!checked)}
         className={cn(
           "mt-0.5 h-4 w-7 shrink-0 rounded-full border transition-colors",
-          checked ? "border-cyan-500/60 bg-cyan-500/40" : "bg-muted",
+          checked ? "border-primary/60 bg-primary/40" : "bg-muted",
         )}
       >
         <span

@@ -495,7 +495,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                                     ? "bg-emerald-500/15 text-emerald-300"
                                     : preset.auth === "oauth"
                                       ? "bg-muted text-muted-foreground"
-                                      : "bg-cyan-500/15 text-cyan-300",
+                                      : "bg-primary/15 text-primary",
                                 )}
                               >
                                 {presetAuthLabel(preset.auth)}
@@ -639,7 +639,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                         <span className="truncate font-medium text-sm">
                           Canva (official MCP)
                         </span>
-                        <span className="rounded bg-cyan-500/15 px-1.5 py-px text-[9px] uppercase tracking-wide text-cyan-300">
+                        <span className="rounded bg-primary/15 px-1.5 py-px text-[9px] uppercase tracking-wide text-primary">
                           oauth
                         </span>
                       </div>
@@ -712,7 +712,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                             <span className="truncate font-medium text-sm">
                               {row.name}
                             </span>
-                            <span className="rounded bg-cyan-500/15 px-1.5 py-px text-[9px] uppercase tracking-wide text-cyan-300">
+                            <span className="rounded bg-primary/15 px-1.5 py-px text-[9px] uppercase tracking-wide text-primary">
                               {row.authType ?? "none"}
                             </span>
                           </div>

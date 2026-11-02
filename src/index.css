@@ -66,6 +66,14 @@
   --signal-amber: oklch(0.78 0.15 75);
   --signal-green: oklch(0.75 0.16 155);
   --signal-rose: oklch(0.68 0.19 15);
+
+  /* Live-mode HUD ink. These were hex literals inside jarvis-hud.tsx; pulling
+     them up here lets the full-screen surface take the current palette too. */
+  --hud-accent: #22d3ee;
+  --hud-bright: #e6f6ff;
+  --hud-dim: #8fb8d8;
+  --hud-faint: #6d93b8;
+  --hud-panel: #061020;
 }
 
 :root {
@@ -138,6 +146,99 @@
   --sidebar-accent-foreground: oklch(0.95 0.02 210);
   --sidebar-border: oklch(0.85 0.06 225 / 15%);
   --sidebar-ring: oklch(0.75 0.13 210);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Palette — "Ember" (default). The tokens above are "Reactor", the original    */
+/* ink-navy / cyan console. Ember keeps the same instrument logic but moves the  */
+/* whole system to warm graphite with a brass-amber signal, the way a valve     */
+/* amplifier or a darkroom timer reads: low glare, high contrast, no cool       */
+/* fluorescent tint. Signal variables are remapped too, so every HUD glow,      */
+/* scanline and status dot follows the palette instead of fighting it.          */
+/* -------------------------------------------------------------------------- */
+
+.dark[data-palette="ember"] {
+  --background: oklch(0.168 0.009 66);
+  --foreground: oklch(0.955 0.012 80);
+  --card: oklch(0.208 0.011 64);
+  --card-foreground: oklch(0.955 0.012 80);
+  --popover: oklch(0.202 0.011 64);
+  --popover-foreground: oklch(0.955 0.012 80);
+  --primary: oklch(0.79 0.132 74);
+  --primary-foreground: oklch(0.19 0.024 62);
+  --secondary: oklch(0.272 0.014 62);
+  --secondary-foreground: oklch(0.93 0.014 80);
+  --muted: oklch(0.265 0.013 62);
+  --muted-foreground: oklch(0.735 0.022 72);
+  --accent: oklch(0.318 0.032 64);
+  --accent-foreground: oklch(0.965 0.02 82);
+  --destructive: oklch(0.66 0.195 25);
+  --border: oklch(0.88 0.05 74 / 15%);
+  --input: oklch(0.88 0.05 74 / 21%);
+  --ring: oklch(0.8 0.12 74);
+  --chart-1: oklch(0.79 0.132 74);
+  --chart-2: oklch(0.66 0.13 45);
+  --chart-3: oklch(0.74 0.1 128);
+  --chart-4: oklch(0.64 0.13 330);
+  --chart-5: oklch(0.8 0.09 92);
+  --sidebar: oklch(0.188 0.011 64);
+  --sidebar-foreground: oklch(0.955 0.012 80);
+  --sidebar-primary: oklch(0.79 0.132 74);
+  --sidebar-primary-foreground: oklch(0.19 0.024 62);
+  --sidebar-accent: oklch(0.3 0.03 64);
+  --sidebar-accent-foreground: oklch(0.965 0.02 82);
+  --sidebar-border: oklch(0.88 0.05 74 / 14%);
+  --sidebar-ring: oklch(0.8 0.12 74);
+}
+
+html[data-palette="ember"]:not(.dark) {
+  --background: oklch(0.985 0.007 82);
+  --foreground: oklch(0.215 0.014 62);
+  --card: oklch(0.997 0.003 85);
+  --card-foreground: oklch(0.215 0.014 62);
+  --popover: oklch(0.997 0.003 85);
+  --popover-foreground: oklch(0.215 0.014 62);
+  --primary: oklch(0.57 0.125 62);
+  --primary-foreground: oklch(0.99 0.006 85);
+  --secondary: oklch(0.952 0.014 82);
+  --secondary-foreground: oklch(0.29 0.026 62);
+  --muted: oklch(0.958 0.012 82);
+  --muted-foreground: oklch(0.505 0.022 70);
+  --accent: oklch(0.942 0.032 80);
+  --accent-foreground: oklch(0.31 0.035 62);
+  --destructive: oklch(0.57 0.21 22);
+  --border: oklch(0.9 0.016 80);
+  --input: oklch(0.885 0.018 80);
+  --ring: oklch(0.65 0.115 68);
+  --chart-1: oklch(0.62 0.12 66);
+  --chart-2: oklch(0.58 0.13 44);
+  --chart-3: oklch(0.6 0.09 130);
+  --chart-4: oklch(0.56 0.12 330);
+  --chart-5: oklch(0.66 0.1 92);
+  --sidebar: oklch(0.968 0.01 82);
+  --sidebar-foreground: oklch(0.215 0.014 62);
+  --sidebar-primary: oklch(0.57 0.125 62);
+  --sidebar-primary-foreground: oklch(0.99 0.006 85);
+  --sidebar-accent: oklch(0.932 0.028 80);
+  --sidebar-accent-foreground: oklch(0.29 0.03 62);
+  --sidebar-border: oklch(0.9 0.016 80);
+  --sidebar-ring: oklch(0.65 0.115 68);
+}
+
+/* Same names, warm signal: cyan becomes brass, blue becomes copper, violet
+   becomes plum. Status lights keep their relative meaning. */
+[data-palette="ember"] {
+  --hud-accent: #f2bd6b;
+  --hud-bright: #fdf1dd;
+  --hud-dim: #c9ac88;
+  --hud-faint: #a5886a;
+  --hud-panel: #150e08;
+  --signal-cyan: oklch(0.84 0.128 78);
+  --signal-blue: oklch(0.68 0.125 48);
+  --signal-violet: oklch(0.66 0.12 330);
+  --signal-amber: oklch(0.8 0.145 72);
+  --signal-green: oklch(0.76 0.14 148);
+  --signal-rose: oklch(0.7 0.18 22);
 }
 
 @layer base {
@@ -676,6 +777,22 @@
   background:
     radial-gradient(ellipse at 50% 44%, #0b1a2e 0%, #070d1a 40%, #03060d 80%),
     linear-gradient(180deg, #040a14 0%, #061020 55%, #03060d 100%);
+}
+
+/* Ember stage: the same arc, rotated into brass and copper. Kept as a separate
+   block rather than variables so the aurora's stop positions can be tuned for
+   warm hues — amber loses contrast against near-black faster than cyan does. */
+[data-palette="ember"] .sphere-stage {
+  --spec-1: #ffd48a;
+  --spec-2: #f0b45c;
+  --spec-3: #de8f4e;
+  --spec-4: #c9714b;
+  --spec-5: #e2a06a;
+  --spec-6: #f0b45c;
+  --spec-7: #e8cf9a;
+  background:
+    radial-gradient(ellipse at 50% 44%, #2b1c11 0%, #1a1109 42%, #0a0705 82%),
+    linear-gradient(180deg, #120b07 0%, #1a1209 55%, #0a0705 100%);
 }
 
 /* Two aurora fields on pseudo-elements: gradients cannot be animated directly

@@ -97,10 +97,14 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
+import { PALETTES, usePalette } from "@/hooks/use-palette";
 import { useVoicePlayer, useVoiceRecorder } from "@/hooks/use-voice";
 import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
@@ -821,6 +825,7 @@ export default function Dashboard() {
       return false;
     }
   });
+  const { palette, setPalette } = usePalette();
   const [pdfBusy, setPdfBusy] = useState(false);
   // --- Feature panels: memory, export, camera, live translation ---
   const [showMemory, setShowMemory] = useState(false);
@@ -4378,6 +4383,43 @@ export default function Dashboard() {
                     {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
                     {isDark ? "Light mode" : "Dark mode"}
                   </DropdownMenuItem>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Shapes className="size-4" />
+                      Palette
+                      <span className="ml-auto mr-1 text-[10px] opacity-60">
+                        {PALETTES.find((p) => p.id === palette)?.name}
+                      </span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="w-60">
+                      <DropdownMenuLabel className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                        Console skin
+                      </DropdownMenuLabel>
+                      {PALETTES.map((option) => (
+                        <DropdownMenuItem
+                          key={option.id}
+                          onClick={() => setPalette(option.id)}
+                        >
+                          <span
+                            aria-hidden
+                            className="size-4 shrink-0 rounded-full border border-border"
+                            style={{
+                              background: `linear-gradient(135deg, ${option.swatch[0]} 0 50%, ${option.swatch[1]} 50% 100%)`,
+                            }}
+                          />
+                          <span className="flex flex-col">
+                            <span>{option.name}</span>
+                            <span className="text-[10px] leading-3 text-muted-foreground">
+                              {option.tagline}
+                            </span>
+                          </span>
+                          {palette === option.id ? (
+                            <Check className="ml-auto size-4 text-primary" />
+                          ) : null}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setShowPersona(true)}>
                     <Sparkles className="size-4" />
@@ -5827,7 +5869,7 @@ export default function Dashboard() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="w-64">
                         <DropdownMenuItem onClick={() => void live.start()}>
-                          <Radio className="size-3.5 text-cyan-500" />
+                          <Radio className="size-3.5 text-primary" />
                           <span className="flex flex-col">
                             <span>Live voice mode</span>
                             <span className="text-[10px] text-muted-foreground">talk hands-free, full-screen HUD</span>
@@ -6465,7 +6507,7 @@ export default function Dashboard() {
                     className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 transition-colors disabled:opacity-40 ${
                       live.active
                         ? "border-red-500/40 bg-red-500/10 text-red-500 hover:bg-red-500/20"
-                        : "border-cyan-500/40 text-cyan-600 hover:bg-cyan-500/10 dark:text-cyan-400"
+                        : "border-primary/40 text-primary hover:bg-primary/10"
                     }`}
                     title="Live voice mode — talk with Jarvis hands-free (full-screen HUD)"
                   >
@@ -6655,7 +6697,7 @@ export default function Dashboard() {
         <button
           type="button"
           onClick={listening.stop}
-          className="fixed bottom-24 left-1/2 z-40 inline-flex -translate-x-1/2 items-center gap-2 rounded-full border border-cyan-500/40 bg-background/90 px-3 py-1.5 text-[11px] text-cyan-300 shadow-lg backdrop-blur transition-colors hover:bg-cyan-500/10"
+          className="fixed bottom-24 left-1/2 z-40 inline-flex -translate-x-1/2 items-center gap-2 rounded-full border border-primary/40 bg-background/90 px-3 py-1.5 text-[11px] text-primary shadow-lg backdrop-blur transition-colors hover:bg-primary/10"
         >
           <Loader2 className="size-3 animate-spin" />
           Reading the conversation

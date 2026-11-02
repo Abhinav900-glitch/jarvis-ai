@@ -173,7 +173,7 @@ function Pill({
       aria-pressed={on}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] transition-colors",
-        on ? "jarvis-spectrum" : "border-white/10 bg-white/[0.04] text-[#8fb8d8]",
+        on ? "jarvis-spectrum" : "border-white/10 bg-white/[0.04] text-[var(--hud-dim)]",
       )}
       style={
         on
@@ -258,8 +258,8 @@ function VoiceControls({
       </Pill>
 
       {open && (
-        <div className="absolute bottom-full right-0 z-30 mb-2 w-64 rounded-xl border border-[#22d3ee]/25 bg-[#061020]/95 p-3 shadow-2xl backdrop-blur">
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8fb8d8]">
+        <div className="absolute bottom-full right-0 z-30 mb-2 w-64 rounded-xl border border-[var(--hud-accent)]/25 bg-[var(--hud-panel)]/95 p-3 shadow-2xl backdrop-blur">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--hud-dim)]">
             Voice
           </label>
           <div className="max-h-44 space-y-1 overflow-y-auto pr-1">
@@ -284,13 +284,13 @@ function VoiceControls({
                   style={selected ? { color: "var(--spec-3)" } : undefined}
                 >
                   <span className="capitalize">{v.voice}</span>
-                  <span className="text-[10px] text-[#8fb8d8]">{v.label}</span>
+                  <span className="text-[10px] text-[var(--hud-dim)]">{v.label}</span>
                 </button>
               );
             })}
           </div>
 
-          <label className="mt-3 mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8fb8d8]">
+          <label className="mt-3 mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--hud-dim)]">
             Speed · {pace.toFixed(2)}×
           </label>
           <input
@@ -324,7 +324,7 @@ function ConversationLog({ turns }: { turns: LiveTurn[] }) {
 
   if (turns.length === 0) {
     return (
-      <p className="text-center text-sm text-[#8fb8d8]">
+      <p className="text-center text-sm text-[var(--hud-dim)]">
         Go ahead — I&rsquo;m listening.
       </p>
     );
@@ -335,7 +335,7 @@ function ConversationLog({ turns }: { turns: LiveTurn[] }) {
       {turns.map((turn, i) => (
         <div key={i} className="space-y-2">
           {turn.user && (
-            <p className="ml-auto max-w-[85%] rounded-2xl rounded-br-sm border border-[#22d3ee]/25 bg-[#22d3ee]/[0.08] px-3.5 py-2 text-sm leading-6 text-[#e6f6ff]/90">
+            <p className="ml-auto max-w-[85%] rounded-2xl rounded-br-sm border border-[var(--hud-accent)]/25 bg-[var(--hud-accent)]/[0.08] px-3.5 py-2 text-sm leading-6 text-[var(--hud-bright)]/90">
               {turn.user}
             </p>
           )}
@@ -421,14 +421,14 @@ export function JarvisHud({
       className="sphere-stage fixed inset-0 z-[80] overflow-hidden"
     >
       {/* Top status bar */}
-      <div className="pointer-events-none absolute top-6 left-0 right-0 text-center text-[11px] tracking-[0.28em] text-[#8fb8d8] uppercase">
-        <b className="font-semibold text-[#e6f6ff]">JARVIS</b> &nbsp;·&nbsp;{" "}
+      <div className="pointer-events-none absolute top-6 left-0 right-0 text-center text-[11px] tracking-[0.28em] text-[var(--hud-dim)] uppercase">
+        <b className="font-semibold text-[var(--hud-bright)]">JARVIS</b> &nbsp;·&nbsp;{" "}
         {language}
         {mood ? (
           <>
             {" "}
             &nbsp;·&nbsp;{" "}
-            <span className="normal-case tracking-normal text-[#6d93b8]">
+            <span className="normal-case tracking-normal text-[var(--hud-faint)]">
               {MOOD_LABELS[mood]}
             </span>
           </>
@@ -506,13 +506,13 @@ export function JarvisHud({
             <Equalizer />
             <div
               aria-live="polite"
-              className="text-sm tracking-[0.015em] text-[#e6f6ff]"
+              className="text-sm tracking-[0.015em] text-[var(--hud-bright)]"
             >
               {wakeGated && (phase === "listening" || phase === "idle")
                 ? `Say “${WAKE_PHRASE}” to wake it`
                 : STATUS_LABELS[phase]}
             </div>
-            <div className="text-center text-xs text-[#8fb8d8]">
+            <div className="text-center text-xs text-[var(--hud-dim)]">
               {STATUS_HINTS[phase]}
             </div>
           </div>
@@ -554,7 +554,7 @@ export function JarvisHud({
                 "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] transition-colors",
                 gesturesEnabled
                   ? "jarvis-spectrum border-[var(--spec-2)]/40 bg-[var(--spec-2)]/15 text-[var(--spec-2)]"
-                  : "border-white/10 bg-white/[0.04] text-[#8fb8d8] hover:bg-white/[0.08]",
+                  : "border-white/10 bg-white/[0.04] text-[var(--hud-dim)] hover:bg-white/[0.08]",
               )}
             >
               <Hand className="size-3" />
@@ -572,7 +572,7 @@ export function JarvisHud({
                 "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] transition-colors",
                 wakeGated
                   ? "jarvis-spectrum border-[var(--spec-6)]/40 bg-[var(--spec-6)]/15 text-[var(--spec-5)]"
-                  : "border-white/10 bg-white/[0.04] text-[#8fb8d8] hover:bg-white/[0.08]",
+                  : "border-white/10 bg-white/[0.04] text-[var(--hud-dim)] hover:bg-white/[0.08]",
               )}
             >
               {wakeGated ? <Mic className="size-3" /> : <MicOff className="size-3" />}
@@ -650,7 +650,7 @@ export function JarvisHud({
               }}
               disabled={transcript.length === 0}
               title="Copy the whole conversation"
-              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-[#8fb8d8] transition-colors hover:bg-white/[0.08] disabled:opacity-30"
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-[var(--hud-dim)] transition-colors hover:bg-white/[0.08] disabled:opacity-30"
             >
               {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
               {copied ? "Copied" : "Copy"}
@@ -659,7 +659,7 @@ export function JarvisHud({
               onClick={() => downloadTranscript(transcript)}
               disabled={transcript.length === 0}
               title="Download the conversation as Markdown"
-              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-[#8fb8d8] transition-colors hover:bg-white/[0.08] disabled:opacity-30"
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-[var(--hud-dim)] transition-colors hover:bg-white/[0.08] disabled:opacity-30"
             >
               <Download className="size-3" />
               Export
@@ -674,7 +674,7 @@ export function JarvisHud({
               </button>
             )}
           </div>
-          <p className="shrink-0 pb-1 text-center text-[10px] tracking-[0.18em] text-[#3f6d94] uppercase">
+          <p className="shrink-0 pb-1 text-center text-[10px] tracking-[0.18em] text-[var(--hud-faint)] uppercase">
             Space interrupt · Esc end · M mute
           </p>
         </div>

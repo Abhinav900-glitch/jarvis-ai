@@ -366,7 +366,7 @@ export function PluginsDialog({
                           {preset.category}
                         </span>
                         {preset.skills.length > 1 ? (
-                          <span className="rounded bg-cyan-500/15 px-1 py-px text-[9px] uppercase tracking-wide text-cyan-400">
+                          <span className="rounded bg-primary/15 px-1 py-px text-[9px] uppercase tracking-wide text-primary">
                             {preset.skills.length} skills
                           </span>
                         ) : null}
@@ -523,7 +523,7 @@ export function PluginsDialog({
                             "rounded px-1 py-px text-[9px] uppercase tracking-wide",
                             plugin.kind === "mcp"
                               ? "bg-violet-500/15 text-violet-300"
-                              : "bg-cyan-500/15 text-cyan-400",
+                              : "bg-primary/15 text-primary",
                           )}
                         >
                           {plugin.kind}
