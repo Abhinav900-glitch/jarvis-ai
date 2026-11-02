@@ -272,6 +272,9 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
   const [presetQuery, setPresetQuery] = useState("");
   const [presetCategory, setPresetCategory] = useState("all");
   const [presetBusy, setPresetBusy] = useState<string | null>(null);
+  // 120 servers is more than fits in the panel, so the list starts short and
+  // grows on request; search and the chips are the fast way through it.
+  const [presetLimit, setPresetLimit] = useState(12);
   // Open by default only when the list is empty: someone with servers of their
   // own wants those first, and the catalogue is one tap away.
   const [presetOpenPref, setPresetOpenPref] = useState<boolean | null>(null);
@@ -289,6 +292,8 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
         .includes(needle);
     });
   }, [presetQuery, presetCategory]);
+
+  const visiblePresets = presets.slice(0, presetLimit);
 
   const ownedUrls = new Set(owned.map((row) => row.url.replace(/\/+$/, "")));
   const isPresetAdded = (preset: McpPreset) =>
@@ -429,7 +434,10 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                   <Search className="pointer-events-none absolute left-2.5 top-2.5 size-3.5 text-muted-foreground/60" />
                   <Input
                     value={presetQuery}
-                    onChange={(e) => setPresetQuery(e.target.value)}
+                    onChange={(e) => {
+                      setPresetQuery(e.target.value);
+                      setPresetLimit(12);
+                    }}
                     placeholder="Search servers by name or what they do"
                     className="h-8 pl-8 text-xs"
                   />
@@ -440,7 +448,10 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                     <button
                       key={category}
                       type="button"
-                      onClick={() => setPresetCategory(category)}
+                      onClick={() => {
+                        setPresetCategory(category);
+                        setPresetLimit(12);
+                      }}
                       className={cn(
                         "rounded-full border px-2 py-0.5 text-[10px] transition-colors",
                         presetCategory === category
@@ -453,13 +464,19 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                   ))}
                 </div>
 
+                <p className="mt-2 text-[10px] leading-4 text-muted-foreground/60">
+                  Open servers add in one click. Token servers ask for your key.
+                  OAuth-only servers are listed for reference, because nothing
+                  here runs a third-party sign-in flow.
+                </p>
+
                 <ul className="mt-2 space-y-1">
                   {presets.length === 0 ? (
                     <li className="py-3 text-center text-[11px] text-muted-foreground/70">
                       Nothing matches that.
                     </li>
                   ) : (
-                    presets.map((preset) => {
+                    visiblePresets.map((preset) => {
                       const added = isPresetAdded(preset);
                       return (
                         <li
@@ -538,6 +555,21 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                     })
                   )}
                 </ul>
+
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-[10px] text-muted-foreground/60">
+                    {visiblePresets.length} of {presets.length}
+                  </span>
+                  {visiblePresets.length < presets.length ? (
+                    <button
+                      type="button"
+                      onClick={() => setPresetLimit(presetLimit + 24)}
+                      className="ml-auto rounded-md border border-border/70 px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent"
+                    >
+                      Show 24 more
+                    </button>
+                  ) : null}
+                </div>
                   </>
                 ) : null}
               </div>
