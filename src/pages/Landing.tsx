@@ -73,8 +73,8 @@ const pillars = [
 const stats = [
   { value: "25+", label: "Routable engines" },
   { value: "∞", label: "Stored conversations" },
-  { value: "<800ms", label: "Routing overhead" },
-  { value: "1", label: "Assistant to learn your habits" },
+  { value: "8", label: "Provider surface" },
+  { value: "∞", label: "Your MCP surface" },
 ] as const;
 
 function Wordmark({ className = "" }: { className?: string }) {
@@ -143,8 +143,7 @@ export default function Landing() {
       </header>
 
       {/* hero */}
-      <section className="mx-auto w-full max-w-6xl px-6 pb-24 pt-16 sm:pb-28 sm:pt-28">
-        <div className="mx-auto grid w-full max-w-5xl grid-cols-1 items-center gap-14 lg:grid-cols-[1.05fr_0.95fr]">
+      <section className="mx-auto w-full max-w-6xl px-6 pb-24 pt-16 sm:pb-28 sm:pt-28">            <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-14 lg:grid-cols-[1.05fr_0.95fr]">
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -182,7 +181,7 @@ export default function Landing() {
             >
               Your own Jarvis.
               <br />
-              Thinks, searches, remembers.
+              One assistant that thinks, searches, and remembers.
             </motion.h1>
 
             <motion.p
@@ -192,10 +191,10 @@ export default function Landing() {
               transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
               className="max-w-xl text-base leading-7 text-muted-foreground"
             >
-              A personal assistant that routes every turn to the right model,
-              keeps long-term memory of what matters, reads the live web when a
-              question needs it, and never goes dark — if one engine fails, the
-              same turn simply retried on another.
+              A personal assistant that routes each turn to the right engine,
+              keeps long-term memory of what matters, searches the live web when a
+              question needs it, and keeps going if one engine fails — the same turn
+              is simply retried on another.
             </motion.p>
 
             <motion.div
@@ -212,7 +211,7 @@ export default function Landing() {
                 </Link>
               </Button>
               <Button asChild size="lg" variant="outline" className="px-7">
-                <Link to="/auth">Continue as guest</Link>
+                <Link to="/auth">Try without signing in</Link>
               </Button>
             </motion.div>
 
@@ -223,7 +222,7 @@ export default function Landing() {
               transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
               className="text-xs text-muted-foreground"
             >
-              No credit card. Guests get the full assistant.
+              No credit card. Guests get the full assistant, too.
             </motion.p>
 
             <motion.div
@@ -246,36 +245,39 @@ export default function Landing() {
                   <Server className="size-3.5" strokeWidth={1.5} />
                   Your own MCP servers
                 </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Globe className="size-3.5" strokeWidth={1.5} />
+                  Live research with numbered citations
+                </span>
               </div>
             </motion.div>
           </motion.div>
 
-          {/* feature strip on the right, tool-grid style */}
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-80px" }}
-            transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-            className="space-y-0"
-          >
-            <div className="hud-panel overflow-hidden p-6">
-              <p className="hud-label hud-label-cyan mb-4">What it does</p>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {pillars.slice(0, 6).map((p) => (
-                  <div
-                    key={p.title}
-                    className="flex items-start gap-3 rounded-lg bg-background/40 p-3 transition-colors hover:bg-accent/20"
-                  >
-                    <p.icon className="size-4 text-muted-foreground shrink-0 mt-0.5" strokeWidth={1.5} />
-                    <div>
-                      <p className="text-sm font-semibold leading-snug">{p.title}</p>
-                      <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{p.body}</p>
+          {/* feature strip on the right, tool-grid style */}            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-80px" }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+              className="space-y-0"
+            >
+              <div className="hud-panel overflow-hidden p-6">
+                <p className="hud-label hud-label-cyan mb-4">What it does</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {pillars.map((p) => (
+                    <div
+                      key={p.title}
+                      className="group flex items-start gap-3 rounded-lg bg-background/40 p-3 transition-colors hover:bg-accent/50"
+                    >
+                      <p.icon className="size-4 text-muted-foreground shrink-0 mt-0.5 transition-colors group-hover:text-foreground" strokeWidth={1.5} />
+                      <div>
+                        <p className="text-sm font-semibold leading-snug">{p.title}</p>
+                        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{p.body}</p>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          </motion.div>
+            </motion.div>
         </div>
       </section>
 
@@ -350,29 +352,28 @@ export default function Landing() {
             background:
               "radial-gradient(ellipse 60% 100% at 50% 0%, color-mix(in oklab, var(--signal-blue) 22%, transparent), transparent 70%)",
           }}
-        >
-          <div className="relative">
-            <Zap className="mx-auto size-5 text-primary" strokeWidth={1.5} />
-            <h2 className="mt-5 text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-              Bring it online in under a minute.
-            </h2>
-            <p className="mx-auto mt-4 max-w-md text-sm leading-6 text-muted-foreground">
-              Sign in with email or continue as a guest. Every conversation is
-              saved, memory is built as you go, and you can see exactly which
-              engine replied — and add your own MCP servers when you are ready.
-            </p>
-            <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
-              <Button asChild size="lg" className="px-7">
-                <Link to={isAuthenticated ? "/dashboard" : "/auth"}>
-                  Open Jarvis
-                  <ArrowRight className="size-4" />
-                </Link>
-              </Button>
-              <Button asChild size="lg" variant="outline" className="px-7">
-                <Link to="/auth">Sign in</Link>
-              </Button>
-            </div>
-          </div>
+        >              <div className="relative">
+                <Zap className="mx-auto size-5 text-primary" strokeWidth={1.5} />
+                <h2 className="mt-5 text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
+                  Bring Jarvis online in under a minute.
+                </h2>
+                <p className="mx-auto mt-4 max-w-md text-sm leading-6 text-muted-foreground">
+                  Sign in with email or continue as a guest. Every conversation is
+                  saved, memory is built as you go, you can see exactly which engine
+                  replied, and you can add your own MCP servers when you are ready.
+                </p>
+                <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
+                  <Button asChild size="lg" className="px-7">
+                    <Link to={isAuthenticated ? "/dashboard" : "/auth"}>
+                      Open Jarvis
+                      <ArrowRight className="size-4" />
+                    </Link>
+                  </Button>
+                  <Button asChild size="lg" variant="outline" className="px-7">
+                    <Link to="/auth">Sign in</Link>
+                  </Button>
+                </div>
+              </div>
         </motion.div>
       </section>
 
