@@ -2358,8 +2358,7 @@ export default function Dashboard() {
             : null,
         )
         .catch(() => {});
-
-      } else {
+    } else {
         // All providers failed — have the LLM acknowledge gracefully
         const answer = await askAction({
           prompt: `The user asked me to generate an image of "${prompt}" but the image service failed (${genError}). Apologize briefly and suggest they try again or rephrase.`,
