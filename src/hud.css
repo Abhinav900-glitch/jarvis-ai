@@ -9,9 +9,12 @@
    -------------------------------------------------------------------------- */
 
 /* --- Panel: instrument bezel -------------------------------------------------
-   A surface with a lit edge: faint cyan border, inner top highlight, and a
+   A surface with a lit edge: faint primary border, inner top highlight, and a
    soft outer glow. `data-tone` shifts the accent hue for panels that encode
-   state (amber = warning, rose = error, green = healthy). */
+   state (amber = warning, rose = error, green = healthy).
+
+   On mobile widths this panel gets a lighter glass card so dense HUD chrome
+   doesn't read as dead ink on small screens and one-handed grips. */
 .hud-panel {
   position: relative;
   border: 1px solid color-mix(in oklab, var(--primary) 26%, transparent);
@@ -29,12 +32,29 @@
     0 12px 32px -18px color-mix(in oklab, var(--primary) 45%, transparent);
 }
 
+@media (max-width: 768px) {
+  .hud-panel {
+    box-shadow:
+      inset 0 1px 0 0 color-mix(in oklab, var(--primary) 14%, transparent),
+      0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
+      0 0 0 1px color-mix(in oklab, var(--background) 40%, transparent),
+      0 10px 24px -16px color-mix(in oklab, var(--primary) 30%, transparent);
+  }
+}
+
 .hud-panel[data-tone="blue"] {
   border-color: color-mix(in oklab, var(--signal-blue) 32%, transparent);
   box-shadow:
     inset 0 1px 0 0 color-mix(in oklab, var(--signal-blue) 16%, transparent),
     0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
     0 12px 32px -18px color-mix(in oklab, var(--signal-blue) 55%, transparent);
+}
+
+.hud-panel[data-tone="blue"].hud-panel[data-mobile="true"] {
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in oklab, var(--signal-blue) 16%, transparent),
+    0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
+    0 10px 24px -16px color-mix(in oklab, var(--signal-blue) 40%, transparent);
 }
 
 .hud-panel[data-tone="violet"] {
@@ -60,6 +80,7 @@
     0 1px 2px 0 color-mix(in oklab, var(--foreground) 6%, transparent),
     0 12px 32px -18px color-mix(in oklab, var(--signal-green) 50%, transparent);
 }
+
 
 /* --- Signal label: the machine's voice ---------------------------------------
    Small uppercase mono with wide tracking. The workhorse label for panel
@@ -239,14 +260,48 @@
   bottom: 6px;
   border-right: 1.5px solid;
   border-bottom: 1.5px solid;
-}
-
-/* --- Focus ring: one consistent keyboard-focus treatment --------------------- */
+}  /* --- Focus ring: one consistent keyboard-focus treatment --------------------- */
 .hud-focus:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
+
+/* --- Mobile safe-area / touch sizing -----------------------------------------
+   Small screens and touch surfaces get a little more breathing room around the
+   chrome: status bars, home indicators, and finger-sized hit targets. */
+@media (max-width: 768px) {
+  .hud-panel {
+    padding-top: calc(var(--hud-panel-edge) + env(safe-area-inset-top, 0px));
+  }
+
+  .hud-dot {
+    width: 0.6rem;
+    height: 0.6rem;
+  }
+
+  .hud-corners::before,
+  .hud-corners::after {
+    width: 12px;
+    height: 12px;
+  }
+
+  .hud-corners::before {
+    top: 4px;
+    left: 4px;
+  }
+
+  .hud-corners::after {
+    bottom: 4px;
+    right: 4px;
+  }
+
+  .hud-active-edge {
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+  }
+}
+
 
 /* --- Telemetry row: label/value readout used in spec sheets and HUD stats ---- */
 .hud-readout {

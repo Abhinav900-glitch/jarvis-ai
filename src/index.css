@@ -228,11 +228,6 @@ html[data-palette="ember"]:not(.dark) {
 /* Same names, warm signal: cyan becomes brass, blue becomes copper, violet
    becomes plum. Status lights keep their relative meaning. */
 [data-palette="ember"] {
-  --hud-accent: #f2bd6b;
-  --hud-bright: #fdf1dd;
-  --hud-dim: #c9ac88;
-  --hud-faint: #a5886a;
-  --hud-panel: #150e08;
   --signal-cyan: oklch(0.84 0.128 78);
   --signal-blue: oklch(0.68 0.125 48);
   --signal-violet: oklch(0.66 0.12 330);
@@ -251,12 +246,12 @@ html[data-palette="ember"]:not(.dark) {
     letter-spacing: -0.011em;
     /* Faint cool tint so large empty areas read as instrument glass rather
        than flat paper. Two fixed layers: a blueprint grid and a vignette. */
-    background-image:
-      linear-gradient(to right, color-mix(in oklab, var(--primary) 5%, transparent) 1px, transparent 1px),
-      linear-gradient(to bottom, color-mix(in oklab, var(--primary) 5%, transparent) 1px, transparent 1px),
-      radial-gradient(ellipse 90% 60% at 50% 0%, color-mix(in oklab, var(--primary) 7%, transparent), transparent 70%);
-    background-size: 56px 56px, 56px 56px, 100% 100%;
-    background-attachment: fixed;
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--primary) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--primary) 5%, transparent) 1px, transparent 1px),
+    radial-gradient(ellipse 90% 60% at 50% 0%, color-mix(in oklab, var(--primary) 7%, transparent), transparent 70%);
+  background-size: 56px 56px, 56px 56px, 100% 100%;
+  background-attachment: fixed;
   }
   ::selection {
     background: color-mix(in oklab, var(--primary) 30%, transparent);
@@ -1281,9 +1276,62 @@ html[data-palette="ember"]:not(.dark) {
 
 
 /* --- Written conversation inside the HUD ----------------------------------- */
+@media (hover:none), (pointer:coarse) {
+  .jarvis-hud-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(201, 172, 136, 0.4) transparent;
+  }
+
+  .jarvis-hud-prose {
+    color: rgba(253, 241, 221, 0.88);
+  }
+
+  .jarvis-hud-prose .md-body a {
+    color: rgba(227, 183, 137, 0.95);
+  }
+
+  .jarvis-hud-prose .md-body strong {
+    color: rgba(251, 240, 227, 0.97);
+  }
+
+  .jarvis-hud-prose .md-body h1,
+  .jarvis-hud-prose .md-body h2,
+  .jarvis-hud-prose .md-body h3,
+  .jarvis-hud-prose .md-body h4 {
+    color: #fbf0e3;
+  }
+
+  .jarvis-hud-prose .md-body code,
+  .jarvis-hud-prose .md-body pre {
+    background: rgba(201, 172, 136, 0.1);
+    border-color: rgba(201, 172, 136, 0.25);
+    color: rgba(248, 231, 216, 0.94);
+  }
+
+  .jarvis-hud-prose .md-body blockquote {
+    border-color: rgba(201, 172, 136, 0.4);
+    color: rgba(251, 240, 227, 0.75);
+  }
+
+  .jarvis-hud-prose .md-body th,
+  .jarvis-hud-prose .md-body td {
+    border-color: rgba(201, 172, 136, 0.22);
+  }
+
+  .jarvis-hud-prose .md-body hr {
+    border-color: rgba(201, 172, 136, 0.24);
+  }
+}
+
 .jarvis-hud-scroll {
   scrollbar-width: thin;
   scrollbar-color: rgba(154, 157, 255, 0.4) transparent;
+}
+
+@media (hover:none), (pointer:coarse) {
+  .jarvis-hud-scroll {
+    scrollbar-color: rgba(201, 172, 136, 0.4) transparent;
+  }
 }
 
 .jarvis-hud-prose {
@@ -1294,8 +1342,52 @@ html[data-palette="ember"]:not(.dark) {
   color: rgba(34, 211, 238, 0.95);
 }
 
+@media (hover:none), (pointer:coarse) {
+  .jarvis-hud-prose {
+    color: rgba(253, 241, 221, 0.88);
+  }
+
+  .jarvis-hud-prose .md-body a {
+    color: rgba(227, 183, 137, 0.95);
+  }
+}
+
 .jarvis-hud-prose .md-body strong {
   color: rgba(240, 250, 255, 0.97);
+}
+
+@media (hover:none), (pointer:coarse) {
+  .jarvis-hud-prose .md-body strong {
+    color: rgba(251, 240, 227, 0.97);
+  }
+
+  .jarvis-hud-prose .md-body h1,
+  .jarvis-hud-prose .md-body h2,
+  .jarvis-hud-prose .md-body h3,
+  .jarvis-hud-prose .md-body h4 {
+    color: #fbf0e3;
+  }
+
+  .jarvis-hud-prose .md-body code,
+  .jarvis-hud-prose .md-body pre {
+    background: rgba(201, 172, 136, 0.1);
+    border-color: rgba(201, 172, 136, 0.25);
+    color: rgba(248, 231, 216, 0.94);
+  }
+
+  .jarvis-hud-prose .md-body blockquote {
+    border-color: rgba(201, 172, 136, 0.4);
+    color: rgba(251, 240, 227, 0.75);
+  }
+
+  .jarvis-hud-prose .md-body th,
+  .jarvis-hud-prose .md-body td {
+    border-color: rgba(201, 172, 136, 0.22);
+  }
+
+  .jarvis-hud-prose .md-body hr {
+    border-color: rgba(201, 172, 136, 0.24);
+  }
 }
 
 .jarvis-hud-prose .md-body h1,
