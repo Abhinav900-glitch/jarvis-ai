@@ -258,7 +258,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm md:items-start md:justify-center"
           onClick={onClose}
         >
           <motion.div
@@ -267,10 +267,10 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
             exit={{ opacity: 0, y: 10, scale: 0.99 }}
             transition={{ duration: 0.16 }}
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[84vh] w-full max-w-xl overflow-hidden rounded-2xl border bg-background shadow-2xl"
+            className="w-full max-w-xl sm:w-auto flex max-h-[84vh] flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl"
           >
             {/* header */}
-            <div className="flex items-center gap-2 border-b px-4 py-3">
+            <div className="shrink-0 flex items-center gap-2 border-b border-border/60 bg-background/95 px-4 py-3 backdrop-blur-sm">
               <svg
                 className="size-4 text-muted-foreground"
                 viewBox="0 0 24 24"
@@ -288,13 +288,13 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
               <div className="min-w-0">
                 <h2 className="text-sm font-medium">MCP servers</h2>
                 <p className="truncate text-[11px] text-muted-foreground">
-                  Models call these tools on your behalf.
+                  MCP servers (Settings)els call these tools on your behalf.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={onClose}
-                className="ml-auto rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+                className="ml-auto rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground"
                 title="Close"
               >
                 <X className="size-4" />
@@ -524,7 +524,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
 
               {/* ---- add / edit form ---- */}
               {mode !== "list" ? (
-                <div className="border-t px-4 py-4 space-y-3">
+                <div className="border-t px-4 py-4 space-y-2.5">
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-medium text-muted-foreground">
                       {mode === "add" ? "Add an MCP server" : "Edit server"}
@@ -538,7 +538,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                     </button>
                   </div>
 
-                  <div className="space-y-3">
+                  <div className="space-y-2.5">
                     <div>
                       <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
                         Name
@@ -625,7 +625,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
                     )}
 
                     {authKind === "header" && (
-                      <div className="space-y-3">
+                      <div className="space-y-2.5">
                         <div>
                           <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
                             Header name
