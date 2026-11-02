@@ -79,6 +79,14 @@ const schema = defineSchema(
        * branch. Off by default because it costs a second full generation.
        */
       autoBranch: v.optional(v.boolean()),
+      /**
+       * Self-hosted image endpoint (stable-diffusion.cpp / A1111 / ComfyUI API).
+       * When set, it is tried before the hosted chain in `generateImage`. The
+       * token is stored server-side only and never returned to the client.
+       */
+      imageServerUrl: v.optional(v.string()),
+      imageServerModel: v.optional(v.string()),
+      imageServerToken: v.optional(v.string()),
       updatedAt: v.optional(v.number()),
     }).index("by_user", ["userId"]),
 

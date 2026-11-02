@@ -285,6 +285,129 @@ interface GeneratedImage {
 }
 
 /**
+ * Provider 0 — the account's own image server.
+ *
+ * Stable-diffusion.cpp (and the A1111 forks it imitates) speaks two dialects:
+ * an OpenAI-shaped `/v1/images/generations` and the older `/sdapi/v1/txt2img`.
+ * Both are tried because which one answers depends on the build and the
+ * wrapper, and a 404 on the first says nothing about the second. This leg is
+ * only reached when the user saved a URL, so the hosted chain is untouched for
+ * everyone else.
+ */
+const OWN_SERVER_TIMEOUT_MS = 170_000;
+
+interface OwnServerConfig {
+  url: string;
+  model: string;
+  token: string;
+}
+
+function sizeForAspect(aspectRatio?: string): { width: number; height: number } {
+  if (aspectRatio === "3:2") return { width: 1216, height: 832 };
+  if (aspectRatio === "2:3") return { width: 832, height: 1216 };
+  return { width: 1024, height: 1024 };
+}
+
+/** A picture arrives as a data URL, bare base64, or a URL to fetch. */
+async function pictureBytes(picture: string): Promise<ArrayBuffer> {
+  if (/^https?:\/\//i.test(picture.trim())) {
+    const res = await fetch(picture, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) throw new Error(`image download failed (${res.status})`);
+    return res.arrayBuffer();
+  }
+  const base64 = picture.replace(/^data:image\/[a-z0-9+.-]+;base64,/i, "");
+  const buf = Buffer.from(base64, "base64");
+  if (buf.byteLength < 1000) throw new Error("server returned an empty image");
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+}
+
+async function generateViaOwnServer(
+  ctx: ActionCtx,
+  config: OwnServerConfig,
+  prompt: string,
+  aspectRatio?: string,
+): Promise<GeneratedImage> {
+  const { width, height } = sizeForAspect(aspectRatio);
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (config.token) headers.authorization = `Bearer ${config.token}`;
+
+  const post = async (path: string, body: unknown): Promise<unknown> => {
+    const res = await fetch(`${config.url}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(OWN_SERVER_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 180);
+      throw new Error(`${path} → ${res.status}${detail ? ` ${detail}` : ""}`);
+    }
+    return (await res.json()) as unknown;
+  };
+
+  const errors: string[] = [];
+  let picture: string | null = null;
+
+  try {
+    // Exactly the fields the server documents (prompt / n / size); `b64_json`
+    // is the only response shape it offers, so `response_format` is not sent.
+    // `model` is only added when the user named one, for OpenAI-compatible
+    // bridges that route by model id.
+    const body: Record<string, unknown> = {
+      prompt,
+      n: 1,
+      size: `${width}x${height}`,
+    };
+    if (config.model) body.model = config.model;
+    const data = (await post("/v1/images/generations", body)) as {
+      data?: { b64_json?: string; url?: string }[];
+    };
+    const first = data.data?.[0];
+    picture = first?.b64_json ?? first?.url ?? null;
+    if (!picture) errors.push("/v1/images/generations returned no image");
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : String(err));
+  }
+
+  if (!picture) {
+    try {
+      const data = (await post("/sdapi/v1/txt2img", {
+        prompt,
+        width,
+        height,
+        steps: 20,
+        batch_size: 1,
+      })) as { images?: string[] };
+      picture = data.images?.[0] ?? null;
+      if (!picture) errors.push("/sdapi/v1/txt2img returned no image");
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  if (!picture) {
+    throw new Error(`own server: ${errors.join(" | ")}`);
+  }
+
+  const bytes = await pictureBytes(picture);
+  const publicId = `jarvis-gen/own-${Date.now()}`;
+
+  // Cloudinary gives a permanent CDN URL and keeps the account's own assets in
+  // one place. Without it, Convex file storage is enough to display and export
+  // the picture, so a self-hosted setup never requires a second account.
+  try {
+    const stored = await uploadBytesToCloudinary(ctx, bytes, publicId);
+    return { url: stored.url, publicId: stored.publicId, provider: "own-server" };
+  } catch {
+    const blob = new Blob([bytes], { type: "image/png" });
+    const storageId = await ctx.storage.store(blob);
+    const url = await ctx.storage.getUrl(storageId);
+    if (!url) throw new Error("own server: could not store the generated image");
+    return { url, publicId: storageId, provider: "own-server" };
+  }
+}
+
+/**
  * Provider 1 — Cloudinary Image Generation add-on.
  * Returns a URL directly; the asset already lives on Cloudinary.
  * Uses OAuth Bearer auth when connected, else API key/secret Basic auth.
@@ -1290,7 +1413,22 @@ export const generateImage = action({
       throw new Error("Image prompt too long — keep it under 1000 characters.");
     }
 
-    const attempts: { name: string; run: () => Promise<GeneratedImage> }[] = [
+    // The own-server leg sits ahead of the hosted chain when configured: the
+    // user's model is the reason they saved an endpoint, and a fallback after
+    // a 60-second hosted attempt would bury the result they asked for.
+    const ownServer = await ctx.runQuery(
+      internalApi.imageServer.readForGeneration,
+      { userId },
+    );
+
+    const attempts: { name: string; run: () => Promise<GeneratedImage> }[] = [];
+    if (ownServer) {
+      attempts.push({
+        name: "own-server",
+        run: () => generateViaOwnServer(ctx, ownServer, prompt, args.aspectRatio),
+      });
+    }
+    attempts.push(
       {
         // First: Cloudinary is the only provider in this chain that honours
         // `model` and `aspectRatio` — perchance, pollinations, huggingface
@@ -1334,7 +1472,7 @@ export const generateImage = action({
         name: "replicate",
         run: () => generateViaReplicate(ctx, prompt),
       },
-    ];
+    );
 
     const errors: string[] = [];
     for (const attempt of attempts) {

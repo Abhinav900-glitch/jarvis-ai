@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { OwnImageServer } from "@/components/own-image-server";
 import { cn } from "@/lib/utils";
 import {
   Check,
@@ -186,10 +187,15 @@ export function ImageStudio({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // History is browser-local, so it is read on open rather than at mount:
-  // a tab can stay alive across another tab's generations.
-  useEffect(() => {
+  // a tab can stay alive across another tab's generations. Done while
+  // rendering on the open transition (React's documented "adjust state when a
+  // prop changes" pattern) instead of in an effect, which would render once
+  // with the previous session's list and then immediately re-render.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) setHistory(loadHistory());
-  }, [open]);
+  }
 
   // Focus the prompt when the studio opens — it is the only reason it was
   // opened, and the delay waits for the dialog's own focus trap to settle.
@@ -387,6 +393,9 @@ export function ImageStudio({
               )}
             </Button>
           </div>
+
+          {/* ---- Self-hosted endpoint (optional, collapsed) ---- */}
+          <OwnImageServer />
 
           {style.suffix && (
             <p className="text-[11px] leading-4 text-muted-foreground">

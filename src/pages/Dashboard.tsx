@@ -661,6 +661,9 @@ export default function Dashboard() {
   const translateAction = useAction(api.translate.translate);
   const getSignedUploadUrl = useAction(api.cloudinary.getSignedUploadUrl);
   const generateImageAction = useAction(api.cloudinary.generateImage);
+  // A saved self-hosted endpoint outranks every hosted leg, including Puter:
+  // the user pointed the app at their own model on purpose.
+  const ownImageServer = useQuery(api.imageServer.get);
   const summarizeUrlAction = useAction(api.ai.summarizeUrl);
   const getWorldTimeAction = useAction(api.ai.getWorldTime);
   const getCurrencyRateAction = useAction(api.ai.getCurrencyRate);
@@ -1061,6 +1064,17 @@ export default function Dashboard() {
     // final failure hid the Puter error — the one that actually explains why
     // the primary provider was skipped.
     const failures: string[] = [];
+    if (ownImageServer) {
+      // Still one click, no popup: the own-server leg runs first inside the
+      // action, so Puter's browser popup would only interrupt it.
+      try {
+        return await generateImageAction({ prompt });
+      } catch (err) {
+        throw new Error(
+          `Own image server failed.\n${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     try {
       return await generateImageWithPuter(prompt, uploadFile);
     } catch (err) {
