@@ -4569,7 +4569,7 @@ export default function Dashboard() {
           {/* ---- Messages ---- */}
           <div ref={scrollRef} className="flex-1 overflow-y-auto">
             {!messages || messages.length === 0 ? (
-              <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-4 sm:px-6">
+              <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col items-center justify-center px-4 py-8 sm:px-6">
                 <div className="hud-panel hud-corners relative flex size-20 items-center justify-center rounded-full">
                   <div
                     aria-hidden

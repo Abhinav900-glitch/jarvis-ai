@@ -16,9 +16,9 @@ import {
 
 import { useAuth } from "@/hooks/use-auth";
 import { JarvisIcon } from "@/components/jarvis-icon";
-import { ArrowRight, Loader2, Mail, UserX } from "lucide-react";
+import { ArrowLeft, ArrowRight, Loader2, Mail, UserX } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 
 interface AuthProps {
   redirectAfterAuth?: string;
@@ -112,8 +112,31 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
 
   return (
     <div className="hud-grid-bg flex min-h-screen flex-col">
+      {/* Slim product header so /auth still reads as part of Jarvis and is
+          never a dead end: home and terms are both one tap away. */}
+      <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 sm:px-6">
+        <Link to="/" className="flex items-center gap-2.5">
+          <span className="size-1.5 rounded-full bg-primary shadow-[0_0_8px_var(--signal-cyan)]" />
+          <span className="text-sm font-semibold tracking-[0.22em]">JARVIS</span>
+        </Link>
+        <nav className="flex items-center gap-1">
+          <Link
+            to="/"
+            aria-label="Back to home"
+            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            <span className="hidden sm:inline">Back to home</span>
+          </Link>
+          <Link
+            to="/terms"
+            className="rounded-md px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            Terms
+          </Link>
+        </nav>
+      </header>
 
-      
       {/* Auth Content */}
       <div className="flex-1 flex items-center justify-center">
         <div className="flex items-center justify-center h-full flex-col">              {/* w-[min(...)] rather than a fixed min-width: 350px pushes the
@@ -137,7 +160,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       <span className="hud-dot absolute -top-1 -right-1" data-tone="cyan" />
                     </div>
                   </div>
-                <CardTitle className="text-xl tracking-tight">Get Started</CardTitle>
+                <CardTitle className="text-xl tracking-tight">Get started</CardTitle>
                 <CardDescription>
                   Enter your email and we&apos;ll send you a code
                 </CardDescription>
@@ -194,7 +217,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       disabled={isLoading}
                     >
                       <UserX className="mr-2 h-4 w-4" />
-                      Continue as Guest
+                      Continue as guest
                     </Button>
                   </div>
                 </CardContent>
@@ -284,16 +307,26 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
             </>
           )}
 
-          <div className="py-4 px-6 text-xs text-center text-muted-foreground bg-muted border-t rounded-b-lg">
-            Secured by{" "}
-            <a
-              href="https://freebuff.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline hover:text-primary transition-colors"
+          <div className="rounded-b-lg border-t bg-muted px-6 py-4 text-center text-xs text-muted-foreground">
+            By continuing you agree to the{" "}
+            <Link
+              to="/terms"
+              className="underline transition-colors hover:text-primary"
             >
-              freebuff.com
-            </a>
+              terms
+            </Link>
+            .
+            <span className="mt-1 block text-[11px] text-muted-foreground/70">
+              Secured by{" "}
+              <a
+                href="https://freebuff.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline transition-colors hover:text-primary"
+              >
+                freebuff.com
+              </a>
+            </span>
           </div>
         </Card>
         </div>

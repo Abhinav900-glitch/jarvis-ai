@@ -8,7 +8,7 @@
 
 import { motion } from "framer-motion";
 import { Link } from "react-router";
-import { ArrowLeft, Bookmark } from "lucide-react";
+import { ArrowLeft, Bookmark, FileArchive, Link2, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AUTHOR } from "@/lib/languages";
 
@@ -26,7 +26,7 @@ function Wordmark({ className = "" }: { className?: string }) {
         <path
           strokeLinecap="round"
           strokeLinejoin="round"
-          d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.74.077-1.472.143-2.213.194m-.396 0c.371.017.74.046 1.11.082m..502 0a6.075 6.075 0 010 1.224m0 0a6.075 6.075 0 00.502 1.224m0 0a6.075 6.075 0 010 1.224m0 0c.635.117 1.213.203 1.763.275m5.428 0a11.927 11.927 0 01-2.638 2.666c-.78.24-1.543.47-2.287.684m0 0a11.927 11.927 0 001.763.667m0 0a11.927 11.927 0 012.125 1.658m0 0a11.927 11.927 0 001.763.667"
+          d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5M9.5 9.5h5v5h-5z"
         />
       </svg>
       <span className="text-sm font-semibold tracking-[0.22em]">JARVIS</span>
@@ -36,17 +36,17 @@ function Wordmark({ className = "" }: { className?: string }) {
 
 const principles = [
   {
-    icon: Bookmark,
+    icon: Lock,
     title: "Owned by you",
     body: "Your conversations, memory, personas and images belong to your account. Nothing in Jarvis is trained from your prompts or used to fine-tune the models behind your account.",
   },
   {
-    icon: Bookmark,
+    icon: Link2,
     title: "Scoped access",
     body: "Integrations ask only for what they need. A Canva connection can generate images; an MCP server can only call the tools you connect it to. You disconnect anything at any time from Settings.",
   },
   {
-    icon: Bookmark,
+    icon: FileArchive,
     title: "Nothing runs from storage",
     body: "Plugin zips and MCP configs you upload are stored as files. They are read by name before you trust them, and nothing is executed, unpacked into your workspace, or sent anywhere else from here.",
   },
@@ -108,16 +108,16 @@ export default function Terms() {
         <Wordmark />
         <nav className="flex items-center gap-1">
           <Button asChild variant="ghost" size="sm">
-            <Link to="/">
+            <Link to="/" aria-label="Back to Jarvis">
               <ArrowLeft className="size-3.5" />
-              Back to Jarvis
+              <span className="hidden sm:inline">Back to Jarvis</span>
             </Link>
           </Button>
           <Button asChild variant="ghost" size="sm">
             <Link to="/auth">Sign in</Link>
           </Button>
-          <Button asChild size="sm">
-            <Link to="/">Get started</Link>
+          <Button asChild size="sm" className="hidden sm:inline-flex">
+            <Link to="/auth">Get started</Link>
           </Button>
         </nav>
       </header>
@@ -130,6 +130,9 @@ export default function Terms() {
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
           The rules for using Jarvis AI. Read them before you sign up — they are
           written to be read, not filed.
+        </p>
+        <p className="mt-4 text-[11px] uppercase tracking-[0.18em] text-muted-foreground/70">
+          Last updated · November 2026
         </p>
       </section>
 
