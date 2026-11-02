@@ -2330,33 +2330,37 @@ export default function Dashboard() {
           imagePublicId: generated.publicId,
           images: [{ url: generated.url, publicId: generated.publicId }],
         });
-        }
-
-      // When the caller asked for this image to live on a different message,
-      // keep it there so the original turn keeps its picture.
-      if (pinnedTo && generatedMessageId != null) {
-        await setWebImagesMutation({
-          messageId: pinnedTo,
-          images: [
-            {
-              url: generated.url,
-              publicId: generated.publicId,
-              provider: generated.provider,
-            },
-          ],
-        });
       }
 
-      // Ask the web what the same prompt looks like on other people's feeds.
-      // Deliberately detached: the generation has already landed on screen, and
-      // making the user wait on a second network call would cost more than the
-      // strip is worth.
-      void searchWebImagesAction({ query: prompt })
-        .then(({ images }) =>
-          images.length > 0
-            ? setWebImagesMutation({ messageId: generatedMessageId, images })
-            : null,
-        );
+        // When the caller asked for this image to live on a different message,
+        // keep it there so the original turn keeps its picture.
+        if (pinnedTo && generatedMessageId != null) {
+          await setWebImagesMutation({
+            messageId: pinnedTo,
+            images: [
+              {
+                url: generated.url,
+                publicId: generated.publicId,
+                provider: generated.provider,
+              },
+            ],
+          });
+        }
+
+        // Ask the web what the same prompt looks like on other people's feeds.
+        // Deliberately detached: the generation has already landed on screen, and
+        // making the user wait on a second network call would cost more than the
+        // strip is worth.
+        void searchWebImagesAction({ query: prompt })
+          .then(({ images }) =>
+            images.length > 0
+              ? setWebImagesMutation({
+                  messageId: generatedMessageId,
+                  images: images.map((img) => ({ url: img.url, publicId: img.publicId })),
+                })
+              : null,
+          )           .catch(() => {});
+      }
     } catch (err) {
       setAssistantError(err instanceof Error ? err.message : "Image message failed.");
     } finally {
@@ -2364,13 +2368,22 @@ export default function Dashboard() {
       setSending(false);
       inputRef.current?.focus();
     }
-  };
 
-  /**
-   * Answer a sound request with the sound itself. The clip is generated once
-   * per prompt and cached server-side, so repeating the request is instant.
-   */
-  const runSoundEffectMessage = async (
+    if (!generated) return;
+  };
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;   /**
+    * Answer a sound request with the sound itself. The clip is generated once
+    * per prompt and cached server-side, so repeating the request is instant.
+    */
+   const runSoundEffectMessage = async (
     cues: SoundCue[],
     originalText: string,
   ) => {
@@ -4027,7 +4040,16 @@ export default function Dashboard() {
             if (lastMsg.altMessageId) void openCompare(lastMsg._id);
             else void createDecisionBranch(lastMsg._id);
           }
-        },
+      } catch (err) {
+        setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+      } finally {
+        setGenerating(false);
+        setSending(false);
+        inputRef.current?.focus();
+      }
+
+      if (!generated) return;
+    };
       },
       {
         id: "regenerate",
@@ -4289,6 +4311,10 @@ export default function Dashboard() {
                 <PersonaPicker
                   sessionId={activeId}
                   personaId={activePersonaId}
+                  onCreate={() => {
+                    setShowPersona(true);
+                    setSidebarOpen(false);
+                  }}
                 />
               ) : null}
             </div>
@@ -6804,7 +6830,17 @@ export default function Dashboard() {
         onOpenChange={setShowPalette}
         commands={paletteCommands}
       />
-      <PersonaPanel open={showPersona} onOpenChange={setShowPersona} />
+      <PersonaPanel
+        open={showPersona}
+        onOpenChange={(open) => {
+          setShowPersona(open);
+          if (open && activeId == null) {
+            void createSessionMutation({ title: "New chat" }).then((sid) =>
+              setActiveId(sid),
+            );
+          }
+        }}
+      />
       <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
       <PassphraseGate
         mode={passphraseOpen}

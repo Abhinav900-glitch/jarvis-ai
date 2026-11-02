@@ -23,9 +23,11 @@ import {
 export function PersonaPicker({
   sessionId,
   personaId,
+  onCreate,
 }: {
   sessionId: Id<"chatSessions">;
   personaId: Id<"personas"> | undefined;
+  onCreate?: () => void;
 }) {
   const list = useQuery(api.workspace.listPersonas);
   const setSessionPersona = useMutation(api.chats.setSessionPersona);
@@ -79,6 +81,11 @@ export function PersonaPicker({
             No personas yet — create one in “How Jarvis works”
           </DropdownMenuItem>
         )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => void onCreate?.()}>
+          <User className="size-3.5" />
+          <span className="flex-1">+ New persona</span>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
