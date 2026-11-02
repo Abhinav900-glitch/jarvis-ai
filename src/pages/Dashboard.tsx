@@ -2357,21 +2357,20 @@ export default function Dashboard() {
             ? setWebImagesMutation({ messageId: generatedMessageId, images })
             : null,
         )
-        .catch(() => {});
-    } else {
-        // All providers failed — have the LLM acknowledge gracefully
-        const answer = await askAction({
-          prompt: `The user asked me to generate an image of "${prompt}" but the image service failed (${genError}). Apologize briefly and suggest they try again or rephrase.`,
-          history,
-        });
-        await appendMessage({
-          sessionId,
-          role: "assistant",
-          content: answer.text,
-          model: answer.model,
-          usedFallback: answer.usedFallback,
-        });
-      }
+        .catch(() => {});    } else {
+      // All providers failed — have the LLM acknowledge gracefully
+      const answer = await askAction({
+        prompt: `The user asked me to generate an image of "${prompt}" but the image service failed (${genError}). Apologize briefly and suggest they try again or rephrase.`,
+        history,
+      });
+      await appendMessage({
+        sessionId,
+        role: "assistant",
+        content: answer.text,
+        model: answer.model,
+        usedFallback: answer.usedFallback,
+      });
+    }
     } catch (err) {
       setAssistantError(err instanceof Error ? err.message : "Image message failed.");
     } finally {
