@@ -408,6 +408,67 @@ async function generateViaOwnServer(
 }
 
 /**
+ * Provider 0b — Meta Model API (Muse Image).
+ *
+ * OpenAI's images shape with Bearer auth: the response is the same
+ * `data[].b64_json` the own-server leg reads, so the bytes run through the
+ * same store-and-serve path. Only reached when the deployment has a Meta key;
+ * the built-in web grounding is part of the per-image price.
+ */
+async function generateViaMeta(
+  ctx: ActionCtx,
+  key: string,
+  prompt: string,
+  aspectRatio?: string,
+): Promise<GeneratedImage> {
+  // The API takes a "WxH" string that sets the aspect ratio rather than the
+  // exact pixel size, so the known-good shapes are mapped rather than the
+  // own-server's pixel dimensions.
+  const size =
+    aspectRatio === "3:2"
+      ? "1536x1024"
+      : aspectRatio === "2:3"
+        ? "1024x1536"
+        : "1024x1024";
+  const res = await fetch("https://api.meta.ai/v1/images/generations", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: "muse-image-1.0", prompt, n: 1, size }),
+    // Muse Image is agentic — it can search and refine before it renders, so
+    // a first answer can take far longer than a plain diffusion call.
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => "")).slice(0, 180);
+    throw new Error(
+      `images/generations → ${res.status}${detail ? ` ${detail}` : ""}`,
+    );
+  }
+  const data = (await res.json()) as {
+    data?: { b64_json?: string; url?: string }[];
+  };
+  const first = data.data?.[0];
+  const picture = first?.b64_json ?? first?.url ?? null;
+  if (!picture) throw new Error("images/generations returned no image");
+
+  const bytes = await pictureBytes(picture);
+  const publicId = `jarvis-gen/meta-${Date.now()}`;
+  try {
+    const stored = await uploadBytesToCloudinary(ctx, bytes, publicId);
+    return { url: stored.url, publicId: stored.publicId, provider: "meta" };
+  } catch {
+    const blob = new Blob([bytes], { type: "image/webp" });
+    const storageId = await ctx.storage.store(blob);
+    const url = await ctx.storage.getUrl(storageId);
+    if (!url) throw new Error("meta: could not store the generated image");
+    return { url, publicId: storageId, provider: "meta" };
+  }
+}
+
+/**
  * Provider 1 — Cloudinary Image Generation add-on.
  * Returns a URL directly; the asset already lives on Cloudinary.
  * Uses OAuth Bearer auth when connected, else API key/secret Basic auth.
@@ -1426,6 +1487,19 @@ export const generateImage = action({
       attempts.push({
         name: "own-server",
         run: () => generateViaOwnServer(ctx, ownServer, prompt, args.aspectRatio),
+      });
+    }
+    // Meta joins only when a key exists, directly behind the own-server leg:
+    // an official endpoint that answers on the first try beats a hosted chain
+    // whose leading members fast-fail. Without a key nothing changes here.
+    const metaKey =
+      process.env.MODEL_API_KEY?.trim() ||
+      process.env.META_AI_API_KEY?.trim() ||
+      process.env.META_API_KEY?.trim();
+    if (metaKey) {
+      attempts.push({
+        name: "meta",
+        run: () => generateViaMeta(ctx, metaKey, prompt, args.aspectRatio),
       });
     }
     attempts.push(

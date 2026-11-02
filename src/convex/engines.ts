@@ -167,6 +167,30 @@ export const PROVIDERS: ProviderSpec[] = [
     // Free-tier quotas are per project and per minute, so a burst can queue.
     timeoutMs: 90_000,
   },
+  {
+    // Meta Model API (Muse) — the successor to the retired api.llama.com
+    // endpoint. OpenAI-shaped chat completions with `Authorization: Bearer`,
+    // so it drops into the existing dispatch unchanged. Declared last: it is
+    // pay-per-token, so the stable ladder only reaches it after the free
+    // providers, while the smart router still picks it on score.
+    id: "meta",
+    label: "Meta (Muse)",
+    url: "https://api.meta.ai/v1/chat/completions",
+    // Meta's docs call it MODEL_API_KEY; the aliases cover the names people
+    // give it when the platform's Keys tab does the naming. First one set wins.
+    keyEnv: ["MODEL_API_KEY", "META_AI_API_KEY", "META_API_KEY"],
+    missing: "MODEL_API_KEY not configured",
+    imageUrlAsString: false,
+    // Muse Spark and Muse Wonder both take image input, so vision turns are
+    // translated rather than dropped.
+    textOnly: false,
+    // Muse always reasons; the docs reject `reasoning_effort: "none"` with a
+    // 400 and this dispatch would send "low", so the knob is left off rather
+    // than guessed at.
+    reasoningEffort: false,
+    maxTokens: 8192,
+    timeoutMs: 60_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -764,6 +788,35 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.9,
     context: 1_048_576,
     bestFor: "titles, summaries and other high-volume steps",
+  },
+  // --- Meta (Muse) -------------------------------------------------------
+  // Scored from the official model docs rather than a live probe: both models
+  // carry a 1,048,576-token window, take image input, and always reason. The
+  // pay-per-token key makes them the last stable-ladder entry; pin an engine
+  // here to make it the first choice instead.
+  {
+    id: "meta/muse-spark-1.3",
+    provider: "meta",
+    modelId: "muse-spark-1.3",
+    label: "Muse Spark 1.3",
+    vision: true,
+    reasoning: true,
+    quality: 0.93,
+    speed: 0.72,
+    context: 1_048_576,
+    bestFor: "long-context reasoning across a million-token window",
+  },
+  {
+    id: "meta/muse-wonder-1.0",
+    provider: "meta",
+    modelId: "muse-wonder-1.0",
+    label: "Muse Wonder 1.0",
+    vision: true,
+    reasoning: true,
+    quality: 0.96,
+    speed: 0.58,
+    context: 1_048_576,
+    bestFor: "complex multi-step coding and long-horizon tasks",
   },
 ];
 
