@@ -3972,7 +3972,8 @@ export default function Dashboard() {
   ];
 
   return (
-    <TooltipProvider>
+    <div className="flex flex-col min-h-screen">
+      <TooltipProvider>
       {/* dvh, not vh: on a phone the address bar shrinks the viewport, and a
           vh shell pushes the composer behind it. h-screen stays as the
           pre-dvh fallback in the same class list. */}
@@ -6667,5 +6668,24 @@ export default function Dashboard() {
         }}
       />
     </TooltipProvider>
+
+    <footer className="border-t px-4 py-3">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6">
+        <div className="flex flex-wrap items-center justify-center gap-3 text-[11px] text-muted-foreground/70">
+          <Link to="/terms" className="underline underline-offset-2 hover:text-foreground transition-colors">
+            Terms
+          </Link>
+          <span className="text-muted-foreground/40">·</span>
+          <Link to="/resources" className="underline underline-offset-2 hover:text-foreground transition-colors">
+            Resources & developers
+          </Link>
+          <span className="text-muted-foreground/40">·</span>
+          <Link to="/auth" className="underline underline-offset-2 hover:text-foreground transition-colors">
+            Sign in
+          </Link>
+        </div>
+      </div>
+    </footer>
+  </div>
   );
 }
