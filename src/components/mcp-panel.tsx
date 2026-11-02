@@ -7,11 +7,28 @@
 // stores the result so the chat can show how many tools each server offers.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowRight, Check, Copy, ExternalLink, Loader2, Plus, Trash2, X } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Copy,
+  ExternalLink,
+  Loader2,
+  Plus,
+  Search,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
+import {
+  MCP_PRESETS,
+  MCP_PRESET_CATEGORIES,
+  presetAuthLabel,
+  type McpPreset,
+} from "@/lib/mcp-presets";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { McpServerRow, McpAuthType } from "../convex/mcpServers";
@@ -251,6 +268,86 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
 
   const envLine = env.length > 0 ? env[0] : null;
 
+  // ---- preset catalogue ---------------------------------------------------
+  const [presetQuery, setPresetQuery] = useState("");
+  const [presetCategory, setPresetCategory] = useState("all");
+  const [presetBusy, setPresetBusy] = useState<string | null>(null);
+  // Open by default only when the list is empty: someone with servers of their
+  // own wants those first, and the catalogue is one tap away.
+  const [presetOpenPref, setPresetOpenPref] = useState<boolean | null>(null);
+  const presetsOpen = presetOpenPref ?? owned.length === 0;
+
+  const presets = useMemo(() => {
+    const needle = presetQuery.trim().toLowerCase();
+    return MCP_PRESETS.filter((preset) => {
+      if (presetCategory !== "all" && preset.category !== presetCategory) {
+        return false;
+      }
+      if (!needle) return true;
+      return `${preset.name} ${preset.category} ${preset.note}`
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [presetQuery, presetCategory]);
+
+  const ownedUrls = new Set(owned.map((row) => row.url.replace(/\/+$/, "")));
+  const isPresetAdded = (preset: McpPreset) =>
+    ownedUrls.has(preset.url.replace(/\/+$/, ""));
+
+  /**
+   * Open servers are created here and now. Keyed servers open the form with
+   * the URL and auth kind already chosen, because only the user has the token.
+   * OAuth servers cannot work without the provider's consent flow, so they say
+   * so rather than failing at the first tool call.
+   */
+  const addPreset = async (preset: McpPreset) => {
+    if (preset.auth === "oauth") {
+      toast.info(`${preset.name} needs its own sign-in flow.`, {
+        description:
+          "This app does not run third-party OAuth for arbitrary servers. If you have an API token for it, add it manually with a custom header.",
+      });
+      return;
+    }
+
+    if (preset.auth === "none") {
+      setPresetBusy(preset.id);
+      try {
+        const { created } = await create({
+          name: preset.name,
+          url: preset.url,
+          prefix: preset.prefix,
+          authType: "none",
+        });
+        if (created) {
+          toast.success(`${preset.name} added.`, {
+            description: "Run Test to list the tools it exposes.",
+          });
+        } else {
+          toast.info(`${preset.name} is already in your list.`);
+        }
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not add that server.",
+        );
+      } finally {
+        setPresetBusy(null);
+      }
+      return;
+    }
+
+    resetForm();
+    setName(preset.name);
+    setUrl(preset.url);
+    setPrefix(preset.prefix);
+    setAuthKind(preset.auth === "header" ? "header" : "bearer");
+    setAuthHeaderName(preset.headerName ?? "Authorization");
+    setAuthValue("");
+    setMode("add");
+    toast.info(`${preset.name} needs your key.`, {
+      description: "Paste it below and the server is ready to test.",
+    });
+  };
+
   return (
     <AnimatePresence>
       {open && (
@@ -267,7 +364,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
             exit={{ opacity: 0, y: 10, scale: 0.99 }}
             transition={{ duration: 0.16 }}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-xl sm:w-auto flex max-h-[84vh] flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl"
+            className="flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl max-h-[84vh]"
           >
             {/* header */}
             <div className="shrink-0 flex items-center gap-2 border-b border-border/60 bg-background/95 px-4 py-3 backdrop-blur-sm">
@@ -288,7 +385,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
               <div className="min-w-0">
                 <h2 className="text-sm font-medium">MCP servers</h2>
                 <p className="truncate text-[11px] text-muted-foreground">
-                  MCP servers (Settings)els call these tools on your behalf.
+                  Servers whose tools Jarvis can call on your behalf.
                 </p>
               </div>
               <button
@@ -301,7 +398,150 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
               </button>
             </div>
 
-            <div className="divide-y">
+            {/* min-h-0 + overflow-y-auto is what makes the panel scroll: the
+                outer box clips at 84vh, so without a flex child that is allowed
+                to shrink, the server list and the add form were cut off with
+                no way to reach them. */}
+            <div className="min-h-0 flex-1 divide-y overflow-y-auto">
+              {/* ---- ready-made servers ---- */}
+              <div className="bg-muted/20 px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => setPresetOpenPref(!presetsOpen)}
+                  aria-expanded={presetsOpen}
+                  className="flex w-full items-center gap-1.5 text-left"
+                >
+                  <Sparkles className="size-3.5 text-primary" />
+                  <span className="hud-label" data-tone="cyan">
+                    Ready-made
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/60">
+                    {MCP_PRESETS.length} servers
+                  </span>
+                  <span className="ml-auto text-[10px] text-muted-foreground/60">
+                    {presetsOpen ? "Hide" : "Show"}
+                  </span>
+                </button>
+
+                {presetsOpen ? (
+                  <>
+                <div className="relative mt-2">
+                  <Search className="pointer-events-none absolute left-2.5 top-2.5 size-3.5 text-muted-foreground/60" />
+                  <Input
+                    value={presetQuery}
+                    onChange={(e) => setPresetQuery(e.target.value)}
+                    placeholder="Search servers by name or what they do"
+                    className="h-8 pl-8 text-xs"
+                  />
+                </div>
+
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {["all", ...MCP_PRESET_CATEGORIES].map((category) => (
+                    <button
+                      key={category}
+                      type="button"
+                      onClick={() => setPresetCategory(category)}
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                        presetCategory === category
+                          ? "border-primary/40 bg-primary/10 text-foreground"
+                          : "border-border/70 text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {category === "all" ? "All" : category}
+                    </button>
+                  ))}
+                </div>
+
+                <ul className="mt-2 space-y-1">
+                  {presets.length === 0 ? (
+                    <li className="py-3 text-center text-[11px] text-muted-foreground/70">
+                      Nothing matches that.
+                    </li>
+                  ) : (
+                    presets.map((preset) => {
+                      const added = isPresetAdded(preset);
+                      return (
+                        <li
+                          key={preset.id}
+                          className="flex items-start gap-2 rounded-md border border-border/60 bg-background/50 px-2.5 py-2"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate text-xs font-medium">
+                                {preset.name}
+                              </span>
+                              <span
+                                className={cn(
+                                  "rounded px-1 py-px text-[9px] uppercase tracking-wide",
+                                  preset.auth === "none"
+                                    ? "bg-emerald-500/15 text-emerald-300"
+                                    : preset.auth === "oauth"
+                                      ? "bg-muted text-muted-foreground"
+                                      : "bg-cyan-500/15 text-cyan-300",
+                                )}
+                              >
+                                {presetAuthLabel(preset.auth)}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                              {preset.note}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            {preset.docs ? (
+                              <a
+                                href={preset.docs}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Provider docs"
+                                className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+                              >
+                                <ExternalLink className="size-3" />
+                              </a>
+                            ) : null}
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={
+                                preset.auth === "none" ? "default" : "outline"
+                              }
+                              disabled={added || presetBusy === preset.id}
+                              onClick={() => void addPreset(preset)}
+                              title={
+                                preset.auth === "oauth"
+                                  ? "Needs the provider's own sign-in"
+                                  : added
+                                    ? "Already added"
+                                    : `Add ${preset.name}`
+                              }
+                              className="h-6 gap-1 px-2 text-[10px]"
+                            >
+                              {presetBusy === preset.id ? (
+                                <Loader2 className="size-3 animate-spin" />
+                              ) : added ? (
+                                <Check className="size-3" />
+                              ) : (
+                                <Plus className="size-3" />
+                              )}
+                              {added
+                                ? "Added"
+                                : preset.auth === "none"
+                                  ? "Add"
+                                  : preset.auth === "oauth"
+                                    ? "Info"
+                                    : "Add key"}
+                            </Button>
+                          </div>
+                        </li>
+                      );
+                    })
+                  )}
+                </ul>
+                  </>
+                ) : null}
+              </div>
+
               {/* ---- env aggregator (single, from Keys tab) ---- */}
               {envLine ? (
                 <div className="px-4 py-3">
@@ -684,7 +924,7 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
             </div>
 
             {/* footer */}
-            <div className="flex items-center gap-2 border-t px-4 py-2">
+            <div className="flex shrink-0 items-center gap-2 border-t px-4 py-2">
               <Button
                 type="button"
                 variant="ghost"

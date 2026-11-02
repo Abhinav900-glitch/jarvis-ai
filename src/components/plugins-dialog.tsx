@@ -11,6 +11,8 @@ import {
   Download,
   FileText,
   Loader2,
+  Package,
+  Plus,
   Puzzle,
   Trash2,
   Upload,
@@ -20,6 +22,11 @@ import { api } from "@/convex/_generated/api";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { inspectZip } from "@/lib/zip-inspect";
+import {
+  buildPresetZip,
+  PLUGIN_PRESETS,
+  type PluginPreset,
+} from "@/lib/plugin-presets";
 
 /** Mirrors the server cap, so a doomed upload is refused before it starts. */
 const MAX_ZIP_BYTES = 25 * 1024 * 1024;
@@ -30,17 +37,41 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Names recorded inside the zip at upload time, for the row's summary line. */
-function manifestNames(manifests: string | undefined): string[] {
+/** One entry of the manifest list stored on a plugin row. */
+interface StoredManifest {
+  path?: string;
+  kind?: string;
+  name?: string;
+}
+
+function parseManifests(manifests: string | undefined): StoredManifest[] {
   if (!manifests) return [];
   try {
-    const parsed = JSON.parse(manifests) as { name?: string }[];
-    return Array.isArray(parsed)
-      ? parsed.map((m) => m.name).filter((n): n is string => Boolean(n))
-      : [];
+    const parsed = JSON.parse(manifests) as StoredManifest[];
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
+}
+
+/** Names recorded inside the zip at upload time, for the row's summary line. */
+function manifestNames(manifests: string | undefined): string[] {
+  return parseManifests(manifests)
+    .filter((m) => m.kind !== "skill")
+    .map((m) => m.name)
+    .filter((n): n is string => Boolean(n));
+}
+
+/**
+ * Skill files recorded alongside the manifests (`skills/*.md`). Keeping their
+ * exact paths is what lets the skill button open the right entry — a zip can
+ * hold several skills, and only the path identifies one.
+ */
+function skillPaths(manifests: string | undefined): string[] {
+  return parseManifests(manifests)
+    .filter((m) => m.kind === "skill")
+    .map((m) => m.path ?? m.name)
+    .filter((n): n is string => Boolean(n));
 }
 
 /**
@@ -126,6 +157,14 @@ export function PluginsDialog({
         storageId: GenericId<"_storage">;
       };
 
+      // Skill files are recorded next to the manifests so the row can offer
+      // each one by its real path. Without this, a zip with three skills only
+      // exposed its plugin name, which is not a file that exists.
+      const skills = info.entries
+        .filter((name) => /(^|\/)skills\/[^/]+\.md$/i.test(name))
+        .slice(0, 25)
+        .map((name) => ({ path: name, kind: "skill" as const, name }));
+
       await save({
         fileName: file.name,
         storageId,
@@ -135,7 +174,7 @@ export function PluginsDialog({
         description: primary?.description,
         sizeBytes: file.size,
         fileCount: info.entries.length,
-        manifests: JSON.stringify(info.manifests),
+        manifests: JSON.stringify([...info.manifests, ...skills]),
       });
 
       if (info.manifests.length === 0) {
@@ -170,6 +209,27 @@ export function PluginsDialog({
     });
   };
 
+  /** Build a built-in pack and send it through the same store path as a file. */
+  const addPreset = async (preset: PluginPreset) => {
+    const blob = buildPresetZip(preset);
+    const file = new File([blob], `${preset.id}.zip`, {
+      type: "application/zip",
+    });
+    await store(file);
+  };
+
+  /** Keep a copy of a built-in pack on disk, without adding it to the archive. */
+  const downloadPreset = (preset: PluginPreset) => {
+    const url = URL.createObjectURL(buildPresetZip(preset));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${preset.id}.zip`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   if (!open) return null;
 
   return (
@@ -192,7 +252,7 @@ export function PluginsDialog({
         aria-label="Plugins"
       >
         {/* ---- header ---- */}
-        <div className="flex items-center gap-2 border-b border-border/60 px-4 py-3">
+        <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-4 py-3">
           <Puzzle className="size-4 text-primary" />
           <span className="hud-label" data-tone="cyan">
             Plugins &amp; MCP
@@ -211,6 +271,74 @@ export function PluginsDialog({
         </div>
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+          {/* ---- built-in packs ---- */}
+          <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-3">
+            <div className="flex items-center gap-1.5">
+              <Package className="size-3.5 text-primary" />
+              <span className="hud-label" data-tone="cyan">
+                Ready-made packs
+              </span>
+              <span className="text-[10px] text-muted-foreground/60">
+                built in · {PLUGIN_PRESETS.length}
+              </span>
+            </div>
+            <p className="mt-1 text-[11px] leading-4 text-muted-foreground/70">
+              Skills written as Markdown. Add one to your archive, or download
+              the zip and keep it.
+            </p>
+            <ul className="mt-2 space-y-1.5">
+              {PLUGIN_PRESETS.map((preset) => (
+                <li
+                  key={preset.id}
+                  className="flex items-start gap-2 rounded-md border border-border/60 bg-background/50 px-2.5 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="truncate text-xs font-medium">
+                        {preset.name}
+                      </span>
+                      <span className="rounded bg-muted px-1 py-px text-[9px] text-muted-foreground">
+                        v{preset.version}
+                      </span>
+                      <span className="rounded bg-cyan-500/15 px-1 py-px text-[9px] uppercase tracking-wide text-cyan-400">
+                        {preset.skills.length} skill
+                        {preset.skills.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                      {preset.tagline}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => downloadPreset(preset)}
+                      title={`Download ${preset.id}.zip`}
+                      className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+                    >
+                      <Download className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void addPreset(preset)}
+                      title={`Add ${preset.name} to your archive`}
+                      className="inline-flex items-center gap-1 rounded-md border border-border/70 px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent disabled:opacity-40"
+                    >
+                      {busy ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <Plus className="size-3" />
+                      )}
+                      Add
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+
           {/* ---- drop zone ---- */}
           <div
             onDragOver={(e) => {
@@ -296,6 +424,7 @@ export function PluginsDialog({
             <ul className="space-y-1.5">
               {plugins.map((plugin) => {
                 const names = manifestNames(plugin.manifests);
+                const skills = skillPaths(plugin.manifests);
                 return (
                   <li
                     key={plugin._id}
@@ -386,24 +515,25 @@ export function PluginsDialog({
                         ) : (
                           <Trash2 className="size-3.5" />
                         )}
-                      </button>                        <button
-                          type="button"
-                          className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
-                          title={`Open a skill from ${plugin.name}`}
-                          disabled={plugin.kind !== "plugin" || !plugin.manifests}
-                          onClick={() => {
-                            const names = manifestNames(plugin.manifests);
-                            const firstSkill = names.find(
-                              (n) => n.endsWith(".md") || !n.includes("/"),
-                            );
-                            if (firstSkill) {
-                              onOpenSkill?.(plugin._id as Id<"plugins">, firstSkill);
-                              onClose();
-                            }
-                          }}
-                        >
-                          <FileText className="size-3.5" />
-                        </button>
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+                        title={
+                          skills.length
+                            ? `Open ${skills[0]}`
+                            : "No skill files in this zip"
+                        }
+                        disabled={skills.length === 0}
+                        onClick={() => {
+                          const skill = skills[0];
+                          if (!skill) return;
+                          onOpenSkill?.(plugin._id as Id<"plugins">, skill);
+                          onClose();
+                        }}
+                      >
+                        <FileText className="size-3.5" />
+                      </button>
                     </div>
                   </li>
                 );
@@ -413,7 +543,7 @@ export function PluginsDialog({
         </div>
 
         {/* ---- footer ---- */}
-        <div className="flex items-center gap-2 border-t border-border/60 px-4 py-2">
+        <div className="flex shrink-0 items-center gap-2 border-t border-border/60 px-4 py-2">
           <span className="hud-label text-muted-foreground/60">
             Stored for your account · nothing executes from here
           </span>
