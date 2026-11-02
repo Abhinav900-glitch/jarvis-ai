@@ -8,16 +8,9 @@
 
 import { motion } from "framer-motion";
 import { Link } from "react-router";
-import { ArrowLeft, Bookmark, Code2, Layers, Lifeparser, Newspaper, ShieldCheck, Zap } from "lucide-react";
+import { ArrowLeft, Bookmark } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AUTHOR } from "@/lib/languages";
-
-const fadeUp = {
-  initial: { opacity: 0, y: 16 },
-  whileInView: { opacity: 1, y: 0 },
-  viewport: { once: true, margin: "-80px" },
-  transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const },
-};
 
 function Wordmark({ className = "" }: { className?: string }) {
   return (
@@ -43,17 +36,17 @@ function Wordmark({ className = "" }: { className?: string }) {
 
 const principles = [
   {
-    icon: Layers,
+    icon: Bookmark,
     title: "Owned by you",
     body: "Your conversations, memory, personas and images belong to your account. Nothing in Jarvis is trained from your prompts or used to fine-tune the models behind your account.",
   },
   {
-    icon: ShieldCheck,
+    icon: Bookmark,
     title: "Scoped access",
     body: "Integrations ask only for what they need. A Canva connection can generate images; an MCP server can only call the tools you connect it to. You disconnect anything at any time from Settings.",
   },
   {
-    icon: Zap,
+    icon: Bookmark,
     title: "Nothing runs from storage",
     body: "Plugin zips and MCP configs you upload are stored as files. They are read by name before you trust them, and nothing is executed, unpacked into your workspace, or sent anywhere else from here.",
   },
@@ -78,7 +71,7 @@ const sections = [
   },
   {
     heading: "Content you generate",
-    body: "Images and other outputs are generated through the providers Jarvis is connected to (for images, Canva and the configured fallback providers). Those providers may keep copies under their own terms. Outputs you create are yours to use; Jarvis does not claim ownership of what it helps you make.",
+    body: "Images and other outputs are generated through the providers Jarvis is connected to. Those providers may keep copies under their own terms. Outputs you create are yours to use; Jarvis does not claim ownership of what it helps you make.",
   },
   {
     heading: "Changes to these terms",
@@ -111,26 +104,24 @@ export default function Terms() {
         }}
       />
 
-      {/* header */}
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
         <Wordmark />
         <nav className="flex items-center gap-1">
           <Button asChild variant="ghost" size="sm">
-            <Link to=\"/\">
-              <ArrowLeft className=\"size-3.5\" />
+            <Link to="/">
+              <ArrowLeft className="size-3.5" />
               Back to Jarvis
             </Link>
           </Button>
           <Button asChild variant="ghost" size="sm">
-            <Link to=\"/auth\">Sign in</Link>
+            <Link to="/auth">Sign in</Link>
           </Button>
           <Button asChild size="sm">
-            <Link to=\"/\">Get started</Link>
+            <Link to="/">Get started</Link>
           </Button>
         </nav>
       </header>
 
-      {/* hero */}
       <section className="mx-auto max-w-4xl px-6 pt-20 pb-8 sm:pt-24">
         <p className="hud-label hud-label-cyan">Legal</p>
         <h1 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">
@@ -142,22 +133,26 @@ export default function Terms() {
         </p>
       </section>
 
-      {/* core principles */}
-      <section className="mx-auto w-full max-w-4xl px-6 pb-20">
+      <section className="mx-auto max-w-4xl px-6 pb-20">
         <div className="mb-6 flex items-center gap-3">
-          <Bookmark className=\"size-4 text-primary\" strokeWidth={1.5} />
-          <h2 className=\"text-base font-semibold tracking-tight\">Three things to know first</h2>
+          <Bookmark className="size-4 text-primary" strokeWidth={1.5} />
+          <h2 className="text-base font-semibold tracking-tight">
+            Three things to know first
+          </h2>
         </div>
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
           {principles.map((p) => (
             <motion.div
               key={p.title}
-              {...fadeUp}
+              initial={{ opacity: 0, y: 16 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-80px" }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
               className="hud-panel p-6"
               data-tone="cyan"
             >
               <div className="flex items-center justify-between">
-                <p.icon className="size-5 text-foreground" strokeWidth={1.5} />
+                <p.icon className="size-5 text-foreground shrink-0 mt-0.5" strokeWidth={1.5} />
               </div>
               <h3 className="mt-4 text-sm font-semibold tracking-tight">{p.title}</h3>
               <p className="mt-2 text-xs leading-6 text-muted-foreground">{p.body}</p>
@@ -166,8 +161,7 @@ export default function Terms() {
         </div>
       </section>
 
-      {/* terms body */}
-      <section className="mx-auto w-full max-w-3xl px-6 pb-20">
+      <section className="mx-auto max-w-3xl px-6 pb-20">
         <div className="divide-y divide-border/70">
           {sections.map((s) => (
             <div key={s.heading} className="px-6 py-5 first:pt-0 last:pb-6">
@@ -178,27 +172,17 @@ export default function Terms() {
         </div>
       </section>
 
-      {/* footer */}
       <footer className="border-t">
         <div className="mx-auto flex w-full flex-col gap-3 px-6 py-7 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <Wordmark />
           <div className="flex flex-wrap items-center gap-3">
-            <Link
-              to="/terms"
-              className="underline hover:text-foreground transition-colors"
-            >
+            <Link to="/terms" className="underline hover:text-foreground transition-colors">
               Terms
             </Link>
-            <Link
-              to="/resources"
-              className="underline hover:text-foreground transition-colors"
-            >
+            <Link to="/resources" className="underline hover:text-foreground transition-colors">
               Resources &amp; developers
             </Link>
-            <Link
-              to="/"
-              className="underline hover:text-foreground transition-colors"
-            >
+            <Link to="/" className="underline hover:text-foreground transition-colors">
               Home
             </Link>
           </div>

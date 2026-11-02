@@ -335,7 +335,7 @@ export default function Landing() {
               className="hud-panel p-6 group"
             >
               <div className="flex items-center justify-between">
-                <p.icon className="size-5 text-muted-foreground group-hover:text-foreground transition-colors" strokeWidth={1.5} />
+                <s.icon className="size-5 text-muted-foreground group-hover:text-foreground transition-colors" strokeWidth={1.5} />
                 <span className="hud-dot data-[tone=violet]:data-static=true" data-tone="cyan" />
               </div>
               <h3 className="mt-4 text-sm font-semibold tracking-tight">{s.title}</h3>
