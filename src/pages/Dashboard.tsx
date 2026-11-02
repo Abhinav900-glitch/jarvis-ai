@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowDown,
   ArrowUp,
+  Blocks,
   Box,
   Brain,
   Calculator,
@@ -169,6 +170,8 @@ import { LiveTuning } from "@/components/live-tuning";
 import { EnginePanel } from "@/components/engine-panel";
 import { PluginsDialog } from "@/components/plugins-dialog";
 import { McpPanel } from "@/components/mcp-panel";
+import { IntegrationsPanel } from "@/components/integrations-panel";
+import type { IntegrationPanel } from "@/lib/integrations";
 import { LiveSessionPanel } from "@/live/live-session-panel";
 import { useListeningQueue } from "@/hooks/use-listening-queue";
 import {
@@ -1186,6 +1189,7 @@ export default function Dashboard() {
   const [showEngines, setShowEngines] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
   const [showMcp, setShowMcp] = useState(false);
+  const [showIntegrations, setShowIntegrations] = useState(false);
   const [showTuning, setShowTuning] = useState(false);
   const runOpenSkill = useAction(api.plugins.applySkill);
   const handleOpenSkillFromDialog = useCallback(
@@ -3808,6 +3812,14 @@ export default function Dashboard() {
         run: () => setShowMcp(true),
       },
       {
+        id: "integrations",
+        label: "Integrations — everything Jarvis can reach",
+        group: "Configure",
+        keywords: "apps accounts connect services directory marketplace",
+        icon: <Blocks className="size-4" />,
+        run: () => setShowIntegrations(true),
+      },
+      {
         id: "engines",
         label: "Engines — smart routing and pinned models",
         group: "Chat",
@@ -3886,6 +3898,14 @@ export default function Dashboard() {
         keywords: "tools integrations connect",
         icon: <ExternalLink className="size-4" />,
         run: () => setShowMcp(true),
+      },
+      {
+        id: "integrations",
+        label: "Integrations — everything Jarvis can reach",
+        group: "Configure",
+        keywords: "apps accounts connect services directory marketplace",
+        icon: <Blocks className="size-4" />,
+        run: () => setShowIntegrations(true),
       },
       {
         id: "tasks",
@@ -4305,6 +4325,10 @@ export default function Dashboard() {
                   <DropdownMenuItem onClick={() => setShowMcp(true)}>
                     <ExternalLink className="size-4" />
                     MCP servers
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowIntegrations(true)}>
+                    <Blocks className="size-4" />
+                    Integrations
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setShowSearch((v) => !v)}>
@@ -6597,6 +6621,23 @@ export default function Dashboard() {
         }
       />
       <McpPanel open={showMcp} onClose={() => setShowMcp(false)} />
+      <IntegrationsPanel
+        open={showIntegrations}
+        onClose={() => setShowIntegrations(false)}
+        onOpenPanel={(panel: IntegrationPanel) => {
+          if (panel === "mcp") setShowMcp(true);
+          else if (panel === "plugins") setShowPlugins(true);
+          else if (panel === "voices") setShowVoices(true);
+          else if (panel === "studio") setShowStudio((v) => !v);
+          else if (panel === "code") setShowCode((v) => !v);
+          else if (panel === "memory") setShowMemory((v) => !v);
+          else if (panel === "calculator") setShowCalculator((v) => !v);
+          else if (panel === "translate") setShowTranslate(true);
+          else if (panel === "tasks") setShowTasks(true);
+          else if (panel === "sounds") setShowSounds(true);
+          else if (panel === "live") setShowLivePanel(true);
+        }}
+      />
       <PinnedPanel
         open={showPins}
         onClose={() => setShowPins(false)}
