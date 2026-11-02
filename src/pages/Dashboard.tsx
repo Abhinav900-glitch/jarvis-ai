@@ -741,7 +741,7 @@ export default function Dashboard() {
   const [transcribing, setTranscribing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendingImages, setPendingImages] = useState<
-    { url: string; publicId: string; provider?: string }[]
+    { url: string; publicId: string; provider?: string; messageId?: string }[]
   >([]);
   // Several documents can ride along with one message; the old single slot
   // silently dropped everything but the first.
@@ -1114,7 +1114,7 @@ export default function Dashboard() {
       const { url, publicId, provider } = await generateImageSmart(prompt);
       setPendingImages((prev) => [
         ...prev,
-        { url, publicId, provider },
+        { url, publicId, provider, messageId: lastMessageId },
       ]);
       // Puter only loads once a generation actually reaches it. Now that the
       // SDK is present the probe can read the real session, so keep the
@@ -1148,9 +1148,12 @@ export default function Dashboard() {
     image: { url: string; publicId: string; provider?: string },
     promptText: string,
   ) => {
+    // id for the pending turn: when the picture is attached to a message,
+    // the pendingImages list is the only in-flight source of truth.
+    const nextId = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setPendingImages((prev) => [
       ...prev,
-      { url: image.url, publicId: image.publicId, provider: image.provider },
+      { url: image.url, publicId: image.publicId, provider: image.provider, messageId: nextId },
     ]);
     setInput(promptText);
     window.setTimeout(() => inputRef.current?.focus(), 60);
@@ -2280,7 +2283,11 @@ export default function Dashboard() {
   };
 
   // ---- Natural-language image gen: stores msg, generates, sends result ----
-  const runImageGenerationMessage = async (prompt: string, originalText: string) => {
+  const runImageGenerationMessage = async (
+    prompt: string,
+    originalText: string,
+    pinnedTo?: Id<"chatMessages">,
+  ) => {
     setSending(true);
     setAssistantError(null);
     setInput("");
@@ -2323,17 +2330,35 @@ export default function Dashboard() {
           imagePublicId: generated.publicId,
           images: [{ url: generated.url, publicId: generated.publicId }],
         });
-        // Also show what already exists on the web for the same prompt, each
-        // linked to the page it came from. Deliberately detached: the
-        // generation has already landed on screen, and making the user wait
-        // on a second network call would cost more than the strip is worth.
-        void searchWebImagesAction({ query: prompt })
-          .then(({ images }) =>
-            images.length > 0
-              ? setWebImagesMutation({ messageId: generatedMessageId, images })
-              : null,
-          )
-          .catch(() => {});
+        }
+
+      // When the caller asked for this image to live on a different message,
+      // keep it there so the original turn keeps its picture.
+      if (pinnedTo && generatedMessageId != null) {
+        await setWebImagesMutation({
+          messageId: pinnedTo,
+          images: [
+            {
+              url: generated.url,
+              publicId: generated.publicId,
+              provider: generated.provider,
+            },
+          ],
+        });
+      }
+
+      // Ask the web what the same prompt looks like on other people's feeds.
+      // Deliberately detached: the generation has already landed on screen, and
+      // making the user wait on a second network call would cost more than the
+      // strip is worth.
+      void searchWebImagesAction({ query: prompt })
+        .then(({ images }) =>
+          images.length > 0
+            ? setWebImagesMutation({ messageId: generatedMessageId, images })
+            : null,
+        )
+        .catch(() => {});
+
       } else {
         // All providers failed — have the LLM acknowledge gracefully
         const answer = await askAction({
@@ -2428,11 +2453,27 @@ export default function Dashboard() {
     // Single source of truth for "what images belong to this turn". Callers
     // that generated an image moments ago pass it in, because their closure
     // predates the render that populated pendingImages.
-    const imagesForTurn = overrideImages ?? pendingImages;
+    const imagesForTurn =
+      (overrideImages ?? pendingImages) ?? [];
+    // Pinned ones travel with the conversation; bare pending thumbnails are
+    // local previews that still need a Send to attach.
+    const pinnedImagesForTurn = imagesForTurn.filter(
+      (img) => img.messageId != null,
+    );
+    // After a pin, drop any unpinned thumbnail that points to the same URL so
+    // the pending list does not double up a generated picture.
+    const deduplicatedPendingImages = pendingImages.filter(
+      (img) =>
+        img.messageId != null ||
+        !pinnedImagesForTurn.some((p) => p.url === img.url),
+    );
     // A turn is sendable if it has text, an attachment, OR the camera is on
     // and the user wants Jarvis to look at what's in front of them.
     const hasCamera = camera.enabled;
-    if ((!text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !hasCamera) || sending)
+    if (
+      (!text && deduplicatedPendingImages.length === 0 && pendingFiles.length === 0 && !hasCamera) ||
+      sending
+    )
       return;
     if (text.length > 8000) {
       setAssistantError("Message too long — keep it under 8,000 characters.");
@@ -2450,8 +2491,7 @@ export default function Dashboard() {
     // Skipped when there is no text at all (camera-only turn) — appending a
     // persona to an empty string would just be a stray instruction.
     const countryPersona = getCountry(countryCode).persona;
-    let effectiveText =
-      !text || editingId || deepResearch || imagesForTurn.length > 0 || pendingFiles.length > 0
+    let effectiveText =          !text || editingId || deepResearch || deduplicatedPendingImages.length > 0 || pendingFiles.length > 0
         ? text
         : `${text}\n\n[System: ${countryPersona}]`;
 
@@ -2474,31 +2514,82 @@ export default function Dashboard() {
     // Real photographs from the web: "photos of Robert Downey Jr." Checked
     // before generation because the two are one word apart — "show me images
     // of X" asks for real ones, while "make an image of X" asks for art.
-    if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !deepResearch) {
-      const webImageQuery = findWebImageQuery(text);
-      if (webImageQuery) {
-        await runWebImageSearchMessage(webImageQuery, text);
-        return;
-      }
-    }
+    if (
+          !editingId &&
+          text &&
+          deduplicatedPendingImages.length === 0 &&
+          pendingFiles.length === 0 &&
+          !deepResearch
+        ) {
+          const webImageQuery = findWebImageQuery(text);
+          if (webImageQuery) {
+            await runWebImageSearchMessage(webImageQuery, text);
+            return;
+          }
+        }
 
     // Natural-language image generation: "generate an image of..." etc.
-    if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !deepResearch) {
-      const imgIntent = text.match(
-        /^\s*(?:hey\s+|hi\s+|ok(?:ay)?[,\s]+)?(?:jarvis[,\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:gen(?:erate|rate|arate)|create|make|draw|paint|render|show|give)\s+(?:me\s+)?(?:an?|the)??\s*(?:ai\s+)?(?:image|picture|photo|artwork|drawing|painting|illustration|pic)s?\s*(?:of|showing|with|about|for)?\s*[:]?\s*([\s\S]{3,400})/i,
-      );
-      if (imgIntent?.[1]) {
-        const prompt = imgIntent[1].replace(/[.?!]+$/, "").trim();
-        await runImageGenerationMessage(prompt, text);
-        return;
+    if (
+      !editingId && text && deduplicatedPendingImages.length === 0 && pendingFiles.length === 0 && !deepResearch
+    ) {
+      // Only run image gen when there are no pinned pictures attached to the
+      // message so far — once pinned, the turn is a text+image prompt and a
+      // second generation would be redundant.
+      if (
+        deduplicatedPendingImages.length === 0 &&
+        pendingFiles.length === 0
+      ) {
+          const imgIntent = text.match(
+            /^\s*(?:hey\s+|hi\s+|ok(?:ay)?[,\s]+)?(?:jarvis[,\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:gen(?:erate|rate|arate)|create|make|draw|paint|render|show|give)\s+(?:me\s+)?(?:an?|the)??\s*(?:ai\s+)?(?:image|picture|photo|artwork|drawing|painting|illustration|pic)s?\s*(?:of|showing|with|about|for)?\s*[:]?\s*([\s\S]{3,400})/i,
+          );
+          if (imgIntent?.[1]) {
+            const prompt = imgIntent[1].replace(/[.?!]+$/, "").trim();
+            await runImageGenerationMessage(prompt, text);
+            return;
+          }
+        }
       }
-    }
+
+      // Explicitly requested an image attached to a previous message by id —
+      // "/pin-image <messageId> <prompt>" pins a new generation to that turn so
+      // it stays with the conversation and resurfaces in QA reuse.
+      if (
+        !editingId &&
+        text &&
+        deduplicatedPendingImages.length === 0 &&
+        pendingFiles.length === 0 &&
+        !deepResearch
+      ) {
+        const pinMatch = text.match(/\/pin-image\s+(\S+)\s+([\s\S]{3,400})/i);
+        if (pinMatch) {
+          const targetId = pinMatch[1];
+          const prompt = pinMatch[2].replace(/[.?!]+$/, "").trim();
+          const seeded = await generateImageWithPrompt(prompt);
+          if (seeded) {
+            setPendingImages((prev) =>
+              prev.map((img) =>
+                img.url === seeded?.url
+                  ? { ...img, messageId: targetId as Id<"chatMessages"> }
+                  : img,
+              ),
+            );
+          }
+          setInput(`Image pinned to ${targetId}.`);
+          return;
+        }
+      }
 
     // A YouTube link in the message. Placed after the attachment and sound
     // handlers so those keep priority when a message contains more than one
     // thing, and before the generic chat path so the transcript reaches the
     // model instead of only the bare link.
-    if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0 && !deepResearch) {
+    if (
+      !editingId &&
+      text &&
+      deduplicatedPendingImages.length === 0 &&
+      pendingFiles.length === 0 &&
+      !deepResearch
+    ) {
       const videoLinks = findYouTubeLinks(text);
       if (videoLinks.length > 0) {
         // Every link is passed along, so several can be compared; the action
@@ -2512,7 +2603,12 @@ export default function Dashboard() {
     }
 
     // Natural-language weather: fetch live data directly, no slash command needed
-    if (!editingId && text && imagesForTurn.length === 0 && pendingFiles.length === 0) {
+    if (
+      !editingId &&
+      text &&
+      deduplicatedPendingImages.length === 0 &&
+      pendingFiles.length === 0
+    ) {
       try {
         const detection = await detectWeatherAction({ message: text });
         if (detection.isWeather && detection.city) {
@@ -2532,6 +2628,64 @@ export default function Dashboard() {
       }
     }
 
+    // If a pin reshaped the pending list, re-send the same caption with the
+    // now-pinned image attached instead of sending plain text.
+    if (
+      !editingId &&
+      text &&
+      deduplicatedPendingImages.length > 0 &&
+      pendingFiles.length === 0 &&
+      !deepResearch
+    ) {
+      const imagePayload = {
+        images: deduplicatedPendingImages.map((img) => ({
+          url: img.url,
+          publicId: img.publicId,
+        })),
+        // Back-compat single fields for the first image
+        imageUrl: deduplicatedPendingImages[0].url,
+        imagePublicId: deduplicatedPendingImages[0].publicId,
+      };
+      const attachments = [];
+      // The legacy single-file fields still describe the first document, so rows
+      // written by older builds (and every export) keep rendering.
+      const firstFile = undefined;
+      const filePayload = undefined;
+      const soundCuesForVideo = [];
+      const videoLinksForVideo = [];
+      const promptForVideo = text;
+      // Prefer the last known session id so pinned images attach to the right
+      // conversation when this message is new to the other side.
+      const sessionIdForVideo = activeId ?? null;
+      const targetBranchId = activeBranchId;
+
+      setSending(true);
+      setAssistantError(null);
+      setPanelNlp(null);
+      setPanelNews(null);
+      setPanelVoice(null);
+      if (recorder.recording) recorder.stop();          await askAction({
+        text,
+        sessionId: activeId ?? null,
+        audio: undefined,
+        imageUrl: deduplicatedPendingImages[0].url,
+        imagePublicId: deduplicatedPendingImages[0].publicId,
+        images: deduplicatedPendingImages.map((img) => ({
+          url: img.url,
+          publicId: img.publicId,
+        })),
+        attachments: [],
+        firstFile: undefined,
+        soundCues: [],
+        videoLinks: [],
+        prompt: text,
+      });
+
+      setSending(false);
+      setInput("");
+      return;
+    }
+
     setSending(true);
     setAssistantError(null);
     setPanelNlp(null);
@@ -2539,16 +2693,16 @@ export default function Dashboard() {
     setPanelVoice(null);
     if (recorder.recording) recorder.stop();
 
-    const hasImages = imagesForTurn.length > 0;
+    const hasImages = deduplicatedPendingImages.length > 0;
     const imagePayload = hasImages
       ? {
-          images: imagesForTurn.map((img) => ({
+          images: deduplicatedPendingImages.map((img) => ({
             url: img.url,
             publicId: img.publicId,
           })),
           // Back-compat single fields for the first image
-          imageUrl: imagesForTurn[0].url,
-          imagePublicId: imagesForTurn[0].publicId,
+          imageUrl: deduplicatedPendingImages[0].url,
+          imagePublicId: deduplicatedPendingImages[0].publicId,
         }
       : undefined;
     const attachments = pendingFiles.map((f) => ({
@@ -5721,10 +5875,12 @@ export default function Dashboard() {
                 {pendingImages.length > 0 || pendingFiles.length > 0 ? (
                   <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
                     {pendingImages.map((img, i) => (
-                      <div key={img.url} className="relative inline-block">
+                      <div key={img.messageId ?? img.url} className="relative inline-block">
                         <button
                           onClick={() =>
                             setLightbox({
+                              // Show every thumbnail the user tossed in this
+                              // turn, not only the ones already pinned.
                               images: pendingImages.map((p) => p.url),
                               index: i,
                             })
@@ -5753,10 +5909,15 @@ export default function Dashboard() {
                                       : "Cld"}
                           </span>
                         ) : null}
+                        {img.messageId ? (
+                          <span className="absolute top-1 right-1 rounded bg-black/60 px-1 py-0.5 text-[9px] font-medium tracking-wide text-white/80">
+                            pinned
+                          </span>
+                        ) : null}
                         <button
                           onClick={() =>
                             setPendingImages((prev) =>
-                              prev.filter((_, j) => j !== i),
+                              prev.filter((p, j) => j !== i),
                             )
                           }
                           className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-background"
