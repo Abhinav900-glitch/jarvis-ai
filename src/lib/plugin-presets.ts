@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { buildZip } from "./zip-write";
+import { CATALOG, skillBodyFor } from "./plugin-catalog";
 
 export interface PluginPresetSkill {
   /** File name inside `skills/`, without the extension. */
@@ -20,7 +21,12 @@ export interface PluginPresetSkill {
   title: string;
   /** One line explaining when the assistant should reach for it. */
   when: string;
-  body: string;
+  /**
+   * Markdown for the skill. Catalogue entries leave this out and get a body
+   * generated from their category and scope when the zip is built, which keeps
+   * a 500-entry catalogue cheap to list.
+   */
+  body?: string;
 }
 
 export interface PluginPreset {
@@ -31,6 +37,10 @@ export interface PluginPreset {
   description: string;
   /** One line for the preset card. */
   tagline: string;
+  /** Shelf this pack belongs to; used by the picker's filter chips. */
+  category: string;
+  /** The scope phrase a generated body is written around. */
+  focus?: string;
   skills: PluginPresetSkill[];
 }
 
@@ -203,10 +213,15 @@ Take a long or dense document and produce an explanation a busy reader can use.
   says and what a reader should ask a professional.
 `;
 
-export const PLUGIN_PRESETS: PluginPreset[] = [
+/**
+ * The four hand-written packs. They carry full skill bodies, several skills
+ * each, and read the way a person would write them.
+ */
+const EDITORIAL_PACKS: PluginPreset[] = [
   {
     id: "research-brief",
     name: "Research brief",
+    category: "Research",
     version: "1.0.0",
     description:
       "Turns an open question into a cited brief and keeps facts, claims and inference apart.",
@@ -229,6 +244,7 @@ export const PLUGIN_PRESETS: PluginPreset[] = [
   {
     id: "code-review",
     name: "Code review",
+    category: "Engineering",
     version: "1.0.0",
     description:
       "A review order that finds production breakage first and keeps nits where they belong.",
@@ -245,6 +261,7 @@ export const PLUGIN_PRESETS: PluginPreset[] = [
   {
     id: "writing-polish",
     name: "Writing polish",
+    category: "Writing",
     version: "1.0.0",
     description:
       "Multi-pass editing that cuts filler while keeping the author's voice intact.",
@@ -261,6 +278,7 @@ export const PLUGIN_PRESETS: PluginPreset[] = [
   {
     id: "numbers",
     name: "Numbers & units",
+    category: "Data",
     version: "1.0.0",
     description:
       "Quantitative working with units kept attached, estimates first and precision stated.",
@@ -274,6 +292,39 @@ export const PLUGIN_PRESETS: PluginPreset[] = [
       },
     ],
   },
+];
+
+/**
+ * The generated shelf: one narrow, single-skill pack per catalogue entry. The
+ * skill body is built from the entry's category and scope in `presetFiles`, so
+ * this list stays a cheap table of names.
+ */
+const CATALOG_PACKS: PluginPreset[] = CATALOG.map((entry) => ({
+  id: entry.id,
+  name: entry.name,
+  version: "1.0.0",
+  category: entry.category,
+  focus: entry.focus,
+  description: `${entry.name} — a focused working method for ${entry.focus}.`,
+  tagline: entry.focus,
+  skills: [
+    {
+      slug: entry.id,
+      title: entry.name,
+      when: `Use when the task turns on ${entry.focus}.`,
+    },
+  ],
+}));
+
+/** Everything the picker offers: hand-written packs first, then the shelf. */
+export const PLUGIN_PRESETS: PluginPreset[] = [
+  ...EDITORIAL_PACKS,
+  ...CATALOG_PACKS,
+];
+
+/** Shelf labels in display order, for the picker's filter chips. */
+export const PLUGIN_CATEGORIES: string[] = [
+  ...new Set(PLUGIN_PRESETS.map((p) => p.category)),
 ];
 
 /** The files a pack expands to, in the order they are written into the zip. */
@@ -312,7 +363,13 @@ export function presetFiles(preset: PluginPreset): {
       `description: ${skill.when}`,
       "---",
       "",
-      skill.body,
+      skill.body?.trim()
+        ? skill.body
+        : skillBodyFor({
+            name: skill.title,
+            focus: preset.focus ?? preset.tagline,
+            category: preset.category,
+          }),
     ].join("\n"),
   }));
 

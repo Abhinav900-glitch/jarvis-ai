@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import {
   Package,
   Plus,
   Puzzle,
+  Search,
   Trash2,
   Upload,
   X,
@@ -24,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { inspectZip } from "@/lib/zip-inspect";
 import {
   buildPresetZip,
+  PLUGIN_CATEGORIES,
   PLUGIN_PRESETS,
   type PluginPreset,
 } from "@/lib/plugin-presets";
@@ -106,6 +108,28 @@ export function PluginsDialog({
     GenericId<"plugins"> | null
   >(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // ---- built-in pack picker ----------------------------------------------
+  // The catalogue is large on purpose, so the picker searches and pages rather
+  // than rendering all of it: eight rows at first, more on request.
+  const [presetQuery, setPresetQuery] = useState("");
+  const [presetCategory, setPresetCategory] = useState("all");
+  const [presetLimit, setPresetLimit] = useState(8);
+
+  const filteredPresets = useMemo(() => {
+    const needle = presetQuery.trim().toLowerCase();
+    return PLUGIN_PRESETS.filter((preset) => {
+      if (presetCategory !== "all" && preset.category !== presetCategory) {
+        return false;
+      }
+      if (!needle) return true;
+      return `${preset.name} ${preset.category} ${preset.tagline} ${preset.id}`
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [presetQuery, presetCategory]);
+
+  const visiblePresets = filteredPresets.slice(0, presetLimit);
 
   useEffect(() => {
     if (!open) return;
@@ -283,60 +307,118 @@ export function PluginsDialog({
               </span>
             </div>
             <p className="mt-1 text-[11px] leading-4 text-muted-foreground/70">
-              Skills written as Markdown. Add one to your archive, or download
-              the zip and keep it.
+              Skills written as Markdown, one shelf per discipline. Add a pack to
+              your archive, or download the zip and keep it.
             </p>
-            <ul className="mt-2 space-y-1.5">
-              {PLUGIN_PRESETS.map((preset) => (
-                <li
-                  key={preset.id}
-                  className="flex items-start gap-2 rounded-md border border-border/60 bg-background/50 px-2.5 py-2"
+
+            <div className="relative mt-2">
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 size-3.5 text-muted-foreground/60" />
+              <input
+                value={presetQuery}
+                onChange={(e) => {
+                  setPresetQuery(e.target.value);
+                  setPresetLimit(8);
+                }}
+                placeholder="Search packs by name, shelf or scope"
+                aria-label="Search built-in packs"
+                className="h-8 w-full rounded-md border border-border/70 bg-background pl-8 pr-3 text-xs outline-none transition-colors focus:border-primary/50"
+              />
+            </div>
+
+            <div className="mt-2 flex flex-wrap gap-1">
+              {["all", ...PLUGIN_CATEGORIES].map((category) => (
+                <button
+                  key={category}
+                  type="button"
+                  onClick={() => {
+                    setPresetCategory(category);
+                    setPresetLimit(8);
+                  }}
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                    presetCategory === category
+                      ? "border-primary/40 bg-primary/10 text-foreground"
+                      : "border-border/70 text-muted-foreground hover:text-foreground",
+                  )}
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="truncate text-xs font-medium">
-                        {preset.name}
-                      </span>
-                      <span className="rounded bg-muted px-1 py-px text-[9px] text-muted-foreground">
-                        v{preset.version}
-                      </span>
-                      <span className="rounded bg-cyan-500/15 px-1 py-px text-[9px] uppercase tracking-wide text-cyan-400">
-                        {preset.skills.length} skill
-                        {preset.skills.length === 1 ? "" : "s"}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
-                      {preset.tagline}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => downloadPreset(preset)}
-                      title={`Download ${preset.id}.zip`}
-                      className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
-                    >
-                      <Download className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void addPreset(preset)}
-                      title={`Add ${preset.name} to your archive`}
-                      className="inline-flex items-center gap-1 rounded-md border border-border/70 px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent disabled:opacity-40"
-                    >
-                      {busy ? (
-                        <Loader2 className="size-3 animate-spin" />
-                      ) : (
-                        <Plus className="size-3" />
-                      )}
-                      Add
-                    </button>
-                  </div>
-                </li>
+                  {category === "all" ? "All" : category}
+                </button>
               ))}
+            </div>
+
+            <ul className="mt-2 space-y-1.5">
+              {visiblePresets.length === 0 ? (
+                <li className="py-4 text-center text-[11px] text-muted-foreground/70">
+                  Nothing matches that. Try a shelf name or a simpler word.
+                </li>
+              ) : (
+                visiblePresets.map((preset) => (
+                  <li
+                    key={preset.id}
+                    className="flex items-start gap-2 rounded-md border border-border/60 bg-background/50 px-2.5 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="truncate text-xs font-medium">
+                          {preset.name}
+                        </span>
+                        <span className="rounded bg-muted px-1 py-px text-[9px] text-muted-foreground">
+                          {preset.category}
+                        </span>
+                        {preset.skills.length > 1 ? (
+                          <span className="rounded bg-cyan-500/15 px-1 py-px text-[9px] uppercase tracking-wide text-cyan-400">
+                            {preset.skills.length} skills
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                        {preset.tagline}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => downloadPreset(preset)}
+                        title={`Download ${preset.id}.zip`}
+                        className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+                      >
+                        <Download className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void addPreset(preset)}
+                        title={`Add ${preset.name} to your archive`}
+                        className="inline-flex items-center gap-1 rounded-md border border-border/70 px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent disabled:opacity-40"
+                      >
+                        {busy ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <Plus className="size-3" />
+                        )}
+                        Add
+                      </button>
+                    </div>
+                  </li>
+                ))
+              )}
             </ul>
+
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground/60">
+                {visiblePresets.length} of {filteredPresets.length}
+              </span>
+              {visiblePresets.length < filteredPresets.length ? (
+                <button
+                  type="button"
+                  onClick={() => setPresetLimit(presetLimit + 24)}
+                  className="ml-auto rounded-md border border-border/70 px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent"
+                >
+                  Show 24 more
+                </button>
+              ) : null}
+            </div>
           </div>
 
           {/* ---- drop zone ---- */}
