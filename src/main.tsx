@@ -23,6 +23,8 @@ const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 // but unlike the rest it is reachable without being signed in first — the
 // route below wraps it in RequireAuth, which bounces to /auth inside the
 // frame and returns here afterwards.
+const Terms = lazy(() => import("./pages/Terms.tsx"));
+const Resources = lazy(() => import("./pages/Resources.tsx"));
 const Embed = lazy(() => import("./pages/Embed.tsx"));
 
 // Simple loading fallback for route transitions
@@ -134,7 +136,7 @@ createRoot(document.getElementById("root")!).render(
                 path="/auth"
                 element={<AuthPage redirectAfterAuth="/dashboard" />}
               />
-              <Route
+                <Route
                 path="/dashboard"
                 element={
                   <RequireAuth>
@@ -165,6 +167,14 @@ createRoot(document.getElementById("root")!).render(
                     <Embed />
                   </RequireAuth>
                 }
+              />
+              <Route
+                path="/terms"
+                element={<Terms />}
+              />
+              <Route
+                path="/resources"
+                element={<Resources />}
               />
               <Route path="*" element={<NotFound />} />
             </Routes>
