@@ -3099,6 +3099,20 @@ export default function Dashboard() {
 
     if (!generated) return;
   };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
    } catch (err) {    }))
               : null,
           );
