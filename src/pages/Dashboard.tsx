@@ -2359,7 +2359,7 @@ export default function Dashboard() {
                   images: images.map((img) => ({ url: img.url, publicId: img.publicId })),
                 })
               : null,
-          )           .catch(() => {});
+          )          .catch(() => {});
       }
     } catch (err) {
       setAssistantError(err instanceof Error ? err.message : "Image message failed.");
@@ -2371,7 +2371,7 @@ export default function Dashboard() {
 
     if (!generated) return;
   };
-    } catch (err) {
+   } catch (err) {
       setAssistantError(err instanceof Error ? err.message : "Image message failed.");
     } finally {
       setGenerating(false);
