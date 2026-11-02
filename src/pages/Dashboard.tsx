@@ -2357,9 +2357,332 @@ export default function Dashboard() {
               ? setWebImagesMutation({
                   messageId: generatedMessageId,
                   images: images.map((img) => ({ url: img.url, publicId: img.publicId })),
-                })
+                }))
               : null,
-          )          .catch(() => {});
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+   } catch (err) {    }))
+              : null,
+          );
+      }
+    } catch (err) {
+      setAssistantError(err instanceof Error ? err.message : "Image message failed.");
+    } finally {
+      setGenerating(false);
+      setSending(false);
+      inputRef.current?.focus();
+    }
+
+    if (!generated) return;
+  };
+   } catch (err) {    }))
+              : null,    })
+              : null,
+          );
       }
     } catch (err) {
       setAssistantError(err instanceof Error ? err.message : "Image message failed.");
@@ -2377,9 +2700,8 @@ export default function Dashboard() {
       setGenerating(false);
       setSending(false);
       inputRef.current?.focus();
-    }
-
-    if (!generated) return;   /**
+    }    if (!generated) return;
+   /**
     * Answer a sound request with the sound itself. The clip is generated once
     * per prompt and cached server-side, so repeating the request is instant.
     */
