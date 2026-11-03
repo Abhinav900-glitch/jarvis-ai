@@ -40,6 +40,8 @@ import { Separator } from "@/components/ui/separator";
 
 const MAX_INSTRUCTIONS = 4000;
 const MAX_PERSONA_INSTRUCTIONS = 2000;
+const MAX_CONCEPTS = 50;
+const MAX_CONCEPTS_LENGTH = 4000;
 
 /**
  * The instructions editor.
@@ -146,22 +148,25 @@ function InstructionsEditor({
       </Button>
     </div>
   );
-}
-
-/** The four profile fields as edited in the form; "" means leave it out. */
+}/** The four profile fields as edited in the form; "" means leave it out. */
 interface ProfileDraft {
   name: string;
   addressAs: string;
   profession: string;
   language: string;
+  /**
+   * One short concept per line; the editor keeps a single plain string the
+   * same way the existing fields keep a single string per field.
+   */
+  conceptsText: string;
 }
 
 /**
  * The profile editor — who the user is, so every reply can be tailored.
  *
- * Four short fields rather than free text: this block travels with every
- * request, so it stays a handful of lines the model can act on directly.
- * Blank fields are simply left out of the prompt.
+ * Four short fields plus a multi-line concepts box: this block travels with
+ * every request, so it stays a handful of lines the model can act on
+ * directly. Blank fields are simply left out of the prompt.
  */
 function ProfileEditor({
   value,
@@ -170,7 +175,7 @@ function ProfileEditor({
   value: ProfileDraft | null;
   saveProfile: ReturnType<typeof useMutation<typeof api.workspace.saveProfile>>;
 }) {
-  const [draft, setDraft] = useState<ProfileDraft & { conceptsText: string }>({
+  const [draft, setDraft] = useState<ProfileDraft>({
     name: value?.name ?? "",
     addressAs: value?.addressAs ?? "",
     profession: value?.profession ?? "",
@@ -179,7 +184,9 @@ function ProfileEditor({
   });
   const [saving, setSaving] = useState(false);
 
-  const savedConcepts = (draft.conceptsText ?? "")
+  // Concepts come in as one line per concept and are written to the DB as a
+  // trimmed, non-empty string[].
+  const savedConcepts = draft.conceptsText
     .split("\n")
     .map((c) => c.trim())
     .filter((c) => c.length > 0);
@@ -187,12 +194,13 @@ function ProfileEditor({
   const overConcepts = conceptCount > MAX_CONCEPTS;
 
   const dirty =
-    (["name", "addressAs", "profession", "language"] as const).some(
-      (key) => draft[key] !== (value?.[key] ?? ""),
-    ) ||
+    draft.name !== (value?.name ?? "") ||
+    draft.addressAs !== (value?.addressAs ?? "") ||
+    draft.profession !== (value?.profession ?? "") ||
+    draft.language !== (value?.language ?? "") ||
     draft.conceptsText !== (value?.conceptsText ?? "");
 
-  const set = (key: keyof ProfileDraft & { conceptsText: string }) =>
+  const set = (key: keyof ProfileDraft) =>
     (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       setDraft((current) => ({ ...current, [key]: e.target.value }));
 
@@ -200,10 +208,10 @@ function ProfileEditor({
     setSaving(true);
     try {
       await saveProfile({
-        name: draft.name,
-        addressAs: draft.addressAs,
-        profession: draft.profession,
-        language: draft.language,
+        name: draft.name || undefined,
+        addressAs: draft.addressAs || undefined,
+        profession: draft.profession || undefined,
+        language: draft.language || undefined,
         concepts: savedConcepts,
       });
       toast.success("Profile saved — Jarvis now knows who it's talking to.");
@@ -278,24 +286,22 @@ function ProfileEditor({
         <p className="text-[11px] text-muted-foreground">
           One short concept per line — a preference or pet peeve Jarvis keeps in
           mind on every reply. Leave a line blank to remove it.
-        </p>
-        <Textarea
-          id="profile-concepts"
-          value={draft.conceptsText}
-          onChange={(e) => set("conceptsText", e.target.value)}
-          rows={5}
-          maxLength={MAX_CONCEPTS_LENGTH}
-          placeholder="e.g.\nI prefer code examples before explanations\nNo jargon without a plain-English gloss\n
-Remind me of the file name when showing code"
+        </p>          <Textarea
+            id="profile-concepts"
+            value={draft.conceptsText}
+            onChange={(e) => setDraft((cur) => ({ ...cur, conceptsText: e.target.value }))}
+            rows={5}
+            maxLength={MAX_CONCEPTS_LENGTH}
+          placeholder="e.g.\nI prefer code examples before explanations\nNo jargon without a plain-English gloss\nRemind me of the file name when showing code"
           aria-label="AI concepts, one per line"
           className="resize-y text-sm"
         />
         <p className="text-[11px] text-muted-foreground">
-          {conceptCount} concept{conceptCount === 1 ? "" : "s"}{overConcepts ? " (too many — max " : ""}
-          {overConcepts ? MAX_CONCEPTS + ")" : ""}{overConcepts ? " — the extras are ignored" : ""}.              {conceptCount === 0
-                ? " Add one below and it will be shared with every AI reply."
-                : " These are sent with every AI reply."}
-              
+          {conceptCount} concept{conceptCount === 1 ? "" : "s"}
+          {overConcepts ? ` (too many — max ${MAX_CONCEPTS}) — the extras are ignored` : ""}.
+          {conceptCount === 0
+            ? " Add one below and it will be shared with every AI reply."
+            : " These are sent with every AI reply."}
         </p>
       </div>
       <Button onClick={() => void save()} disabled={!dirty || saving}>
@@ -429,18 +435,20 @@ export function PersonaPanel({
             />
           </TabsContent>
 
-          <TabsContent value="profile" className="pt-4">
-            <ProfileEditor
-              value={
-                settings?.profile
-                  ? {
-                      name: settings.profile.name ?? "",
-                      addressAs: settings.profile.addressAs ?? "",
-                      profession: settings.profile.profession ?? "",
-                      language: settings.profile.language ?? "",
-                    }
-                  : null
-              }
+          <TabsContent value="profile" className="pt-4">            <ProfileEditor
+            value={
+              settings?.profile
+                ? {
+                    name: settings.profile.name ?? "",
+                    addressAs: settings.profile.addressAs ?? "",
+                    profession: settings.profile.profession ?? "",
+                    language: settings.profile.language ?? "",
+                    conceptsText: settings.profile.concepts
+                      ? settings.profile.concepts.join("\n")
+                      : "",
+                  }
+                : null
+            }
               saveProfile={saveProfile}
             />
           </TabsContent>

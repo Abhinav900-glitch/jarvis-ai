@@ -297,7 +297,7 @@ export const saveProfile = mutation({
 // Account-level profile read for the Dashboard stab panel.
 // ---------------------------------------------------------------------------
 
-export const getAccountProfile = query<RegionAtom>({
+export const getAccountProfile = query({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
