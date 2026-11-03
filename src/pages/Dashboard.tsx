@@ -1,4 +1,5 @@
-// (undo the broken attempt; add a proper saveProfile hook after accountProfile)
+  const startWithMessage = useStartWithMessage();
+  const accountProfile = useQuery(api.workspace.getAccountProfile, {});
   const saveProfile = useMutation(api.workspace.saveProfile);
   const onSaveProfile = async () => {
     try {
@@ -7,7 +8,8 @@
         addressAs: accountProfile?.profile?.addressAs ?? "",
         profession: accountProfile?.profile?.profession ?? "",
         language: accountProfile?.profile?.language ?? "",
-        concepts: (accountProfile?.profile?.concepts ?? []).join("\n"),
+        concepts: (accountProfile?.profile?.concepts ?? []).join("
+"),
       };
       await saveProfile(patch);
       toast.success("Profile saved — Jarvis now knows who it's talking to.");
