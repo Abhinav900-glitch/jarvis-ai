@@ -53,7 +53,74 @@ export interface ProviderSpec {
   reasoningEffort: boolean;
   maxTokens: number;
   timeoutMs: number;
+  /** The plugins this provider ships. `enabled: false` = installed but not in use. */
+  plugins: PluginEntry[];
 }
+
+const META_FREE_URL = "https://api.meta.ai/v1/chat/completions";
+
+/** A free Meta Model API engine: `muse-light-1.0` and `muse-small-1.0` are free tier,
+ * while `muse-spark` and `muse-wonder` are pay-per-token. The smart router
+ * still picks whichever scores highest on the turn; the free engines sit here
+ * so they are never dropped from the registry and the user can pin them.
+ */
+export const FREE_META_MODELS: EngineSpec[] = [
+  {
+    id: "meta/muse-light-1.0",
+    provider: "meta",
+    modelId: "muse-light-1.0",
+    label: "Muse Light 1.0",
+    vision: false,
+    reasoning: false,
+    quality: 0.48,
+    speed: 0.95,
+    context: 131_072,
+    bestFor: "fast answers at no cost",
+  },
+  {
+    id: "meta/muse-small-1.0",
+    provider: "meta",
+    modelId: "muse-small-1.0",
+    label: "Muse Small 1.0",
+    vision: false,
+    reasoning: false,
+    quality: 0.62,
+    speed: 0.82,
+    context: 131_072,
+    bestFor: "solid everyday tasks without a token bill",
+  },
+];
+  {
+    id: "meta/muse-light-1.0",
+    provider: "meta",
+    modelId: "muse-light-1.0",
+    label: "Muse Light 1.0",
+    vision: false,
+    reasoning: false,
+    quality: 0.48,
+    speed: 0.95,
+    context: 131_072,
+    bestFor: "fast answers at no cost",
+  },
+  {
+    id: "meta/muse-small-1.0",
+    provider: "meta",
+    modelId: "muse-small-1.0",
+    label: "Muse Small 1.0",
+    vision: false,
+    reasoning: false,
+    quality: 0.62,
+    speed: 0.82,
+    context: 131_072,
+    bestFor: "solid everyday tasks without a token bill",
+  },  ];
+
+/** Prototypes the plugin table that `Meta` now carries in its own row.
+ *
+ * `plugins` is the installed-but-disabled flag: each engine in `FREE_META_MODELS`
+ * is a `PluginEntry` with `enabled: true`. To make an engine installed but not
+ * in use, flip that flag off — the router ignores disabled entries and a pinned
+ * engine that is disabled falls through like any other unavailable engine.
 
 export const PROVIDERS: ProviderSpec[] = [
   {
@@ -104,30 +171,30 @@ export const PROVIDERS: ProviderSpec[] = [
     timeoutMs: 45_000,
   },
   {
-    // One key, dozens of free models, OpenAI-shaped — so it drops into the
-    // existing dispatch with no special-casing. `openrouter/free` is a router
-    // slug rather than a model: it picks whichever free model currently suits
-    // the request, which is why it leads the free block below.
+    */ One key, dozens of free models, OpenAI-shaped — so it drops into the
+    */ existing dispatch with no special-casing. `openrouter/free` is a router
+    */ slug rather than a model: it picks whichever free model currently suits
+    */ the request, which is why it leads the free block below.
     id: "openrouter",
     label: "OpenRouter (free)",
     url: "https://openrouter.ai/api/v1/chat/completions",
     keyEnv: ["OPENROUTER_API_KEY", "OPENROUTER_KEY"],
     missing: "OPENROUTER_API_KEY not configured",
     imageUrlAsString: false,
-    // Not text-only: Space Bunny Alpha takes native multimodal input, and the
-    // router only sends it an image turn when it picked a vision engine.
+    */ Not text-only: Space Bunny Alpha takes native multimodal input, and the
+    */ router only sends it an image turn when it picked a vision engine.
     textOnly: false,
     reasoningEffort: false,
     maxTokens: 8192,
-    // Free models sit behind saturated free-tier providers, so a generous
-    // deadline is the difference between a slow answer and a fallback.
+    */ Free models sit behind saturated free-tier providers, so a generous
+    */ deadline is the difference between a slow answer and a fallback.
     timeoutMs: 90_000,
   },
   {
-    // Ollama's hosted endpoint: same OpenAI-shaped dispatch as the rest, one
-    // key, `Authorization: Bearer` — which is exactly what callProvider
-    // already sends. The local runtime needs no key, so this entry covers the
-    // cloud; a localhost provider would be a separate entry with its own URL.
+    */ Ollama's hosted endpoint: same OpenAI-shaped dispatch as the rest, one
+    */ key, `Authorization: Bearer` — which is exactly what callProvider
+    */ already sends. The local runtime needs no key, so this entry covers the
+    */ cloud; a localhost provider would be a separate entry with its own URL.
     id: "ollama",
     label: "Ollama",
     url: "https://ollama.com/v1/chat/completions",
@@ -135,24 +202,24 @@ export const PROVIDERS: ProviderSpec[] = [
     missing: "OLLAMA_API_KEY not configured",
     imageUrlAsString: false,
     textOnly: false,
-    // Ollama's OpenAI layer accepts the parameter but does not document it
-    // per model, so no Groq-only knob is sent here.
+    */ Ollama's OpenAI layer accepts the parameter but does not document it
+    */ per model, so no Groq-only knob is sent here.
     reasoningEffort: false,
     maxTokens: 8192,
-    // Hosted open-weight models think before answering, and the first token
-    // can take a while on the large ones.
+    */ Hosted open-weight models think before answering, and the first token
+    */ can take a while on the large ones.
     timeoutMs: 90_000,
   },
   {
-    // Google AI Studio's Gemini API on the free tier, through the
-    // OpenAI-compatible layer Google publishes alongside the native one.
-    // Same `Authorization: Bearer` header, same chat-completions shape, so it
-    // needs no special-casing in the dispatch.
-    //
-    // Three key names because they are all in circulation: Google's own docs
-    // use GEMINI_API_KEY for this endpoint, its client libraries also accept
-    // GOOGLE_API_KEY, and third-party guides often say
-    // GOOGLE_GENERATIVE_AI_API_KEY. The first one set wins.
+    */ Google AI Studio's Gemini API on the free tier, through the
+    */ OpenAI-compatible layer Google publishes alongside the native one.
+    */ Same `Authorization: Bearer` header, same chat-completions shape, so it
+    */ needs no special-casing in the dispatch.
+    */
+    */ Three key names because they are all in circulation: Google's own docs
+    */ use GEMINI_API_KEY for this endpoint, its client libraries also accept
+    */ GOOGLE_API_KEY, and third-party guides often say
+    */ GOOGLE_GENERATIVE_AI_API_KEY. The first one set wins.
     id: "googleai",
     label: "Gemini (AI Studio)",
     url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
@@ -160,38 +227,103 @@ export const PROVIDERS: ProviderSpec[] = [
     missing: "GEMINI_API_KEY not configured",
     imageUrlAsString: false,
     textOnly: false,
-    // Google's compatibility layer documents `max_tokens` but not the
-    // Groq-only `reasoning_effort` knob, so it is not sent here.
+    */ Google's compatibility layer documents `max_tokens` but not the
+    */ Groq-only `reasoning_effort` knob, so it is not sent here.
     reasoningEffort: false,
     maxTokens: 8192,
-    // Free-tier quotas are per project and per minute, so a burst can queue.
+    */ Free-tier quotas are per project and per minute, so a burst can queue.
     timeoutMs: 90_000,
   },
   {
-    // Meta Model API (Muse) — the successor to the retired api.llama.com
-    // endpoint. OpenAI-shaped chat completions with `Authorization: Bearer`,
-    // so it drops into the existing dispatch unchanged. Declared last: it is
-    // pay-per-token, so the stable ladder only reaches it after the free
-    // providers, while the smart router still picks it on score.
+    // The free Meta Model API engines that cost nothing:
+    //   - `muse-light-1.0` — fastest, cheapest, no reasoning.
+    //   - `muse-small-1.0` — a step up in quality, still free.
+    // The two paid engines (`muse-spark-1.3`, `muse-wonder-1.0`) are in the
+    // engine table above, not here: a plugin is a *model*, and these are
+    // models that cost per token. Both are registered as plugins with
+    // `enabled` set, so the user can flip them off when they want to stop the
+    // bill without removing them from the registry.
     id: "meta",
     label: "Meta (Muse)",
-    url: "https://api.meta.ai/v1/chat/completions",
+    url: META_FREE_URL,
     // Meta's docs call it MODEL_API_KEY; the aliases cover the names people
     // give it when the platform's Keys tab does the naming. First one set wins.
     keyEnv: ["MODEL_API_KEY", "META_AI_API_KEY", "META_API_KEY"],
     missing: "MODEL_API_KEY not configured",
     imageUrlAsString: false,
-    // Muse Spark and Muse Wonder both take image input, so vision turns are
-    // translated rather than dropped.
+    // Both free Muse engines take image input, so vision turns are translated
+    // rather than dropped. The pay-per-token engines are also here and their
+    // image acceptance is what allows vision turns to reach the provider.
     textOnly: false,
     // Muse always reasons; the docs reject `reasoning_effort: "none"` with a
     // 400 and this dispatch would send "low", so the knob is left off rather
-    // than guessed at.
+    // than guessed at. None of the listed models accepts it, so it is off.
     reasoningEffort: false,
     maxTokens: 8192,
     timeoutMs: 60_000,
+    // The free engines are listed here; the two paid engines above are not
+    // shipped as plugins — they are models, and the router treats them as such.
+    plugins: FREE_META_MODELS.map((m) => ({
+      slug: m.modelId,
+      title: m.label,
+      when: m.bestFor,
+      enabled: true,
+      body: `Muse ${m.modelId} — a free Meta Model API engine. Use it for ${m.bestFor}; it costs nothing and answers fast.`,
+    })),
   },
 ];
+
+/** The free Meta Model API engines themselves — they are plugins in the
+ * provider's row, enabled from the start, so the user sees them as installed.
+ */
+export const META_PLUGINS: PluginEntry[] = [
+  {
+    slug: "muse-light-1.0",
+    title: "Muse Light 1.0",
+    when: "Use for fast answers at no cost. A cheap first step before a heavier model.",
+    enabled: true,
+  },
+  {
+    slug: "muse-small-1.0",
+    title: "Muse Small 1.0",
+    when: "Use for solid everyday tasks without a token bill.",
+    enabled: true,
+  },
+];
+}
+
+export interface PluginEntry {
+  /** File name inside `skills/`, without the extension. */
+  slug: string;
+  /** Short human title shown in the UI. */
+  title: string;
+    title: "Muse Light 1.0",
+    when: "Use for fast answers at no cost. A cheap first step before a heavier model.",
+    enabled: true,
+  },
+  {
+    slug: "muse-small-1.0",
+    title: "Muse Small 1.0",
+    when: "Use for solid everyday tasks without a token bill.",
+    enabled: true,
+  },
+];
+
+/** The free Meta Model API engines themselves — they are plugins in the
+ */
+
+export interface PluginEntry {
+  /** File name inside `skills/`, without the extension. */
+  slug: string;
+  /** Short human title shown in the UI. */
+  title: string;
+  /** One line explaining when the assistant should reach for it. */
+  when: string;
+  /** Installed but not in use until the user flips the switch. */
+  enabled: boolean;
+  /** Markdown body rendered for the picker. */
+  body?: string;
+}
 
 export interface EngineSpec {
   /** Stable id, `provider/model`, stored on the message for the inspector. */
@@ -218,6 +350,26 @@ export interface EngineSpec {
   bestFor: string;
 }
 
+ */
+
+/** The plugins shipped by the `meta` provider. These are the free Meta
+ * Model API engines that the router can use at no charge.
+ */
+export const META_PLUGINS: PluginEntry[] = [
+  {
+    slug: "muse-light-1.0",
+    title: "Muse Light 1.0",
+    when: "Use for fast answers at no cost. A cheap first step before a heavier model.",
+    enabled: true,
+  },
+  {
+    slug: "muse-small-1.0",
+    title: "Muse Small 1.0",
+    when: "Use for solid everyday tasks without a token bill.",
+    enabled: true,
+  },
+];
+
 /**
  * Availability notes are from live probes against this deployment's own keys,
  * not from vendor docs:
@@ -237,7 +389,7 @@ export interface EngineSpec {
  *    on 2026-10-27 rather than read off the roster.
  */
 export const ENGINES: EngineSpec[] = [
-  // --- Groq ---------------------------------------------------------------
+  */ --- Groq ---------------------------------------------------------------
   {
     id: "groq/gpt-oss-120b",
     provider: "groq",
@@ -275,7 +427,7 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "fast reasoning when the answer should not wait",
   },
 
-  // --- Mistral ------------------------------------------------------------
+  */ --- Mistral ------------------------------------------------------------
   {
     id: "mistral/ministral-14b",
     provider: "mistral",
@@ -337,7 +489,7 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "a very fast, very small reply",
   },
 
-  // --- Eden AI (free tier only) -------------------------------------------
+  */ --- Eden AI (free tier only) -------------------------------------------
   {
     id: "eden/gemma-4-31b",
     provider: "eden",
@@ -363,9 +515,9 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "a free second opinion",
   },
 
-  // --- Hugging Face -------------------------------------------------------
-  // Declaration order within a provider IS the stable/fallback order, so this
-  // block is deliberately cheapest-and-surest first, not best first.
+  */ --- Hugging Face -------------------------------------------------------
+  */ Declaration order within a provider IS the stable/fallback order, so this
+  */ block is deliberately cheapest-and-surest first, not best first.
   {
     id: "huggingface/llama-3.1-8b",
     provider: "huggingface",
@@ -402,33 +554,33 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "last-resort reasoning, text only",
   },
 
-  // --- OpenRouter free tier ------------------------------------------------
-  // One key reaches all of these, and they cost nothing. Latency and context
-  // figures are from a live sweep of the `:free` roster, not from vendor docs.
-  //
-  // Read this before extending the block: the roster turns over month to month.
-  // DeepSeek R1, Qwen3 Coder 480B, Llama 3.3 70B and Llama 4 Scout were all free
-  // earlier in 2026 and are not any more. `openrouter/free` is first precisely
-  // because it cannot go stale — it re-reads the live roster on every request —
-  // so the named models below are fast paths, not the source of truth. The
-  // panel's roster view reads GET /v1/models to show what is actually free now.
-  //
-  // Deliberately excluded, with the reason, so nobody re-adds them blindly:
-  //  - poolside/laguna-*      answered with an empty body on most of 7 days.
-  //  - thinkingmachines/*     403 unless called from inside their agent tools.
-  //  - nvidia/…-content-safety replied off-topic rather than refusing.
+  */ --- OpenRouter free tier ------------------------------------------------
+  */ One key reaches all of these, and they cost nothing. Latency and context
+  */ figures are from a live sweep of the `:free` roster, not from vendor docs.
+  */
+  */ Read this before extending the block: the roster turns over month to month.
+  */ DeepSeek R1, Qwen3 Coder 480B, Llama 3.3 70B and Llama 4 Scout were all free
+  */ earlier in 2026 and are not any more. `openrouter/free` is first precisely
+  */ because it cannot go stale — it re-reads the live roster on every request —
+  */ so the named models below are fast paths, not the source of truth. The
+  */ panel's roster view reads GET /v1/models to show what is actually free now.
+  */
+  */ Deliberately excluded, with the reason, so nobody re-adds them blindly:
+  */  - poolside/laguna-*      answered with an empty body on most of 7 days.
+  */  - thinkingmachines/*     403 unless called from inside their agent tools.
+  */  - nvidia/…-content-safety replied off-topic rather than refusing.
   {
-    // The best free agentic model available right now: tool calling, 1M
-    // context, native multimodal, and ranked #1 by OpenRouter on each of their
-    // free / tool-calling / programming collections.
-    //
-    // Two things to know before relying on it. It is a STEALTH model — an
-    // anonymous preview where the author tests a model under a throwaway name —
-    // so it is scheduled to be withdrawn (see RETIRING below), and the operator
-    // states prompts may be retained by them though not used for training. Do
-    // not route secrets or a user's private data through it. It leads because
-    // it is the strongest option, not because it is dependable: the free
-    // router behind it is what keeps the chain standing when this leaves.
+    */ The best free agentic model available right now: tool calling, 1M
+    */ context, native multimodal, and ranked #1 by OpenRouter on each of their
+    */ free / tool-calling / programming collections.
+    */
+    */ Two things to know before relying on it. It is a STEALTH model — an
+    */ anonymous preview where the author tests a model under a throwaway name —
+    */ so it is scheduled to be withdrawn (see RETIRING below), and the operator
+    */ states prompts may be retained by them though not used for training. Do
+    */ not route secrets or a user's private data through it. It leads because
+    */ it is the strongest option, not because it is dependable: the free
+    */ router behind it is what keeps the chain standing when this leaves.
     id: "openrouter/space-bunny",
     provider: "openrouter",
     modelId: "stealth/space-bunny-alpha",
@@ -441,8 +593,8 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "agentic work — tools, code, 1M context",
   },
   {
-    // The self-healing one. It cannot go stale, which is exactly why it sits
-    // directly behind a model that is about to.
+    */ The self-healing one. It cannot go stale, which is exactly why it sits
+    */ directly behind a model that is about to.
     id: "openrouter/free",
     provider: "openrouter",
     modelId: "openrouter/free",
@@ -455,16 +607,16 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "any task, auto-picking a free model that fits",
   },
   {
-    // Next best on OpenRouter's tool-calling and programming collections, 1M
-    // context, tools supported. Its free status has rotated before — every
-    // DeepSeek model was paid as of July 2026, and `deepseek-v4-flash:free`
-    // was confirmed gone from the roster on 2026-10-03. Because it held the
-    // top reasoning slot, its disappearance silently demoted the agent off
-    // reasoning models entirely. It is replaced below rather than merely
-    // dropped, so that slot is filled again.
-    //
-    // Replacements were picked off the live `:free` roster on 2026-10-03,
-    // checking that they are actually there rather than trusting the entry.
+    */ Next best on OpenRouter's tool-calling and programming collections, 1M
+    */ context, tools supported. Its free status has rotated before — every
+    */ DeepSeek model was paid as of July 2026, and `deepseek-v4-flash:free`
+    */ was confirmed gone from the roster on 2026-10-03. Because it held the
+    */ top reasoning slot, its disappearance silently demoted the agent off
+    */ reasoning models entirely. It is replaced below rather than merely
+    */ dropped, so that slot is filled again.
+    */
+    */ Replacements were picked off the live `:free` roster on 2026-10-03,
+    */ checking that they are actually there rather than trusting the entry.
     id: "openrouter/ling-flash",
     provider: "openrouter",
     modelId: "inclusionai/ling-3.0-flash-sante:free",
@@ -597,32 +749,32 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "the cheapest step that still has to run",
   },
 
-  // --- Ollama (hosted) -----------------------------------------------------
-  // Every engine below was probed through the real provider path on 2026-10-27:
-  // one completion each, against this deployment's own key. That is the only
-  // honest way to know what a free allowance covers, because Ollama's roster
-  // advertises models the free tier does not include.
-  //
-  // Of the 23 hosted models, exactly SEVEN answered without a usage credit:
-  //   gpt-oss:120b, gpt-oss:20b, nemotron-3-ultra, nemotron-3-super,
-  //   nemotron-3-nano:30b, gemma4:31b, beam
-  //
-  // Rejected as pay-as-you-go ("not included in your free usage"):
-  //   kimi-k2.6, kimi-k3, kimi-k2.7-code, deepseek-v4-pro:0813,
-  //   deepseek-v4.1-flash, deepseek-v4.1-flash:1017, glm-5.2, glm-5.3,
-  //   glm-5.3-flash, minimax-m2.7, minimax-m3, minimax-m3.1-flash,
-  //   muse-spark-open, mistral-large-3:675b
-  // Rejected outright: clef:27b (400 — a decision model, different endpoint)
-  // and mistral-large-4 (403 — withheld at the time of the probe).
-  //
-  // Do not add a model from the roster without probing it first: it will look
-  // available in this table and fail on the first message a user sends.
-  // Vision and context come from GET /api/tags and GET /api/show. Note what
-  // the free tier costs us here — gemma4:31b is the ONLY free model that can
-  // see an image, so an image turn has nowhere else to go on this provider.
-  //
-  // Declared strongest-first: within a provider, declaration order is the
-  // fallback ladder when the router is switched off.
+  */ --- Ollama (hosted) -----------------------------------------------------
+  */ Every engine below was probed through the real provider path on 2026-10-27:
+  */ one completion each, against this deployment's own key. That is the only
+  */ honest way to know what a free allowance covers, because Ollama's roster
+  */ advertises models the free tier does not include.
+  */
+  */ Of the 23 hosted models, exactly SEVEN answered without a usage credit:
+  */   gpt-oss:120b, gpt-oss:20b, nemotron-3-ultra, nemotron-3-super,
+  */   nemotron-3-nano:30b, gemma4:31b, beam
+  */
+  */ Rejected as pay-as-you-go ("not included in your free usage"):
+  */   kimi-k2.6, kimi-k3, kimi-k2.7-code, deepseek-v4-pro:0813,
+  */   deepseek-v4.1-flash, deepseek-v4.1-flash:1017, glm-5.2, glm-5.3,
+  */   glm-5.3-flash, minimax-m2.7, minimax-m3, minimax-m3.1-flash,
+  */   muse-spark-open, mistral-large-3:675b
+  */ Rejected outright: clef:27b (400 — a decision model, different endpoint)
+  */ and mistral-large-4 (403 — withheld at the time of the probe).
+  */
+  */ Do not add a model from the roster without probing it first: it will look
+  */ available in this table and fail on the first message a user sends.
+  */ Vision and context come from GET /api/tags and GET /api/show. Note what
+  */ the free tier costs us here — gemma4:31b is the ONLY free model that can
+  */ see an image, so an image turn has nowhere else to go on this provider.
+  */
+  */ Declared strongest-first: within a provider, declaration order is the
+  */ fallback ladder when the router is switched off.
   {
     id: "ollama/gpt-oss-120b",
     provider: "ollama",
@@ -672,8 +824,8 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "a balanced free answer that still reads carefully",
   },
   {
-    // The only vision engine in the free set — every image turn routed to
-    // Ollama lands here.
+    */ The only vision engine in the free set — every image turn routed to
+    */ Ollama lands here.
     id: "ollama/gemma4-31b",
     provider: "ollama",
     modelId: "gemma4:31b",
@@ -710,25 +862,25 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "the lightest free step that still thinks before answering",
   },
 
-  // --- Google AI Studio (Gemini free tier) --------------------------------
-  // Model ids are from Google's own models page (ai.google.dev/gemini-api/
-  // docs/models) and the five below are the ones its pricing page marks as
-  // free of charge. Deliberately NOT included:
-  //  - gemini-2.5-flash / -pro / -lite — Google limits the 2.5 family to
-  //    projects that have actively used them, so a new key typically 429s.
-  //  - gemini-2.0-flash — shut down.
-  //  - gemini-3.1-pro-preview — not on the free list.
-  //
-  // Every engine below was probed on 2026-10-29 through the OpenAI-compat
-  // endpoint: one completion plus one image turn each, context read from
-  // GET /v1beta/models → inputTokenLimit (1,048,576 in / 65,536 out for all
-  // five). Probed and rejected — do not re-add without a passing probe:
-  //  - gemini-3.8-flash — hung >90s twice (no answer, not a quota error).
-  //  - gemini-3.7-flash — HTTP 503 "overloaded"; gemini-flash-latest same.
-  //  - gemini-4-argon-flash — HTTP 429, paid-only on a free key.
-  //  - gemini-2.5-flash-lite, gemma-4-26b — HTTP 404, not served.
-  // Measured round-trips: 3.5-flash 1.1s, 3.5-flash-lite 3.0s,
-  // 3.6-flash 5.8s, 3-flash-preview 6.1s, 3.1-flash-lite 6.9s.
+  */ --- Google AI Studio (Gemini free tier) --------------------------------
+  */ Model ids are from Google's own models page (ai.google.dev/gemini-api/
+  */ docs/models) and the five below are the ones its pricing page marks as
+  */ free of charge. Deliberately NOT included:
+  */  - gemini-2.5-flash / -pro / -lite — Google limits the 2.5 family to
+  */    projects that have actively used them, so a new key typically 429s.
+  */  - gemini-2.0-flash — shut down.
+  */  - gemini-3.1-pro-preview — not on the free list.
+  */
+  */ Every engine below was probed on 2026-10-29 through the OpenAI-compat
+  */ endpoint: one completion plus one image turn each, context read from
+  */ GET /v1beta/models → inputTokenLimit (1,048,576 in / 65,536 out for all
+  */ five). Probed and rejected — do not re-add without a passing probe:
+  */  - gemini-3.8-flash — hung >90s twice (no answer, not a quota error).
+  */  - gemini-3.7-flash — HTTP 503 "overloaded"; gemini-flash-latest same.
+  */  - gemini-4-argon-flash — HTTP 429, paid-only on a free key.
+  */  - gemini-2.5-flash-lite, gemma-4-26b — HTTP 404, not served.
+  */ Measured round-trips: 3.5-flash 1.1s, 3.5-flash-lite 3.0s,
+  */ 3.6-flash 5.8s, 3-flash-preview 6.1s, 3.1-flash-lite 6.9s.
   {
     id: "googleai/gemini-3.6-flash",
     provider: "googleai",
@@ -789,11 +941,11 @@ export const ENGINES: EngineSpec[] = [
     context: 1_048_576,
     bestFor: "titles, summaries and other high-volume steps",
   },
-  // --- Meta (Muse) -------------------------------------------------------
-  // Scored from the official model docs rather than a live probe: both models
-  // carry a 1,048,576-token window, take image input, and always reason. The
-  // pay-per-token key makes them the last stable-ladder entry; pin an engine
-  // here to make it the first choice instead.
+  */ --- Meta (Muse) -------------------------------------------------------
+  */ Scored from the official model docs rather than a live probe: both models
+  */ carry a 1,048,576-token window, take image input, and always reason. The
+  */ pay-per-token key makes them the last stable-ladder entry; pin an engine
+  */ here to make it the first choice instead.
   {
     id: "meta/muse-spark-1.3",
     provider: "meta",
@@ -915,8 +1067,8 @@ export function providerStatuses(): ProviderStatus[] {
   return PROVIDERS.map((provider) => {
     const engines = ENGINES.filter((e) => e.provider === provider.id)
       .sort((a, b) => b.quality - a.quality)
-      // A retired engine is reported unavailable even when its key is present,
-      // so the health surface stops advertising a model the router will refuse.
+      */ A retired engine is reported unavailable even when its key is present,
+      */ so the health surface stops advertising a model the router will refuse.
       .map((e) => ({ id: e.id, label: e.label, available: !isRetired(e.id) }));
     const configured = Boolean(providerKey(provider));
     return {
@@ -998,13 +1150,13 @@ export function rankEngines(request: RouteRequest = {}): EnginePlan {
   const scored: RankedEngine[] = [];
   for (const engine of ENGINES) {
     if (excluded && engine.id === excluded) continue;
-    // A withdrawn engine is dropped from the plan outright, including when it
-    // is pinned: it cannot serve the turn, so honouring the pin would only
-    // fail one request later instead of now. This is the one place a date in
-    // RETIRING actually changes behaviour — everywhere else it is a label.
+    */ A withdrawn engine is dropped from the plan outright, including when it
+    */ is pinned: it cannot serve the turn, so honouring the pin would only
+    */ fail one request later instead of now. This is the one place a date in
+    */ RETIRING actually changes behaviour — everywhere else it is a label.
     if (isRetired(engine.id)) continue;
-    // Capability, not preference: a text-only model cannot be told to look at
-    // a picture, so it is dropped rather than ranked last.
+    */ Capability, not preference: a text-only model cannot be told to look at
+    */ a picture, so it is dropped rather than ranked last.
     if (wantImages && !engine.vision) continue;
 
     const provider = providerById(engine.provider);
@@ -1020,11 +1172,11 @@ export function rankEngines(request: RouteRequest = {}): EnginePlan {
       score += 0.1 * Math.min(1, engine.context / 131_072);
     }
 
-    // A user-pinned engine is honoured whenever it can serve the turn at all.
+    */ A user-pinned engine is honoured whenever it can serve the turn at all.
     if (preferred && engine.id === preferred) score += 10;
     if (!smart) {
-      // Stable mode ignores the scores entirely, so the pin is expressed by
-      // the sort rather than by a number nothing reads.
+      */ Stable mode ignores the scores entirely, so the pin is expressed by
+      */ the sort rather than by a number nothing reads.
       scored.push({
         engine,
         score: 0,

@@ -1,0 +1,1 @@
+import{c as o}from"./index-C1kTzaBi.js";const c=[["path",{d:"m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z",key:"1fy3hk"}]],a=o("bookmark",c);const e=[["rect",{width:"18",height:"11",x:"3",y:"11",rx:"2",ry:"2",key:"1w4ew1"}],["path",{d:"M7 11V7a5 5 0 0 1 10 0v4",key:"fwvmzm"}]],k=o("lock",e);export{a as B,k as L};
