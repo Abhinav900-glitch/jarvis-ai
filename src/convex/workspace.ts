@@ -177,6 +177,14 @@ export const getSettings = query({
         ? await ctx.db.get(settings.activePersonaId)
         : null,
       profile: settings.profile ?? null,
+      // Derived view for the Profile tab: read-only summary of personas,
+      // memory and AI concepts for this account.
+      personaCount: settings.activePersonaId
+        ? await ctx.db
+            .query("personas")
+            .withIndex("by_user", (q) => q.eq("userId", userId))
+            .collect()
+        : null,
     };
   },
 });
@@ -234,6 +242,8 @@ export const saveProfile = mutation({
     addressAs: v.optional(v.string()),
     profession: v.optional(v.string()),
     language: v.optional(v.string()),
+    /** Short notes Jarvis sees on every turn (see Profile tab). */
+    concepts: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -252,8 +262,15 @@ export const saveProfile = mutation({
       addressAs: args.addressAs?.trim() || undefined,
       profession: args.profession?.trim() || undefined,
       language: args.language?.trim() || undefined,
+      /**
+       * Dedicated mutations are cleaner than free text here: a concept list
+       * is an opinion the user wants the AI to carry, not prose about how to.
+       */
+      concepts: (args.concepts ?? []).map((c) => c.trim()).filter((c) => c.length > 0),
     };
-    const filled = Object.values(profile).some((value) => value !== undefined);
+    const filled =
+      Object.values(profile).some((value) => value !== undefined) ||
+      profile.concepts.length > 0;
 
     const patch: Partial<Doc<"userSettings">> = {
       profile: filled ? profile : undefined,
@@ -276,6 +293,36 @@ export const saveProfile = mutation({
  * Each field is skipped when blank, so a half-filled form never pads the
  * prompt with empty lines.
  */
+// ---------------------------------------------------------------------------
+// Account-level profile read for the Dashboard stab panel.
+// ---------------------------------------------------------------------------
+
+export const getAccountProfile = query<RegionAtom>({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+    const settings = await ctx.db
+      .query("userSettings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    const profile = settings?.profile ?? null;
+    const personas = await ctx.db
+      .query("personas")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const facts = await ctx.db
+      .query("memories")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return {
+      profile,
+      personas,
+      facts,
+    };
+  },
+});
+
 function profileBlock(profile: Doc<"userSettings">["profile"]): string {
   if (!profile) return "";
   const lines: string[] = [];
@@ -289,6 +336,28 @@ function profileBlock(profile: Doc<"userSettings">["profile"]): string {
   if (language) lines.push(`Preferred language: ${language}`);
   if (lines.length === 0) return "";
   return `ABOUT THE USER — tailor your replies to this person:\n${lines.join("\n")}`;
+}
+
+/**
+ * The user's AI concepts as one prompt block, or "" when the list is empty.
+ *
+ * Concepts are things the user wants every AI to keep in mind, yet which do
+ * not fit standing instructions: preferences about how answers should be
+ * structured, pet peeves, ways of working, conventions the user lives by.
+ * Because every definition gets its own line, the list stays readable even
+ * when it grows — concepts are short by design.
+ */
+function conceptsBlock(
+  profile: Doc<"userSettings">["profile"],
+): string {
+  const concepts = profile?.concepts ?? [];
+  if (concepts.length === 0) return "";
+  // One short line per concept, so it reads as a compact checklist the model
+  // can scan quickly rather than a paragraph it might miss.
+  const body = concepts
+    .map((c) => `- ${c}`)  // bullet form so each is visually distinct
+    .join("\n");
+  return `CONCEPTS YOU CARRY — short things to keep in mind on every reply:\n${body}`;
 }
 
 /**
@@ -313,6 +382,8 @@ export async function instructionBlockFor(
   const parts: string[] = [];
   const profileText = profileBlock(settings?.profile);
   if (profileText) parts.push(profileText);
+  const conceptsText = conceptsBlock(settings?.profile);
+  if (conceptsText) parts.push(conceptsText);
   const custom = settings?.customInstructions?.trim();
 
   if (custom) {
@@ -472,6 +543,8 @@ export const livePersona = query({
     const parts: string[] = [];
     const profileText = profileBlock(settings?.profile);
     if (profileText) parts.push(profileText);
+    const conceptsText = conceptsBlock(settings?.profile);
+    if (conceptsText) parts.push(conceptsText);
     const custom = settings?.customInstructions?.trim();
     if (custom) {
       parts.push(

@@ -78,6 +78,12 @@ const schema = defineSchema(
           addressAs: v.optional(v.string()),
           profession: v.optional(v.string()),
           language: v.optional(v.string()),
+          /**
+           * Short notes Jarvis sees on *every* turn — things you want every
+           * reply to keep in mind that do not belong in standing instructions.
+           * Shown (editable) in the Profile tab, read-only for the user.
+           */
+          concepts: v.optional(v.array(v.string())),
         }),
       ),
       /**

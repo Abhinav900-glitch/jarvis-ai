@@ -642,13 +642,36 @@ export default function Dashboard() {
   // A chat can pin a persona of its own; it overrides the user's default for
   // every reply in that conversation.
   const activePersonaId = useMemo(
-    () => sessions.find((s) => s._id === activeId)?.personaId ?? undefined,
-    [sessions, activeId],
+    () =>
+      activeId
+        ? sessions.find((s) => s._id === activeId)?.personaId ?? undefined
+        : undefined,
+    [activeId, sessions],
+  );
   );
 
   // Encrypting wrappers — every call site below reads exactly as it did
   // before, but the text is sealed before it reaches the network.
   const startWithMessage = useStartWithMessage();
+  const accountProfile = useQuery(api.workspace.getAccountProfile);
+
+  const onSaveProfile = async () => {
+    try {
+      const patch = {
+        name: accountProfile?.profile?.name ?? "",
+        addressAs: accountProfile?.profile?.addressAs ?? "",
+        profession: accountProfile?.profile?.profession ?? "",
+        language: accountProfile?.profile?.language ?? "",
+        concepts: (accountProfile?.profile?.concepts ?? []).join("\n"),
+      };
+      await api.workspace.saveProfile(patch);
+      toast.success("Profile saved — Jarvis now knows who it's talking to.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save.");
+    }
+  };
+
+  const accountProfile = useQuery(api.workspace.getAccountProfile);
   const appendMessage = useAppendMessage();
   const askAction = useAction(api.ai.ask);
   const askStreamAction = useAction(api.ai.askStream);

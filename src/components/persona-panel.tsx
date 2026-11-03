@@ -170,25 +170,42 @@ function ProfileEditor({
   value: ProfileDraft | null;
   saveProfile: ReturnType<typeof useMutation<typeof api.workspace.saveProfile>>;
 }) {
-  const [draft, setDraft] = useState<ProfileDraft>({
+  const [draft, setDraft] = useState<ProfileDraft & { conceptsText: string }>({
     name: value?.name ?? "",
     addressAs: value?.addressAs ?? "",
     profession: value?.profession ?? "",
     language: value?.language ?? "",
+    conceptsText: value?.conceptsText ?? "",
   });
   const [saving, setSaving] = useState(false);
 
-  const dirty = (["name", "addressAs", "profession", "language"] as const).some(
-    (key) => draft[key] !== (value?.[key] ?? ""),
-  );
+  const savedConcepts = (draft.conceptsText ?? "")
+    .split("\n")
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+  const conceptCount = savedConcepts.length;
+  const overConcepts = conceptCount > MAX_CONCEPTS;
 
-  const set = (key: keyof ProfileDraft) => (e: ChangeEvent<HTMLInputElement>) =>
-    setDraft((current) => ({ ...current, [key]: e.target.value }));
+  const dirty =
+    (["name", "addressAs", "profession", "language"] as const).some(
+      (key) => draft[key] !== (value?.[key] ?? ""),
+    ) ||
+    draft.conceptsText !== (value?.conceptsText ?? "");
+
+  const set = (key: keyof ProfileDraft & { conceptsText: string }) =>
+    (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setDraft((current) => ({ ...current, [key]: e.target.value }));
 
   const save = async () => {
     setSaving(true);
     try {
-      await saveProfile(draft);
+      await saveProfile({
+        name: draft.name,
+        addressAs: draft.addressAs,
+        profession: draft.profession,
+        language: draft.language,
+        concepts: savedConcepts,
+      });
       toast.success("Profile saved — Jarvis now knows who it's talking to.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not save.");
@@ -256,10 +273,31 @@ function ProfileEditor({
           />
         </div>
       </div>
-      <p className="text-[11px] text-muted-foreground">
-        Applies from your next message in every chat — including research,
-        summaries and continued replies.
-      </p>
+      <div className="space-y-1">
+        <Label htmlFor="profile-concepts" className="text-xs">AI concepts</Label>
+        <p className="text-[11px] text-muted-foreground">
+          One short concept per line — a preference or pet peeve Jarvis keeps in
+          mind on every reply. Leave a line blank to remove it.
+        </p>
+        <Textarea
+          id="profile-concepts"
+          value={draft.conceptsText}
+          onChange={(e) => set("conceptsText", e.target.value)}
+          rows={5}
+          maxLength={MAX_CONCEPTS_LENGTH}
+          placeholder="e.g.\nI prefer code examples before explanations\nNo jargon without a plain-English gloss\n
+Remind me of the file name when showing code"
+          aria-label="AI concepts, one per line"
+          className="resize-y text-sm"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          {conceptCount} concept{conceptCount === 1 ? "" : "s"}{overConcepts ? " (too many — max " : ""}
+          {overConcepts ? MAX_CONCEPTS + ")" : ""}{overConcepts ? " — the extras are ignored" : ""}.              {conceptCount === 0
+                ? " Add one below and it will be shared with every AI reply."
+                : " These are sent with every AI reply."}
+              
+        </p>
+      </div>
       <Button onClick={() => void save()} disabled={!dirty || saving}>
         {saving ? "Saving…" : "Save profile"}
       </Button>
