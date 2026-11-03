@@ -1,5 +1,4 @@
-  const startWithMessage = useStartWithMessage();
-  const accountProfile = useQuery(api.workspace.getAccountProfile, {});
+// (undo the broken attempt; add a proper saveProfile hook after accountProfile)
   const saveProfile = useMutation(api.workspace.saveProfile);
   const onSaveProfile = async () => {
     try {
