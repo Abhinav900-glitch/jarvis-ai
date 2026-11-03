@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "convex/react";
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { toast } from "sonner";
@@ -31,6 +31,8 @@ import { Separator } from "@/components/ui/separator";
  * - PERSONAS are reusable characters ("concise", "teacher") that can be pinned
  *   to one chat, so a research chat can run as an analyst while a scratch chat
  *   stays plain.
+ * - PROFILE is who the user is (name, profession, language) — context every
+ *   reply can be tailored with, rather than a rule about how to answer.
  *
  * Neither can talk Jarvis out of the safety rules in the base prompt — they are
  * appended to it, never merged into it.
@@ -146,6 +148,125 @@ function InstructionsEditor({
   );
 }
 
+/** The four profile fields as edited in the form; "" means leave it out. */
+interface ProfileDraft {
+  name: string;
+  addressAs: string;
+  profession: string;
+  language: string;
+}
+
+/**
+ * The profile editor — who the user is, so every reply can be tailored.
+ *
+ * Four short fields rather than free text: this block travels with every
+ * request, so it stays a handful of lines the model can act on directly.
+ * Blank fields are simply left out of the prompt.
+ */
+function ProfileEditor({
+  value,
+  saveProfile,
+}: {
+  value: ProfileDraft | null;
+  saveProfile: ReturnType<typeof useMutation<typeof api.workspace.saveProfile>>;
+}) {
+  const [draft, setDraft] = useState<ProfileDraft>({
+    name: value?.name ?? "",
+    addressAs: value?.addressAs ?? "",
+    profession: value?.profession ?? "",
+    language: value?.language ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  const dirty = (["name", "addressAs", "profession", "language"] as const).some(
+    (key) => draft[key] !== (value?.[key] ?? ""),
+  );
+
+  const set = (key: keyof ProfileDraft) => (e: ChangeEvent<HTMLInputElement>) =>
+    setDraft((current) => ({ ...current, [key]: e.target.value }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveProfile(draft);
+      toast.success("Profile saved — Jarvis now knows who it's talking to.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-sm font-medium">About you</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Sent with every request as one short block, so replies can use your
+          name, field and language. Leave a field blank to leave it out.
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="profile-name" className="text-xs">
+            Name
+          </Label>
+          <Input
+            id="profile-name"
+            value={draft.name}
+            onChange={set("name")}
+            maxLength={80}
+            placeholder="Priya"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="profile-address" className="text-xs">
+            Address you as
+          </Label>
+          <Input
+            id="profile-address"
+            value={draft.addressAs}
+            onChange={set("addressAs")}
+            maxLength={80}
+            placeholder="Priya, or Dr. Sharma"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="profile-profession" className="text-xs">
+            Profession
+          </Label>
+          <Input
+            id="profile-profession"
+            value={draft.profession}
+            onChange={set("profession")}
+            maxLength={160}
+            placeholder="Backend developer"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="profile-language" className="text-xs">
+            Preferred language
+          </Label>
+          <Input
+            id="profile-language"
+            value={draft.language}
+            onChange={set("language")}
+            maxLength={80}
+            placeholder="English, Hindi"
+          />
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Applies from your next message in every chat — including research,
+        summaries and continued replies.
+      </p>
+      <Button onClick={() => void save()} disabled={!dirty || saving}>
+        {saving ? "Saving…" : "Save profile"}
+      </Button>
+    </div>
+  );
+}
+
 interface Persona {
   _id: Id<"personas">;
   name: string;
@@ -169,6 +290,7 @@ export function PersonaPanel({
   const settings = useQuery(api.workspace.getSettings);
   const list = useQuery(api.workspace.listPersonas);
   const saveSettings = useMutation(api.workspace.saveSettings);
+  const saveProfile = useMutation(api.workspace.saveProfile);
   const savePersona = useMutation(api.workspace.savePersona);
   const deletePersona = useMutation(api.workspace.deletePersona);
 
@@ -253,6 +375,9 @@ export function PersonaPanel({
             <TabsTrigger value="instructions" className="flex-1">
               Instructions
             </TabsTrigger>
+            <TabsTrigger value="profile" className="flex-1">
+              Profile
+            </TabsTrigger>
             <TabsTrigger value="personas" className="flex-1">
               Personas
             </TabsTrigger>
@@ -263,6 +388,22 @@ export function PersonaPanel({
               value={settings?.customInstructions ?? ""}
               saveSettings={saveSettings}
               activePersonaId={settings?.activePersonaId ?? null}
+            />
+          </TabsContent>
+
+          <TabsContent value="profile" className="pt-4">
+            <ProfileEditor
+              value={
+                settings?.profile
+                  ? {
+                      name: settings.profile.name ?? "",
+                      addressAs: settings.profile.addressAs ?? "",
+                      profession: settings.profile.profession ?? "",
+                      language: settings.profile.language ?? "",
+                    }
+                  : null
+              }
+              saveProfile={saveProfile}
             />
           </TabsContent>
 

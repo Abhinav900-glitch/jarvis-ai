@@ -68,6 +68,19 @@ const schema = defineSchema(
       customInstructions: v.optional(v.string()),
       activePersonaId: v.optional(v.id("personas")),
       /**
+       * Who the user is: name, how to address them, profession, preferred
+       * language. Sent as one ABOUT THE USER block so replies can be tailored;
+       * every field empty (or the whole thing absent) means no block is sent.
+       */
+      profile: v.optional(
+        v.object({
+          name: v.optional(v.string()),
+          addressAs: v.optional(v.string()),
+          profession: v.optional(v.string()),
+          language: v.optional(v.string()),
+        }),
+      ),
+      /**
        * Let the engine router choose a model per turn instead of walking a
        * fixed provider order. On by default; the pin in Settings overrides it.
        */

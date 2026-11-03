@@ -176,6 +176,7 @@ export const getSettings = query({
       activePersona: settings.activePersonaId
         ? await ctx.db.get(settings.activePersonaId)
         : null,
+      profile: settings.profile ?? null,
     };
   },
 });
@@ -222,6 +223,75 @@ export const saveSettings = mutation({
 });
 
 /**
+ * Writes the user profile, creating the settings row on first use.
+ *
+ * Separate from `saveSettings` so editing who you are never has to pass a
+ * persona id — the two are independent facts living on the same row.
+ */
+export const saveProfile = mutation({
+  args: {
+    name: v.optional(v.string()),
+    addressAs: v.optional(v.string()),
+    profession: v.optional(v.string()),
+    language: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const existing = await ctx.db
+      .query("userSettings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+
+    // Blank fields are cleared rather than stored, so an all-empty form
+    // removes the ABOUT THE USER block instead of sending one full of
+    // empty lines.
+    const profile = {
+      name: args.name?.trim() || undefined,
+      addressAs: args.addressAs?.trim() || undefined,
+      profession: args.profession?.trim() || undefined,
+      language: args.language?.trim() || undefined,
+    };
+    const filled = Object.values(profile).some((value) => value !== undefined);
+
+    const patch: Partial<Doc<"userSettings">> = {
+      profile: filled ? profile : undefined,
+      updatedAt: Date.now(),
+    };
+
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+      return existing._id;
+    }
+    return await ctx.db.insert("userSettings", { userId, ...patch });
+  },
+});
+
+/**
+ * The user's profile as one prompt block, or "" when nothing is filled in.
+ *
+ * Context rather than instruction: it goes out ahead of standing instructions
+ * so the model reads who it is talking to before it reads how to answer.
+ * Each field is skipped when blank, so a half-filled form never pads the
+ * prompt with empty lines.
+ */
+function profileBlock(profile: Doc<"userSettings">["profile"]): string {
+  if (!profile) return "";
+  const lines: string[] = [];
+  const name = profile.name?.trim();
+  const addressAs = profile.addressAs?.trim();
+  const profession = profile.profession?.trim();
+  const language = profile.language?.trim();
+  if (name) lines.push(`Name: ${name}`);
+  if (addressAs) lines.push(`Address them as: ${addressAs}`);
+  if (profession) lines.push(`Profession: ${profession}`);
+  if (language) lines.push(`Preferred language: ${language}`);
+  if (lines.length === 0) return "";
+  return `ABOUT THE USER — tailor your replies to this person:\n${lines.join("\n")}`;
+}
+
+/**
  * The resolved instruction block for one user, as a string ready to append to
  * the system prompt. Called from the AI actions on every reply.
  *
@@ -241,6 +311,8 @@ export async function instructionBlockFor(
     .catch(() => null);
 
   const parts: string[] = [];
+  const profileText = profileBlock(settings?.profile);
+  if (profileText) parts.push(profileText);
   const custom = settings?.customInstructions?.trim();
 
   if (custom) {
@@ -398,6 +470,8 @@ export const livePersona = query({
       .catch(() => null);
 
     const parts: string[] = [];
+    const profileText = profileBlock(settings?.profile);
+    if (profileText) parts.push(profileText);
     const custom = settings?.customInstructions?.trim();
     if (custom) {
       parts.push(
