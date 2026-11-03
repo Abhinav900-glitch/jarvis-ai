@@ -306,7 +306,11 @@ export const enginePrefs = internalQuery({
   handler: async (
     ctx,
     args,
-  ): Promise<{ smartEngine: boolean; pinnedEngineId: string | null }> => {
+  ): Promise<{
+    smartEngine: boolean;
+    pinnedEngineId: string | null;
+    enabledModelPlugins: string[];
+  }> => {
     const settings = await ctx.db
       .query("userSettings")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
@@ -314,6 +318,7 @@ export const enginePrefs = internalQuery({
     return {
       smartEngine: settings?.smartEngine ?? true,
       pinnedEngineId: settings?.pinnedEngineId ?? null,
+      enabledModelPlugins: settings?.enabledModelPlugins ?? [],
     };
   },
 });

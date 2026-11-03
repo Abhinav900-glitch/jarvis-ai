@@ -3,6 +3,7 @@ import { mutation, query, action } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { readZipEntries, readZipText } from "../lib/zip-inspect";
 import { api } from "./_generated/api";
+import { PROVIDERS } from "./engines";
 
 // ---------------------------------------------------------------------------
 // Plugins & MCP — the account's zip archive.
@@ -195,5 +196,86 @@ export const applySkill = action({
       text,
       manifests: row.manifests ?? null,
     };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Model plugins — provider-shipped engines that are installed but not used
+// in AI chat until the user switches them on.
+//
+// The registry (`PROVIDERS[].plugins`) is the source of truth for what
+// exists; the per-account switch lives on userSettings so flipping one
+// model on does not silently turn it on for every account on this
+// deployment. The router reads the same list through `enginePrefs`.
+// ---------------------------------------------------------------------------
+
+/** Every model plugin any provider ships, with this account's switch state. */
+export const modelPlugins = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    const switchedOn = new Set<string>();
+    if (userId !== null) {
+      const settings = await ctx.db
+        .query("userSettings")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .first();
+      for (const slug of settings?.enabledModelPlugins ?? []) switchedOn.add(slug);
+    }
+
+    return PROVIDERS.flatMap((provider) =>
+      provider.plugins.map((plugin) => ({
+        providerId: provider.id,
+        providerLabel: provider.label,
+        slug: plugin.slug,
+        title: plugin.title,
+        when: plugin.when,
+        // Shipped-on means on unless the account turned it off later; no
+        // plugin ships on today, so the switch is the only live state.
+        enabled: plugin.enabled || switchedOn.has(plugin.slug),
+      })),
+    );
+  },
+});
+
+/** Switch one model plugin on or off for this account. */
+export const setModelPluginEnabled = mutation({
+  args: { slug: v.string(), enabled: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to switch plugins.");
+
+    // Only a slug the registry actually ships can be stored, so a stale UI
+    // cannot write an id the router would never read.
+    const known = PROVIDERS.some((provider) =>
+      provider.plugins.some((plugin) => plugin.slug === args.slug),
+    );
+    if (!known) throw new Error("Unknown model plugin.");
+
+    const settings = await ctx.db
+      .query("userSettings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    const current = new Set(settings?.enabledModelPlugins ?? []);
+    if (args.enabled) current.add(args.slug);
+    else current.delete(args.slug);
+    const next = [...current];
+
+    if (settings) {
+      await ctx.db.patch(settings._id, {
+        enabledModelPlugins: next.length > 0 ? next : undefined,
+        updatedAt: Date.now(),
+      });
+      return;
+    }
+    // No settings row yet: insert one only when something is switched on —
+    // with nothing enabled, the absent field IS the default.
+    if (next.length > 0) {
+      await ctx.db.insert("userSettings", {
+        userId,
+        enabledModelPlugins: next,
+        updatedAt: Date.now(),
+      });
+    }
   },
 });

@@ -103,7 +103,17 @@ describe("provider fallback ladder", () => {
     // Once a withdrawal date in RETIRING has passed the ladder is supposed to
     // drop that engine, so asserting against ENGINES.length made this test
     // fail on the withdrawal day itself rather than on a real ladder bug.
-    const live = ENGINES.filter((e) => !isRetired(e.id));
+    // The same reasoning covers engines shipped as plugins: they are
+    // installed but off by default, so the plan leaves them out until the
+    // user switches them on — asserting against the raw table would fail on
+    // that default state rather than on a ladder bug.
+    const live = ENGINES.filter(
+      (e) =>
+        !isRetired(e.id) &&
+        !PROVIDERS.find((p) => p.id === e.provider)?.plugins.some(
+          (plugin) => plugin.slug === e.modelId && !plugin.enabled,
+        ),
+    );
     expect(ids.length).toBe(live.length);
     expect(new Set(ids).size).toBe(live.length);
   });

@@ -53,7 +53,49 @@ export interface ProviderSpec {
   reasoningEffort: boolean;
   maxTokens: number;
   timeoutMs: number;
+  /**
+   * Model plugins this provider ships: installed and visible in the plugin
+   * list, but an entry with `enabled: false` is not routed in chat until the
+   * user switches it on. Empty for every provider that ships none.
+   */
+  plugins: PluginEntry[];
 }
+
+/**
+ * A model a provider offers as an installable plugin rather than as an
+ * always-on engine: present in the list, absent from chat until switched on.
+ * `slug` matches the gated engine's `modelId`.
+ */
+export interface PluginEntry {
+  /** The gated engine's `modelId`, e.g. `muse-light-1.0`. */
+  slug: string;
+  /** Short human title shown in the plugin list. */
+  title: string;
+  /** One line explaining when it is worth switching on. */
+  when: string;
+  /** Shipped state — `false` means installed but not used in chat. */
+  enabled: boolean;
+}
+
+/**
+ * The free Meta Model API engines, shipped as plugins: installed so they
+ * show up in the list, but off by default so the router never reaches them
+ * until the user opts in. A pinned engine still wins over the gate.
+ */
+export const FREE_META_MODELS: PluginEntry[] = [
+  {
+    slug: "muse-light-1.0",
+    title: "Muse Light 1.0",
+    when: "Fast answers at no cost — a cheap first step before a heavier model.",
+    enabled: false,
+  },
+  {
+    slug: "muse-small-1.0",
+    title: "Muse Small 1.0",
+    when: "Solid everyday tasks without a token bill.",
+    enabled: false,
+  },
+];
 
 export const PROVIDERS: ProviderSpec[] = [
   {
@@ -62,6 +104,7 @@ export const PROVIDERS: ProviderSpec[] = [
     url: "https://api.mistral.ai/v1/chat/completions",
     keyEnv: ["MISTRAL_API_KEY", "MISTRAL_KEY"],
     missing: "MISTRAL_API_KEY not configured",
+    plugins: [],
     imageUrlAsString: true,
     textOnly: false,
     reasoningEffort: false,
@@ -74,6 +117,7 @@ export const PROVIDERS: ProviderSpec[] = [
     url: "https://api.groq.com/openai/v1/chat/completions",
     keyEnv: ["GROQ_API_KEY"],
     missing: "GROQ_API_KEY not configured",
+    plugins: [],
     imageUrlAsString: false,
     textOnly: false,
     reasoningEffort: true,
@@ -86,6 +130,7 @@ export const PROVIDERS: ProviderSpec[] = [
     url: "https://api.edenai.run/v3/chat/completions",
     keyEnv: ["EDEN_AI_API_KEY", "EDENAI_API_KEY", "EDEN_API_KEY", "EDEN_AI_TOKEN"],
     missing: "EDEN_AI_API_KEY not configured",
+    plugins: [],
     imageUrlAsString: false,
     textOnly: false,
     reasoningEffort: false,
@@ -97,6 +142,7 @@ export const PROVIDERS: ProviderSpec[] = [
     url: "https://router.huggingface.co/v1/chat/completions",
     keyEnv: ["HUGGING_FACE_TOKEN"],
     missing: "HUGGING_FACE_TOKEN not configured",
+    plugins: [],
     imageUrlAsString: false,
     textOnly: true,
     reasoningEffort: false,
@@ -113,6 +159,7 @@ export const PROVIDERS: ProviderSpec[] = [
     url: "https://openrouter.ai/api/v1/chat/completions",
     keyEnv: ["OPENROUTER_API_KEY", "OPENROUTER_KEY"],
     missing: "OPENROUTER_API_KEY not configured",
+    plugins: [],
     imageUrlAsString: false,
     // Not text-only: Space Bunny Alpha takes native multimodal input, and the
     // router only sends it an image turn when it picked a vision engine.
@@ -133,6 +180,7 @@ export const PROVIDERS: ProviderSpec[] = [
     url: "https://ollama.com/v1/chat/completions",
     keyEnv: ["OLLAMA_API_KEY"],
     missing: "OLLAMA_API_KEY not configured",
+    plugins: [],
     imageUrlAsString: false,
     textOnly: false,
     // Ollama's OpenAI layer accepts the parameter but does not document it
@@ -158,6 +206,7 @@ export const PROVIDERS: ProviderSpec[] = [
     url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     keyEnv: ["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"],
     missing: "GEMINI_API_KEY not configured",
+    plugins: [],
     imageUrlAsString: false,
     textOnly: false,
     // Google's compatibility layer documents `max_tokens` but not the
@@ -180,6 +229,9 @@ export const PROVIDERS: ProviderSpec[] = [
     // give it when the platform's Keys tab does the naming. First one set wins.
     keyEnv: ["MODEL_API_KEY", "META_AI_API_KEY", "META_API_KEY"],
     missing: "MODEL_API_KEY not configured",
+    // The free Meta models ship installed-but-off: visible as plugins, not
+    // routed in chat until the user switches one on.
+    plugins: FREE_META_MODELS,
     imageUrlAsString: false,
     // Muse Spark and Muse Wonder both take image input, so vision turns are
     // translated rather than dropped.
@@ -818,6 +870,37 @@ export const ENGINES: EngineSpec[] = [
     context: 1_048_576,
     bestFor: "complex multi-step coding and long-horizon tasks",
   },
+
+  // --- Meta (Muse), free tier — installed as plugins, off in chat --------
+  // Declared here so the health strip, the engine list and a pin can see
+  // them, but rankEngines skips them until the matching entry in the
+  // provider's plugin list is switched on (see FREE_META_MODELS). Scores
+  // are indicative — these two have not been probed the way the paid pair
+  // above was.
+  {
+    id: "meta/muse-light-1.0",
+    provider: "meta",
+    modelId: "muse-light-1.0",
+    label: "Muse Light 1.0",
+    vision: false,
+    reasoning: false,
+    quality: 0.72,
+    speed: 0.88,
+    context: 131_072,
+    bestFor: "a free Meta answer once the plugin is switched on",
+  },
+  {
+    id: "meta/muse-small-1.0",
+    provider: "meta",
+    modelId: "muse-small-1.0",
+    label: "Muse Small 1.0",
+    vision: false,
+    reasoning: false,
+    quality: 0.66,
+    speed: 0.92,
+    context: 65_536,
+    bestFor: "solid everyday tasks at no cost, once enabled",
+  },
 ];
 
 /**
@@ -982,6 +1065,8 @@ export interface RouteRequest {
    * the user has the router switched on.
    */
   order?: "smart" | "stable";
+  /** Model plugins the user has switched on for chat (`PluginEntry.slug`). */
+  enabledPlugins?: string[];
 }
 
 /** Above this many characters, a big context window starts to matter. */
@@ -1008,6 +1093,20 @@ export function rankEngines(request: RouteRequest = {}): EnginePlan {
     if (wantImages && !engine.vision) continue;
 
     const provider = providerById(engine.provider);
+
+    // A model shipped as a plugin is installed but not routed until the
+    // user switches it on. A pin is an explicit request and wins over the
+    // gate, the same way it wins over the scores.
+    const gate = provider?.plugins.find((p) => p.slug === engine.modelId);
+    if (
+      gate &&
+      !gate.enabled &&
+      !(preferred && engine.id === preferred) &&
+      !(request.enabledPlugins ?? []).includes(gate.slug)
+    ) {
+      continue;
+    }
+
     const available = provider ? Boolean(providerKey(provider)) : false;
 
     let score = smart

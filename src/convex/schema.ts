@@ -75,6 +75,12 @@ const schema = defineSchema(
       /** `provider/model` the user pinned, which outranks the router. */
       pinnedEngineId: v.optional(v.string()),
       /**
+       * Model plugins the user switched ON for chat (`PluginEntry.slug`).
+       * Missing or empty = every installed plugin stays out of the router,
+       * which is the shipped default for the free Meta models.
+       */
+      enabledModelPlugins: v.optional(v.array(v.string())),
+      /**
        * After a reply, also answer with the best *different* engine on a new
        * branch. Off by default because it costs a second full generation.
        */

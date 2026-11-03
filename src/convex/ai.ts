@@ -939,12 +939,20 @@ async function routingFor(
 ): Promise<EnginePlan> {
   let order: "smart" | "stable" = "smart";
   let preferEngineId: string | null = null;
+  let enabledPlugins: string[] = [];
   try {
     const prefs = (await ctx.runQuery(internal.workspace.enginePrefs, {
       userId,
-    })) as { smartEngine: boolean; pinnedEngineId: string | null };
+    })) as {
+      smartEngine: boolean;
+      pinnedEngineId: string | null;
+      enabledModelPlugins: string[];
+    };
     order = prefs.smartEngine ? "smart" : "stable";
     preferEngineId = prefs.pinnedEngineId ?? null;
+    // Model plugins the account switched on; empty keeps installed-but-off
+    // plugins (the free Meta models) out of the chain.
+    enabledPlugins = prefs.enabledModelPlugins ?? [];
   } catch {
     // Keep the smart default; routing is a nicety, not a requirement.
   }
@@ -956,6 +964,7 @@ async function routingFor(
     preferEngineId,
     excludeEngineId: request.excludeEngineId ?? null,
     order,
+    enabledPlugins,
   });
 }
 
@@ -1559,6 +1568,8 @@ export const continueReply = action({
     history: v.optional(
       v.array(v.object({ role: v.string(), content: v.string() })),
     ),
+    /** Persona pinned to this chat, so a continuation keeps the same voice. */
+    personaId: v.optional(v.id("personas")),
   },
   handler: async (ctx, args): Promise<LlmResult> => {
     const userId = await getAuthUserId(ctx);
@@ -1583,7 +1594,7 @@ export const continueReply = action({
             `reach a natural ending.\n\n--- ANSWER SO FAR ---\n${existing}`,
         },
       ],
-      await systemPromptFor(ctx, userId),
+      await systemPromptFor(ctx, userId, args.personaId),
       "All models failed automatically.",
       // Reasoning first: carrying on mid-thought is exactly the task where a
       // model that plans before it writes beats one that does not.
@@ -1966,7 +1977,10 @@ export const deepResearch = action({
     return {
       answer: await runProviderChain(
         [...history, { role: "user", content: prompt }],
-        JARVIS_PROMPT,
+        // The same personalised system prompt every chat reply gets: house
+        // style, standing instructions, active persona and tone — a research
+        // answer is still the assistant answering, not a side channel.
+        await systemPromptFor(_ctx, userId),
         `Search succeeded (${sources.length} sources) but all AI models failed:`,
         plan,
       ),
@@ -2479,10 +2493,12 @@ URL: ${url}
 Page content:
 ${truncated}`;
 
-    return await runProviderChain([
-      ...history,
-      { role: "user", content: prompt },
-    ]);
+    return await runProviderChain(
+      [...history, { role: "user", content: prompt }],
+      // Personalised like any other reply — the summary is shown as an
+      // assistant message, so it should read in the same voice.
+      await systemPromptFor(_ctx, userId),
+    );
   },
 });
 

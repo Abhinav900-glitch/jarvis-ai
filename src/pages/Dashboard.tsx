@@ -2974,7 +2974,14 @@ export default function Dashboard() {
         const history = (messages ?? [])
           .slice(0, Math.max(0, (messages ?? []).findIndex((m) => m._id === messageId)))
           .map((m) => ({ role: m.role, content: m.content }));
-        await continueReplyAction({ messageId, existing, history });
+        await continueReplyAction({
+          messageId,
+          existing,
+          history,
+          // Same persona as the reply being continued, so carrying on does
+          // not silently drop the voice the chat was answering in.
+          ...(activePersonaId ? { personaId: activePersonaId } : {}),
+        });
       } catch (err) {
         toast.error(
           err instanceof Error ? err.message : "Could not continue that reply.",
@@ -2983,7 +2990,7 @@ export default function Dashboard() {
         setContinuing(false);
       }
     },
-    [continuing, messages, continueReplyAction],
+    [continuing, messages, continueReplyAction, activePersonaId],
   );
 
   /**

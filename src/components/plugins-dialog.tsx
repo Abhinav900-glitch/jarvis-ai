@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   Archive,
   Check,
+  Cpu,
   Download,
   FileText,
   Loader2,
@@ -100,6 +101,10 @@ export function PluginsDialog({
   const save = useMutation(api.plugins.save);
   const setEnabled = useMutation(api.plugins.setEnabled);
   const remove = useMutation(api.plugins.remove);
+  // Model plugins: engines a provider ships installed-but-off, switched
+  // per account so an enable here changes what the router may reach.
+  const modelPlugins = useQuery(api.plugins.modelPlugins, open ? {} : "skip");
+  const setModelPluginEnabled = useMutation(api.plugins.setModelPluginEnabled);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -142,6 +147,21 @@ export function PluginsDialog({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, onClose]);
+
+  const toggleModelPlugin = async (slug: string, next: boolean) => {
+    try {
+      await setModelPluginEnabled({ slug, enabled: next });
+      toast.success(
+        next
+          ? "Plugin switched on — the router can use it in chat."
+          : "Plugin switched off — installed, but not used in AI chat.",
+      );
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not switch that plugin.",
+      );
+    }
+  };
 
   const store = async (file: File) => {
     setError(null);
@@ -419,6 +439,69 @@ export function PluginsDialog({
                 </button>
               ) : null}
             </div>
+          </div>
+
+          {/* ---- model plugins ---- */}
+          <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-3">
+            <div className="flex items-center gap-1.5">
+              <Cpu className="size-3.5 text-primary" />
+              <span className="hud-label" data-tone="cyan">
+                AI model plugins
+              </span>
+              <span className="text-[10px] text-muted-foreground/60">
+                installed · {modelPlugins?.length ?? 0}
+              </span>
+            </div>
+            <p className="mt-1 text-[11px] leading-4 text-muted-foreground/70">
+              Engines a provider ships alongside its key. A switched-off
+              plugin stays installed but is never used in AI chat — flip it
+              on to let the router reach it.
+            </p>
+            <ul className="mt-2 space-y-1.5">
+              {!modelPlugins?.length ? (
+                <li className="py-3 text-center text-[11px] text-muted-foreground/70">
+                  No model plugins ship with this build.
+                </li>
+              ) : (
+                modelPlugins.map((plugin) => (
+                  <li
+                    key={plugin.slug}
+                    className="flex items-start gap-2 rounded-md border border-border/60 bg-background/50 px-2.5 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="truncate text-xs font-medium">
+                          {plugin.title}
+                        </span>
+                        <span className="rounded bg-muted px-1 py-px text-[9px] text-muted-foreground">
+                          {plugin.providerLabel}
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded px-1 py-px text-[9px] uppercase tracking-wide",
+                            plugin.enabled
+                              ? "bg-primary/15 text-primary"
+                              : "bg-muted text-muted-foreground",
+                          )}
+                        >
+                          {plugin.enabled ? "in chat" : "installed"}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                        {plugin.when}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={plugin.enabled}
+                      onCheckedChange={(checked) =>
+                        void toggleModelPlugin(plugin.slug, checked)
+                      }
+                      aria-label={`${plugin.enabled ? "Disable" : "Enable"} ${plugin.title} in AI chat`}
+                    />
+                  </li>
+                ))
+              )}
+            </ul>
           </div>
 
           {/* ---- drop zone ---- */}
