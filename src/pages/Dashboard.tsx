@@ -8,8 +8,7 @@
         addressAs: accountProfile?.profile?.addressAs ?? "",
         profession: accountProfile?.profile?.profession ?? "",
         language: accountProfile?.profile?.language ?? "",
-        concepts: (accountProfile?.profile?.concepts ?? []).join("
-"),
+        concepts: (accountProfile?.profile?.concepts ?? []).join("\n"),
       };
       await saveProfile(patch);
       toast.success("Profile saved — Jarvis now knows who it's talking to.");
