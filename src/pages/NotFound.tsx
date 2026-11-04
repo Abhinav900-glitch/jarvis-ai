@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { Link } from "react-router";
 import { ArrowLeft } from "lucide-react";
-import { JarvisIcon } from "@/components/jarvis-icon";
+import { JarvisMark } from "@/components/jarvis-logo";
 import { Button } from "@/components/ui/button";
 
 export default function NotFound() {
@@ -23,7 +23,7 @@ export default function NotFound() {
 
       <div className="flex flex-1 flex-col items-center justify-center px-6">
         <div className="hud-panel hud-corners relative flex size-20 items-center justify-center rounded-2xl">
-          <JarvisIcon className="size-9" animate />
+          <JarvisMark className="size-10" animate />
           <span className="hud-dot absolute -top-1 -right-1" data-tone="amber" />
         </div>
 

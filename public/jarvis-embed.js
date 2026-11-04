@@ -48,6 +48,20 @@
   var accentSoft = accent.length === 7 ? accent + "66" : accent;
   var frameUrl = origin + "/embed";
 
+  // The brand mark, inline. A host page loading this script should not need a
+  // second request (or the app's stylesheet) before the button looks right, so
+  // the ribbon is drawn here at a weight that survives an 18px button.
+  var MARK =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="18" height="18" aria-hidden="true" focusable="false">' +
+    '<defs><linearGradient id="jv-g" x1="150" y1="30" x2="50" y2="160" gradientUnits="userSpaceOnUse">' +
+    '<stop offset="0" stop-color="#63E6FF"/><stop offset=".27" stop-color="#3A8CFF"/>' +
+    '<stop offset=".5" stop-color="#7A5CFF"/><stop offset=".72" stop-color="#C94BF0"/>' +
+    '<stop offset=".89" stop-color="#FF5F9E"/><stop offset="1" stop-color="#FFA45E"/>' +
+    '</linearGradient></defs>' +
+    '<path d="M146 34L132 112C128 148 102 166 78 154C64 147 56 132 54 116" fill="none" stroke="url(#jv-g)" stroke-width="30"/>' +
+    '<path d="M176 22c1.6 8.1 3.6 11.3 12 13.4-8.4 2.1-10.4 5.3-12 13.4-1.6-8.1-3.6-11.3-12-13.4 8.4-2.1 10.4-5.3 12-13.4Z" fill="#F8FBFF"/>' +
+    '</svg>';
+
   var host = document.createElement("div");
   host.style.cssText =
     "all:initial;position:fixed;bottom:20px;z-index:2147483000;" +
@@ -62,8 +76,8 @@
     "color:#e6f6ff;font:600 13px/1 ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;",
     "cursor:pointer;box-shadow:0 10px 30px rgba(0,0,0,.45);transition:transform .15s ease,box-shadow .15s ease;}",
     ".jv-btn:hover{transform:translateY(-1px);box-shadow:0 14px 34px rgba(0,0,0,.5);}",
-    ".jv-dot{width:8px;height:8px;border-radius:50%;background:" + accent +
-      ";box-shadow:0 0 8px " + accent + ";}",
+    ".jv-mark{width:18px;height:18px;flex:none;display:block;}",
+    ".jv-mark svg{display:block;}",
     ".jv-card{position:absolute;bottom:58px;" +
       (position === "left" ? "left:0;" : "right:0;") +
       "width:min(420px,calc(100vw - 32px));height:min(680px,calc(100vh - 120px));",
@@ -81,9 +95,10 @@
   button.setAttribute("aria-expanded", "false");
   button.setAttribute("aria-label", label);
 
-  var dot = document.createElement("span");
-  dot.className = "jv-dot";
-  button.appendChild(dot);
+  var mark = document.createElement("span");
+  mark.className = "jv-mark";
+  mark.innerHTML = MARK;
+  button.appendChild(mark);
   button.appendChild(document.createTextNode(label));
 
   var card = document.createElement("div");

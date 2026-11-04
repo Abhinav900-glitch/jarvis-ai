@@ -1,5 +1,5 @@
 import { api } from "@/convex/_generated/api";
-import { JarvisIcon } from "@/components/jarvis-icon";
+import { JarvisMark } from "@/components/jarvis-logo";
 import { useAction } from "convex/react";
 import { Loader2, XCircle, CheckCircle2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -70,7 +70,7 @@ export default function CloudinaryCallback() {
       <div className="w-full max-w-sm rounded-xl border border-border/60 bg-card p-8 text-center">
         <div className="mx-auto flex size-12 items-center justify-center rounded-full border border-border/60 bg-background">
           {status === "working" && (
-            <JarvisIcon className="size-6 animate-pulse" />
+            <JarvisMark className="size-7" animate />
           )}
           {status === "success" && (
             <CheckCircle2 className="size-6 text-emerald-600" />

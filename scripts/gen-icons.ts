@@ -8,6 +8,8 @@
 //     bun run icons
 //
 // Outputs:
+//   public/icons/apple-touch-icon.png  — iOS home screen (180px; iOS ignores
+//                                         the manifest and SVG icons)
 //   public/icons/icon-192.png          — manifest, any purpose
 //   public/icons/icon-512.png          — manifest, any purpose
 //   public/icons/icon-maskable-512.png — manifest, maskable purpose: the mark
@@ -67,6 +69,7 @@ const foreground = `<?xml version="1.0" encoding="UTF-8"?>
 await mkdir(`${ROOT}public/icons`, { recursive: true });
 await mkdir(`${ROOT}resources`, { recursive: true });
 
+await render(logo, `${ROOT}public/icons/apple-touch-icon.png`, 180);
 await render(logo, `${ROOT}public/icons/icon-192.png`, 192);
 await render(logo, `${ROOT}public/icons/icon-512.png`, 512);
 await render(maskable, `${ROOT}public/icons/icon-maskable-512.png`, 512);

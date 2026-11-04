@@ -82,7 +82,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import type { GestureAction } from "@/lib/gesture-actions";
-import { JarvisOrb } from "@/components/jarvis-orb";
 import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
@@ -5717,8 +5716,12 @@ export default function Dashboard() {
                       would just be noise. */}
                   {sending && !streaming && (
                     <li className="flex items-center gap-2.5 py-1 text-sm text-muted-foreground">
-                      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-foreground">
-                        <JarvisOrb size={18} />
+                      {/* The mark works as its own activity light: the orbit
+                          turns and the spark twinkles while the reply is
+                          being decided, so "thinking" looks like Jarvis
+                          rather than like a generic spinner. */}
+                      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent">
+                        <JarvisMark animate className="size-[18px]" />
                       </span>
                       {deepResearch
                         ? "Searching the web, then thinking…"
