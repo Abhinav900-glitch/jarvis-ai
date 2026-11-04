@@ -168,6 +168,14 @@ import { cn } from "@/lib/utils";
 import { AnswerInspector } from "@/components/answer-inspector";
 import { PinnedPanel } from "@/components/pinned-panel";
 import { SlashMenu } from "@/components/slash-menu";
+import { McpMenu } from "@/components/mcp-menu";
+import {
+  dollarTokenAt,
+  filterMcpServers,
+  matchMcpMentions,
+  mcpSlug,
+  type McpMentionServer,
+} from "@/lib/mcp-mentions";
 import { BranchCompare, type CompareSide } from "@/components/branch-compare";
 import { ProviderHealth } from "@/components/provider-health";
 import { LiveTuning } from "@/components/live-tuning";
@@ -707,6 +715,25 @@ export default function Dashboard() {
     return trimmed;
   }, [input]);
   const slashOpen = slashToken.length > 0;
+  /**
+   * The `$token` being typed, when the caret sits inside one. Unlike a slash
+   * command a mention may appear anywhere in the message, because "summarise
+   * this $github repo" is a natural way to scope one integration per turn.
+   */
+  const [mcpIndex, setMcpIndex] = useState(0);
+  const [caret, setCaret] = useState(0);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const mcpToken = useMemo(() => dollarTokenAt(input, caret), [input, caret]);
+  const mcpServerRows = useQuery(api.mcpServers.list);
+  const mcpServers = useMemo(
+    () => (mcpServerRows ?? []) as McpMentionServer[],
+    [mcpServerRows],
+  );
+  const mcpOptions = useMemo(
+    () => (mcpToken ? filterMcpServers(mcpServers, mcpToken.token) : []),
+    [mcpToken, mcpServers],
+  );
+  const mcpOpen = composerFocused && mcpToken !== null;
   const [sending, setSending] = useState(false);
   const [deepResearch, setDeepResearch] = useState(false);
   // Composer mode chips — arm News/Analyze for the next send (Gemini-style)
@@ -2427,7 +2454,12 @@ export default function Dashboard() {
     overrideText?: string,
     overrideImages?: { url: string; publicId: string; messageId?: string }[],
   ) => {
-    const text = (overrideText ?? input).trim();
+    // `$server` mentions scope this turn to the servers the user named. They
+    // are stripped from the prompt — the model should read the request, not
+    // the routing syntax — and their ids travel alongside the action call.
+    const mentioned = matchMcpMentions((overrideText ?? input).trim(), mcpServers);
+    const text = mentioned.prompt;
+    const pinnedMcpServers = mentioned.serverIds;
 
     // Nothing is written until the key exists. The server refuses an
     // unencrypted turn anyway, so failing here is both the honest answer and
@@ -2795,6 +2827,7 @@ export default function Dashboard() {
             history,
             allVision && allVision.length > 0 ? allVision : undefined,
             runBranchId,
+            pinnedMcpServers,
           );
           answerText = extractFollowUps(answer.text);
           // The streamed text still carries the SUGGEST trailer — rewrite the
@@ -2823,6 +2856,7 @@ export default function Dashboard() {
             effectiveText,
             history,
             allVision && allVision.length > 0 ? allVision : undefined,
+            pinnedMcpServers,
           );
           answerText = extractFollowUps(answer.text);
           const msgId = await appendMessage({
@@ -2913,6 +2947,8 @@ export default function Dashboard() {
     history: { role: string; content: string }[],
     imageUrls?: string[],
     branchId?: Id<"chatBranches"> | null,
+    /** Servers pinned with `$name` — when empty, every reachable one is used. */
+    pinnedServers?: string[],
   ) => {
     const streamMsgId = await appendMessage({
       sessionId,
@@ -2930,6 +2966,9 @@ export default function Dashboard() {
         history,
         personaId: activePersonaId,
         ...(imageUrls && imageUrls.length > 0 ? { imageUrls } : {}),
+        ...(pinnedServers && pinnedServers.length > 0
+          ? { mcpServers: pinnedServers }
+          : {}),
         ...(live.active ? { task: "live" as const } : {}),
       });
     } catch (err) {
@@ -3041,12 +3080,16 @@ export default function Dashboard() {
     prompt: string,
     history: { role: string; content: string }[],
     imageUrls?: string[],
+    pinnedServers?: string[],
   ) => {
     return await askAction({
       prompt,
       history,
       imageUrls,
       personaId: activePersonaId,
+      ...(pinnedServers && pinnedServers.length > 0
+        ? { mcpServers: pinnedServers }
+        : {}),
       // Live voice trades a little depth for time to first word, so the router
       // is told to weight responsiveness here rather than guessing.
       ...(live.active ? { task: "live" as const } : {}),
@@ -3680,6 +3723,35 @@ export default function Dashboard() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // The `$` mention menu owns the keyboard while it is open, so choosing a
+    // server edits the text instead of sending a half-written message.
+    if (mcpOpen) {
+      if (e.key === "ArrowDown" && mcpOptions.length > 0) {
+        e.preventDefault();
+        setMcpIndex((i) => (i + 1) % mcpOptions.length);
+        return;
+      }
+      if (e.key === "ArrowUp" && mcpOptions.length > 0) {
+        e.preventDefault();
+        setMcpIndex((i) => (i - 1 + mcpOptions.length) % mcpOptions.length);
+        return;
+      }
+      if ((e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) && mcpOptions.length > 0) {
+        const picked = mcpOptions[Math.min(mcpIndex, mcpOptions.length - 1)];
+        if (picked) {
+          e.preventDefault();
+          applyMcpMention(picked);
+          return;
+        }
+      }
+      if (e.key === "Escape") {
+        // Blur closes the menu; the text the user typed is left untouched.
+        e.preventDefault();
+        inputRef.current?.blur();
+        return;
+      }
+    }
+
     // While the autocomplete is open, the arrow keys and Enter belong to it
     // rather than to the textarea: otherwise choosing a command with Enter
     // would also send whatever half-typed text is in the box.
@@ -3772,6 +3844,31 @@ export default function Dashboard() {
 
       void runSend();
     }
+  };
+
+  /**
+   * Turn the `$token` at the caret into a finished `$server` mention.
+   *
+   * Like a slash command this only rewrites text: the server is contacted when
+   * the message is sent, never while it is being typed.
+   */
+  const applyMcpMention = (server: McpMentionServer) => {
+    setMcpIndex(0);
+    const mention = `$${mcpSlug(server.name)}`;
+    if (!mcpToken) {
+      setInput(`${input}${input && !/\s$/.test(input) ? " " : ""}${mention} `);
+      return;
+    }
+    const before = input.slice(0, mcpToken.start);
+    const after = input.slice(mcpToken.start + mcpToken.token.length).replace(/^\s+/, "");
+    const next = `${before}${mention} ${after}`;
+    setInput(next);
+    const caretAt = before.length + mention.length + 1;
+    setCaret(caretAt);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(caretAt, caretAt);
+    });
   };
 
   /**
@@ -6107,15 +6204,30 @@ export default function Dashboard() {
                     onHover={setSlashIndex}
                     onSelect={applySlashCommand}
                   />
+                  <McpMenu
+                    open={mcpOpen}
+                    token={mcpToken?.token ?? ""}
+                    servers={mcpServers}
+                    options={mcpOptions}
+                    activeIndex={mcpIndex}
+                    onHover={setMcpIndex}
+                    onSelect={applyMcpMention}
+                    onManage={() => setShowMcp(true)}
+                  />
                   <textarea
                     ref={inputRef}
                     value={input}
                     onChange={(e) => {
                       setInput(e.target.value);
+                      setCaret(e.target.selectionStart ?? e.target.value.length);
                       // Any edit invalidates the highlighted row: keeping the
                       // old index would move the selection under the user.
                       setSlashIndex(0);
+                      setMcpIndex(0);
                     }}
+                    onFocus={() => setComposerFocused(true)}
+                    onBlur={() => setComposerFocused(false)}
+                    onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
                     onKeyDown={handleKeyDown}
                     placeholder={
                       recorder.recording
@@ -6124,7 +6236,7 @@ export default function Dashboard() {
                           ? "Edit your message and press Enter…"
                           : deepResearch
                             ? "Research anything on the live web…"
-                            : "Message Jarvis… or / for commands"
+                            : "Message Jarvis… / commands, $ MCP servers"
                     }
                     rows={1}
                     className="max-h-40 w-full resize-none bg-transparent pl-12 pr-32 py-3 text-sm outline-none placeholder:text-muted-foreground/70 sm:pr-48"

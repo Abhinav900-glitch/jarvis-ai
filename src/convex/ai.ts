@@ -786,6 +786,11 @@ export const ask = action({
     ),
     imageUrls: v.optional(v.array(v.string())),
     personaId: v.optional(v.id("personas")),
+    /**
+     * MCP servers pinned for this turn by a `$name` mention in the composer.
+     * Omitted means "every reachable server", which is the old behaviour.
+     */
+    mcpServers: v.optional(v.array(v.string())),
     /** Overrides the router's own guess about what this turn needs. */
     task: taskValidator,
   },
@@ -859,7 +864,9 @@ export const ask = action({
     // tool access as the streaming chat. Best-effort: if nothing is reachable,
     // runProviderChain runs without tools, exactly as before.
     try {
-      const mcp = await buildMcpToolSpecs(await mcpServersFor(ctx));
+      const mcp = await buildMcpToolSpecs(
+        await mcpServersFor(ctx, args.mcpServers),
+      );
       if (mcp.specs.length > 0) {
         return await runMcpToolRound({
           turns: [...history, { role: "user", content: userContent }],
@@ -1009,7 +1016,15 @@ interface McpBundle {
  * Every source is best-effort: an unconfigured or unreachable server is simply
  * absent rather than an error, so a flaky server never blocks a reply.
  */
-async function mcpServersFor(ctx: ActionCtx): Promise<McpServerConfig[]> {
+async function mcpServersFor(
+  ctx: ActionCtx,
+  /**
+   * Server ids (or prefixes) the turn pinned with a `$name` mention. When set,
+   * only those servers are reachable for this reply — that is the point of the
+   * mention: the user asked for one integration, not every connected one.
+   */
+  only?: string[],
+): Promise<McpServerConfig[]> {
   const servers: McpServerConfig[] = [];
 
   // --- 1. Canva (per-user OAuth) ---
@@ -1072,6 +1087,10 @@ async function mcpServersFor(ctx: ActionCtx): Promise<McpServerConfig[]> {
     // two sources — never fail a reply because of the registry.
   }
 
+  if (only && only.length > 0) {
+    const wanted = new Set(only);
+    return servers.filter((s) => wanted.has(s.id) || wanted.has(s.prefix));
+  }
   return servers;
 }
 
@@ -1281,6 +1300,11 @@ export const askStream = action({
     ),
     imageUrls: v.optional(v.array(v.string())),
     personaId: v.optional(v.id("personas")),
+    /**
+     * MCP servers pinned for this turn by a `$name` mention in the composer.
+     * Omitted means "every reachable server", which is the old behaviour.
+     */
+    mcpServers: v.optional(v.array(v.string())),
     /** Overrides the router's own guess about what this turn needs. */
     task: taskValidator,
   },
@@ -1345,7 +1369,9 @@ export const askStream = action({
     // reachable: with none connected this is a no-op and the streaming path
     // below runs exactly as it always has.
     try {
-      const mcp = await buildMcpToolSpecs(await mcpServersFor(ctx));
+      const mcp = await buildMcpToolSpecs(
+        await mcpServersFor(ctx, args.mcpServers),
+      );
       if (mcp.specs.length > 0) {
         return await runMcpChatLoop(ctx, args.messageId, {
           turns: [
