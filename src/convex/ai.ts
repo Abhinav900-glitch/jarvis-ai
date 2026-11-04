@@ -773,6 +773,48 @@ async function systemPromptFor(
   }
 }
 
+/** How much of one pinned skill is worth paying tokens for. */
+const MAX_PINNED_SKILL_CHARS = 8_000;
+/** Skills pinned to a single turn; more than this is a paste, not a request. */
+const MAX_PINNED_SKILLS = 4;
+
+/**
+ * The instructions of the skills an `@plugin/skill` mention pinned to a turn.
+ *
+ * A plugin is a zip of Markdown skills, so "running" one in chat means handing
+ * the model that skill's instructions for this reply. Read per turn rather than
+ * cached: the zip can be replaced, and a stale skill would be worse than a slow
+ * read. Best-effort throughout — a deleted zip or a bad path must not fail the
+ * answer.
+ */
+async function pluginSkillsBlock(
+  ctx: ActionCtx,
+  skills?: { pluginId: Id<"plugins">; skillName: string }[],
+): Promise<string> {
+  if (!skills || skills.length === 0) return "";
+
+  const blocks: string[] = [];
+  for (const skill of skills.slice(0, MAX_PINNED_SKILLS)) {
+    try {
+      const loaded = await ctx.runAction(api.plugins.applySkill, {
+        pluginId: skill.pluginId,
+        skillName: skill.skillName,
+      });
+      const text = loaded.text.trim().slice(0, MAX_PINNED_SKILL_CHARS);
+      if (text) blocks.push(`<skill name="${loaded.skillName}">\n${text}\n</skill>`);
+    } catch {
+      // The user may have removed the plugin since typing the mention.
+    }
+  }
+  if (blocks.length === 0) return "";
+
+  return [
+    "",
+    "The user pinned these plugin skills to this turn. Follow them where they apply; if one contradicts the request, say so instead of silently choosing.",
+    ...blocks,
+  ].join("\n");
+}
+
 export const ask = action({
   args: {
     prompt: v.string(),
@@ -791,6 +833,19 @@ export const ask = action({
      * Omitted means "every reachable server", which is the old behaviour.
      */
     mcpServers: v.optional(v.array(v.string())),
+    /**
+     * Plugin skills pinned by an `@plugin/skill` mention. Their text rides on
+     * the system prompt for this turn only — a skill is instructions, not a
+     * tool, so nothing is registered with the provider.
+     */
+    pluginSkills: v.optional(
+      v.array(
+        v.object({
+          pluginId: v.id("plugins"),
+          skillName: v.string(),
+        }),
+      ),
+    ),
     /** Overrides the router's own guess about what this turn needs. */
     task: taskValidator,
   },
@@ -845,13 +900,17 @@ export const ask = action({
     const userContent = buildUserContent(promptWithMemory, args.imageUrls);
     // The user's own words, before memory and RAG are mixed in, so the tone is
     // read from what they actually said rather than from recalled context.
-    const systemPrompt = await systemPromptFor(
+    let systemPrompt = await systemPromptFor(
       ctx,
       userId,
       args.personaId,
       args.mood ?? null,
       args.prompt,
     );
+    // `@plugin/skill` mentions apply to this reply only; the next turn starts
+    // from the user's normal instructions again.
+    const pinnedSkills = await pluginSkillsBlock(ctx, args.pluginSkills);
+    if (pinnedSkills) systemPrompt = `${systemPrompt}${pinnedSkills}`;
 
     const plan = await routingFor(ctx, userId, {
       task: args.task,
@@ -1305,6 +1364,19 @@ export const askStream = action({
      * Omitted means "every reachable server", which is the old behaviour.
      */
     mcpServers: v.optional(v.array(v.string())),
+    /**
+     * Plugin skills pinned by an `@plugin/skill` mention. Their text rides on
+     * the system prompt for this turn only — a skill is instructions, not a
+     * tool, so nothing is registered with the provider.
+     */
+    pluginSkills: v.optional(
+      v.array(
+        v.object({
+          pluginId: v.id("plugins"),
+          skillName: v.string(),
+        }),
+      ),
+    ),
     /** Overrides the router's own guess about what this turn needs. */
     task: taskValidator,
   },
@@ -1316,13 +1388,17 @@ export const askStream = action({
       .slice(-12)
       .map((t) => ({ role: t.role as ChatTurn["role"], content: t.content }));
 
-    const systemPrompt = await systemPromptFor(
+    let systemPrompt = await systemPromptFor(
       ctx,
       userId,
       args.personaId,
       args.mood ?? null,
       args.prompt,
     );
+    // `@plugin/skill` mentions apply to this reply only; the next turn starts
+    // from the user's normal instructions again.
+    const pinnedSkills = await pluginSkillsBlock(ctx, args.pluginSkills);
+    if (pinnedSkills) systemPrompt = `${systemPrompt}${pinnedSkills}`;
 
     // Same two context layers as `ask`: RAG history first, then long-term
     // memory on top of it.

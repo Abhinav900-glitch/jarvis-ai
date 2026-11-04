@@ -169,6 +169,15 @@ import { AnswerInspector } from "@/components/answer-inspector";
 import { PinnedPanel } from "@/components/pinned-panel";
 import { SlashMenu } from "@/components/slash-menu";
 import { McpMenu } from "@/components/mcp-menu";
+import { PluginMenu } from "@/components/plugin-menu";
+import {
+  atTokenAt,
+  filterPluginSkills,
+  matchPluginMentions,
+  pluginSkillEntries,
+  type PluginRow,
+  type PluginSkillEntry,
+} from "@/lib/plugin-mentions";
 import {
   dollarTokenAt,
   filterMcpServers,
@@ -734,6 +743,22 @@ export default function Dashboard() {
     [mcpToken, mcpServers],
   );
   const mcpOpen = composerFocused && mcpToken !== null;
+  /**
+   * The `@token` being typed, for plugin skills the same way `$` addresses MCP
+   * servers: naming one applies its instructions to this reply only.
+   */
+  const [pluginIndex, setPluginIndex] = useState(0);
+  const atToken = useMemo(() => atTokenAt(input, caret), [input, caret]);
+  const pluginRows = useQuery(api.plugins.list);
+  const pluginEntries = useMemo(
+    () => pluginSkillEntries((pluginRows ?? []) as unknown as PluginRow[]),
+    [pluginRows],
+  );
+  const pluginOptions = useMemo(
+    () => (atToken ? filterPluginSkills(pluginEntries, atToken.token) : []),
+    [atToken, pluginEntries],
+  );
+  const pluginOpen = composerFocused && atToken !== null;
   const [sending, setSending] = useState(false);
   const [deepResearch, setDeepResearch] = useState(false);
   // Composer mode chips — arm News/Analyze for the next send (Gemini-style)
@@ -2457,9 +2482,19 @@ export default function Dashboard() {
     // `$server` mentions scope this turn to the servers the user named. They
     // are stripped from the prompt — the model should read the request, not
     // the routing syntax — and their ids travel alongside the action call.
-    const mentioned = matchMcpMentions((overrideText ?? input).trim(), mcpServers);
+    const scoped = matchPluginMentions(
+      (overrideText ?? input).trim(),
+      pluginEntries,
+    );
+    const mentioned = matchMcpMentions(scoped.prompt, mcpServers);
     const text = mentioned.prompt;
     const pinnedMcpServers = mentioned.serverIds;
+    // The ids came from the plugin rows themselves, so they are already
+    // Convex ids; the parser only knows them as strings.
+    const pinnedSkillEntries = scoped.skills.map((skill) => ({
+      pluginId: skill.pluginId as Id<"plugins">,
+      skillName: skill.skillName,
+    }));
 
     // Nothing is written until the key exists. The server refuses an
     // unencrypted turn anyway, so failing here is both the honest answer and
@@ -2828,6 +2863,7 @@ export default function Dashboard() {
             allVision && allVision.length > 0 ? allVision : undefined,
             runBranchId,
             pinnedMcpServers,
+            pinnedSkillEntries,
           );
           answerText = extractFollowUps(answer.text);
           // The streamed text still carries the SUGGEST trailer — rewrite the
@@ -2857,6 +2893,7 @@ export default function Dashboard() {
             history,
             allVision && allVision.length > 0 ? allVision : undefined,
             pinnedMcpServers,
+            pinnedSkillEntries,
           );
           answerText = extractFollowUps(answer.text);
           const msgId = await appendMessage({
@@ -2949,6 +2986,8 @@ export default function Dashboard() {
     branchId?: Id<"chatBranches"> | null,
     /** Servers pinned with `$name` — when empty, every reachable one is used. */
     pinnedServers?: string[],
+    /** Plugin skills pinned with `@plugin/skill`, applied to this turn only. */
+    skillPins?: { pluginId: Id<"plugins">; skillName: string }[],
   ) => {
     const streamMsgId = await appendMessage({
       sessionId,
@@ -2969,6 +3008,7 @@ export default function Dashboard() {
         ...(pinnedServers && pinnedServers.length > 0
           ? { mcpServers: pinnedServers }
           : {}),
+        ...(skillPins && skillPins.length > 0 ? { pluginSkills: skillPins } : {}),
         ...(live.active ? { task: "live" as const } : {}),
       });
     } catch (err) {
@@ -3081,6 +3121,7 @@ export default function Dashboard() {
     history: { role: string; content: string }[],
     imageUrls?: string[],
     pinnedServers?: string[],
+    skillPins?: { pluginId: Id<"plugins">; skillName: string }[],
   ) => {
     return await askAction({
       prompt,
@@ -3090,6 +3131,7 @@ export default function Dashboard() {
       ...(pinnedServers && pinnedServers.length > 0
         ? { mcpServers: pinnedServers }
         : {}),
+      ...(skillPins && skillPins.length > 0 ? { pluginSkills: skillPins } : {}),
       // Live voice trades a little depth for time to first word, so the router
       // is told to weight responsiveness here rather than guessing.
       ...(live.active ? { task: "live" as const } : {}),
@@ -3723,6 +3765,39 @@ export default function Dashboard() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // The `@` menu behaves exactly like the `$` one: while it is open the
+    // arrows and Enter belong to it, so picking a skill cannot send a
+    // half-written message. Only one of the two can be open at a time, since a
+    // caret sits inside a single token.
+    if (pluginOpen) {
+      if (e.key === "ArrowDown" && pluginOptions.length > 0) {
+        e.preventDefault();
+        setPluginIndex((i) => (i + 1) % pluginOptions.length);
+        return;
+      }
+      if (e.key === "ArrowUp" && pluginOptions.length > 0) {
+        e.preventDefault();
+        setPluginIndex((i) => (i - 1 + pluginOptions.length) % pluginOptions.length);
+        return;
+      }
+      if (
+        (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) &&
+        pluginOptions.length > 0
+      ) {
+        const picked = pluginOptions[Math.min(pluginIndex, pluginOptions.length - 1)];
+        if (picked) {
+          e.preventDefault();
+          applyPluginMention(picked);
+          return;
+        }
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        inputRef.current?.blur();
+        return;
+      }
+    }
+
     // The `$` mention menu owns the keyboard while it is open, so choosing a
     // server edits the text instead of sending a half-written message.
     if (mcpOpen) {
@@ -3844,6 +3919,28 @@ export default function Dashboard() {
 
       void runSend();
     }
+  };
+
+  /**
+   * Turn the `@token` at the caret into a finished `@plugin/skill` mention.
+   * Text only, like the other two menus — the zip is opened on send.
+   */
+  const applyPluginMention = (entry: PluginSkillEntry) => {
+    setPluginIndex(0);
+    if (!atToken) {
+      setInput(`${input}${input && !/\s$/.test(input) ? " " : ""}${entry.token} `);
+      return;
+    }
+    const before = input.slice(0, atToken.start);
+    const after = input.slice(atToken.start + atToken.token.length).replace(/^\s+/, "");
+    const next = `${before}${entry.token} ${after}`;
+    setInput(next);
+    const caretAt = before.length + entry.token.length + 1;
+    setCaret(caretAt);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(caretAt, caretAt);
+    });
   };
 
   /**
@@ -6204,6 +6301,16 @@ export default function Dashboard() {
                     onHover={setSlashIndex}
                     onSelect={applySlashCommand}
                   />
+                  <PluginMenu
+                    open={pluginOpen}
+                    token={atToken?.token ?? ""}
+                    entries={pluginEntries}
+                    options={pluginOptions}
+                    activeIndex={pluginIndex}
+                    onHover={setPluginIndex}
+                    onSelect={applyPluginMention}
+                    onManage={() => setShowPlugins(true)}
+                  />
                   <McpMenu
                     open={mcpOpen}
                     token={mcpToken?.token ?? ""}
@@ -6224,6 +6331,7 @@ export default function Dashboard() {
                       // old index would move the selection under the user.
                       setSlashIndex(0);
                       setMcpIndex(0);
+                      setPluginIndex(0);
                     }}
                     onFocus={() => setComposerFocused(true)}
                     onBlur={() => setComposerFocused(false)}
@@ -6236,7 +6344,7 @@ export default function Dashboard() {
                           ? "Edit your message and press Enter…"
                           : deepResearch
                             ? "Research anything on the live web…"
-                            : "Message Jarvis… / commands, $ MCP servers"
+                            : "Message Jarvis… / commands, $ MCP, @ plugin skills"
                     }
                     rows={1}
                     className="max-h-40 w-full resize-none bg-transparent pl-12 pr-32 py-3 text-sm outline-none placeholder:text-muted-foreground/70 sm:pr-48"
