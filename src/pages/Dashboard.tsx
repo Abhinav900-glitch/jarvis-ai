@@ -36,6 +36,7 @@ import {
   Keyboard,
   Search,
   Puzzle,
+  AlertTriangle,
   Settings,
   Shapes,
   Square,
@@ -175,6 +176,8 @@ import {
   filterPluginSkills,
   matchPluginMentions,
   pluginSkillEntries,
+  removePluginMention,
+  scanPluginMentions,
   type PluginRow,
   type PluginSkillEntry,
 } from "@/lib/plugin-mentions";
@@ -183,6 +186,8 @@ import {
   filterMcpServers,
   matchMcpMentions,
   mcpSlug,
+  removeMcpMention,
+  scanMcpMentions,
   type McpMentionServer,
 } from "@/lib/mcp-mentions";
 import { BranchCompare, type CompareSide } from "@/components/branch-compare";
@@ -759,6 +764,31 @@ export default function Dashboard() {
     [atToken, pluginEntries],
   );
   const pluginOpen = composerFocused && atToken !== null;
+  /**
+   * What the draft actually resolves to, shown above the composer.
+   *
+   * Mentions are routing syntax, and routing that fails silently is the worst
+   * kind: the message sends, the reply arrives, and the tool was never there.
+   * So the composer names the servers and skills it will run, and flags the
+   * ones it cannot find while there is still time to fix them.
+   */
+  const draftMcpHits = useMemo(
+    () => scanMcpMentions(input, mcpServers),
+    [input, mcpServers],
+  );
+  const draftPluginHits = useMemo(
+    () => scanPluginMentions(input, pluginEntries),
+    [input, pluginEntries],
+  );
+  const unknownMcpMentions = draftMcpHits.filter((hit) => hit.server === null);
+  const unknownPluginMentions = draftPluginHits.filter((hit) => hit.entry === null);
+  const pinnedMcpDraft = draftMcpHits.filter((hit) => hit.server !== null);
+  const pinnedPluginDraft = draftPluginHits.filter((hit) => hit.entry !== null);
+  const hasDraftPins =
+    pinnedMcpDraft.length > 0 ||
+    pinnedPluginDraft.length > 0 ||
+    unknownMcpMentions.length > 0 ||
+    unknownPluginMentions.length > 0;
   const [sending, setSending] = useState(false);
   const [deepResearch, setDeepResearch] = useState(false);
   // Composer mode chips — arm News/Analyze for the next send (Gemini-style)
@@ -4042,6 +4072,12 @@ export default function Dashboard() {
       case "studio":
         setShowStudio(true);
         return;
+      case "mcp":
+        setShowMcp(true);
+        return;
+      case "plugins":
+        setShowPlugins(true);
+        return;
       case "new":
         setActiveId(null);
         return;
@@ -6294,6 +6330,79 @@ export default function Dashboard() {
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
+                  {/* What the draft will run: resolved mentions as chips, and
+                      the ones that name nothing as a warning, before sending. */}
+                  {hasDraftPins ? (
+                    <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3">
+                      {pinnedMcpDraft.map((hit, i) => (
+                        <span
+                          key={`mcp-${hit.token}-${i}`}
+                          className="inline-flex items-center gap-1 rounded-full border bg-accent/60 py-0.5 pl-2 pr-1 text-[11px]"
+                        >
+                          <Zap className="size-3 opacity-70" />
+                          <span className="font-mono">{hit.token}</span>
+                          {hit.server?.toolCount ? (
+                            <span className="text-muted-foreground">
+                              {hit.server.toolCount} tools
+                            </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => setInput(removeMcpMention(input, hit.token))}
+                            aria-label={`Remove ${hit.token}`}
+                            title="Remove this mention"
+                            className="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        </span>
+                      ))}
+                      {pinnedPluginDraft.map((hit, i) => (
+                        <span
+                          key={`skill-${hit.token}-${i}`}
+                          className="inline-flex items-center gap-1 rounded-full border bg-accent/60 py-0.5 pl-2 pr-1 text-[11px]"
+                        >
+                          <Puzzle className="size-3 opacity-70" />
+                          <span className="font-mono">{hit.token}</span>
+                          <button
+                            type="button"
+                            onClick={() => setInput(removePluginMention(input, hit.token))}
+                            aria-label={`Remove ${hit.token}`}
+                            title="Remove this mention"
+                            className="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        </span>
+                      ))}
+                      {unknownMcpMentions.map((hit, i) => (
+                        <button
+                          key={`unknown-mcp-${hit.token}-${i}`}
+                          type="button"
+                          onClick={() => setShowMcp(true)}
+                          title="No MCP server answers to this name — open Settings → MCP"
+                          className="inline-flex items-center gap-1 rounded-full border border-amber-500/45 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-700 dark:text-amber-400"
+                        >
+                          <AlertTriangle className="size-3" />
+                          <span className="font-mono">{hit.token}</span>
+                          no matching server
+                        </button>
+                      ))}
+                      {unknownPluginMentions.map((hit, i) => (
+                        <button
+                          key={`unknown-skill-${hit.token}-${i}`}
+                          type="button"
+                          onClick={() => setShowPlugins(true)}
+                          title="No stored plugin skill answers to this name — open Settings → Plugins"
+                          className="inline-flex items-center gap-1 rounded-full border border-amber-500/45 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-700 dark:text-amber-400"
+                        >
+                          <AlertTriangle className="size-3" />
+                          <span className="font-mono">{hit.token}</span>
+                          no matching skill
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <SlashMenu
                     open={slashOpen}
                     token={slashToken}

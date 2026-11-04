@@ -163,6 +163,20 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     summary: "Start a fresh conversation",
     example: "/new",
   },
+  {
+    name: "mcp",
+    aliases: ["servers"],
+    group: "Session",
+    summary: "MCP servers — add one, or test the connection",
+    example: "/mcp",
+  },
+  {
+    name: "plugins",
+    aliases: ["skills"],
+    group: "Session",
+    summary: "Plugin zips and the skills they carry",
+    example: "/plugins",
+  },
 ];
 
 export interface SlashMatch {

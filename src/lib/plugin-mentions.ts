@@ -151,6 +151,45 @@ export function filterPluginSkills(
     .map((s) => s.entry);
 }
 
+/** One `@token` written in a message, with the skill it names, if any. */
+export interface PluginMentionHit {
+  /** The token exactly as typed, e.g. `@brand-kit/tone`. */
+  token: string;
+  /** The skill it resolves to, or null when no stored skill answers to it. */
+  entry: PluginSkillEntry | null;
+}
+
+/**
+ * Every `@token` in the draft, resolved.
+ *
+ * The composer shows the resolved ones as chips and the rest as a warning: a
+ * mention of a plugin that has been removed is otherwise invisible until the
+ * reply comes back without the skill applied.
+ */
+export function scanPluginMentions(
+  text: string,
+  entries: PluginSkillEntry[],
+): PluginMentionHit[] {
+  const byToken = new Map(entries.map((e) => [e.token.toLowerCase(), e]));
+  const hits: PluginMentionHit[] = [];
+  for (const match of text.matchAll(/(^|\s)@([A-Za-z0-9_/-]+)/g)) {
+    const word = match[2] ?? "";
+    hits.push({
+      token: `@${word}`,
+      entry: byToken.get(`@${word.toLowerCase()}`) ?? null,
+    });
+  }
+  return hits;
+}
+
+/** Rewrite a draft with one `@token` mention taken out. */
+export function removePluginMention(text: string, token: string): string {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text
+    .replace(new RegExp(`(^|\\s)${escaped}(?![A-Za-z0-9_/-])\\s?`), "$1")
+    .trim();
+}
+
 /**
  * Pull `@plugin/skill` mentions out of a finished message.
  *

@@ -69,6 +69,54 @@ export function filterMcpServers(
     .map((s) => s.server);
 }
 
+/** One `$token` written in a message, with the server it names, if any. */
+export interface McpMentionHit {
+  /** The token exactly as typed, e.g. `$brand-kit`. */
+  token: string;
+  /** The server it resolves to, or null when no server answers to it. */
+  server: McpMentionServer | null;
+}
+
+/**
+ * Every `$token` in the draft, resolved.
+ *
+ * Used by the composer to show what will run before it runs: a chip for each
+ * server, and a warning for a token that names nothing. Without this the only
+ * signal that a mention did nothing was a reply that didn't use the tool.
+ */
+export function scanMcpMentions(
+  text: string,
+  servers: McpMentionServer[],
+): McpMentionHit[] {
+  const byKey = new Map<string, McpMentionServer>();
+  for (const server of servers) {
+    byKey.set(mcpSlug(server.name), server);
+    const prefix = (server.prefix ?? "").toLowerCase();
+    if (prefix) byKey.set(prefix, server);
+  }
+
+  const hits: McpMentionHit[] = [];
+  for (const match of text.matchAll(/(^|\s)\$([A-Za-z0-9_-]+)/g)) {
+    const word = match[2] ?? "";
+    // A price is not an attempt to reach a server; warning about `$5` would
+    // train the user to ignore the warnings that matter.
+    if (/^\d/.test(word)) continue;
+    hits.push({
+      token: `$${word}`,
+      server: byKey.get(word.toLowerCase()) ?? null,
+    });
+  }
+  return hits;
+}
+
+/** Rewrite a draft with one `$token` mention taken out. */
+export function removeMcpMention(text: string, token: string): string {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text
+    .replace(new RegExp(`(^|\\s)${escaped}(?![A-Za-z0-9_-])\\s?`), "$1")
+    .trim();
+}
+
 /**
  * Pull `$server` mentions out of a finished message.
  *
