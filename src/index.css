@@ -1417,3 +1417,87 @@ html[data-palette="ember"]:not(.dark) {
 .jarvis-hud-prose .md-body hr {
   border-color: rgba(34, 211, 238, 0.24);
 }
+
+/* --------------------------------------------------------------------------- */
+/* Jarvis mark (src/components/jarvis-logo.tsx)                               */
+/*                                                                            */
+/* Three loops, deliberately out of step so the mark never looks like one     */
+/* mechanical spin: the orbit is slow and constant, the spark blinks on its   */
+/* own beat, the ribbon only breathes. All of it is decoration, so it all     */
+/* stops under reduced-motion.                                               */
+/* --------------------------------------------------------------------------- */
+
+@keyframes jarvis-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes jarvis-twinkle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  45% { opacity: 0.55; transform: scale(0.82); }
+  70% { opacity: 0.95; transform: scale(1.06); }
+}
+
+@keyframes jarvis-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.88; }
+}
+
+/* Boot sequence: the ribbon snaps in, the ring draws itself, the wordmark
+   rises last. Used by the first-paint splash only. */
+@keyframes jarvis-boot-mark {
+  0% { opacity: 0; transform: scale(0.72) rotate(-8deg); filter: blur(6px); }
+  60% { opacity: 1; transform: scale(1.04) rotate(0deg); filter: blur(0); }
+  100% { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+
+@keyframes jarvis-boot-word {
+  0%, 35% { opacity: 0; transform: translateY(6px); letter-spacing: 0.42em; }
+  100% { opacity: 1; transform: translateY(0); letter-spacing: 0.18em; }
+}
+
+@keyframes jarvis-boot-bar {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+/* transform-box lets an SVG group rotate about a point in its own viewBox. */
+.jarvis-mark-orbit {
+  transform-box: view-box;
+  transform-origin: 100px 100px;
+  animation: jarvis-orbit 22s linear infinite;
+}
+
+.jarvis-mark-spark {
+  transform-box: view-box;
+  transform-origin: 170px 42px;
+  animation: jarvis-twinkle 3.8s ease-in-out infinite;
+}
+
+.jarvis-mark-ribbon {
+  animation: jarvis-breathe 7s ease-in-out infinite;
+}
+
+.jarvis-boot-mark {
+  animation: jarvis-boot-mark 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.jarvis-boot-word {
+  animation: jarvis-boot-word 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.jarvis-boot-bar {
+  transform-origin: left center;
+  animation: jarvis-boot-bar 1.5s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-boot-mark,
+  .jarvis-boot-word,
+  .jarvis-boot-bar,
+  .jarvis-mark-orbit,
+  .jarvis-mark-spark,
+  .jarvis-mark-ribbon {
+    animation: none !important;
+  }
+}

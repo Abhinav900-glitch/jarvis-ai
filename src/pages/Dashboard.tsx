@@ -67,7 +67,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { JarvisIcon } from "@/components/jarvis-icon";
+import { JarvisLogo, JarvisMark } from "@/components/jarvis-logo";
 import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud";
 import { ShortcutsDialog } from "@/components/shortcuts-dialog";
 import { ImageStudio } from "@/components/image-studio";
@@ -4441,7 +4441,7 @@ export default function Dashboard() {
         label: session.title,
         group: "Recent chats",
         keywords: session.projectId ? "project folder" : "",
-        icon: <JarvisIcon className="size-4" />,
+        icon: <JarvisMark className="size-4" />,
         run: () => setActiveId(session._id),
       })),
   ];
@@ -4457,10 +4457,7 @@ export default function Dashboard() {
         <aside className="hidden w-64 shrink-0 flex-col border-r bg-sidebar md:flex">
           <div className="flex items-center justify-between px-5 py-4">
             <Link to="/" className="flex items-center gap-2.5">
-              <JarvisIcon className="size-5" />
-              <span className="text-sm font-semibold tracking-tight">
-                JARVIS
-              </span>
+              <JarvisLogo />
             </Link>
             <Button
               variant="ghost"
@@ -4514,10 +4511,7 @@ export default function Dashboard() {
                     to="/"
                     className="flex items-center gap-2.5"
                   >
-                    <JarvisIcon className="size-5" />
-                    <span className="text-sm font-semibold tracking-tight">
-                      JARVIS
-                    </span>
+                    <JarvisLogo />
                   </Link>
                   <button
                     onClick={() => setSidebarOpen(false)}
@@ -4577,7 +4571,7 @@ export default function Dashboard() {
                 <Menu className="size-4" />
               </button>
               <div className="hidden items-center gap-2 md:flex">
-                <JarvisIcon className="size-4 text-muted-foreground" />
+                <JarvisMark className="size-4" />
                 <Separator orientation="vertical" className="h-4" />
               </div>
               <span className="min-w-0 max-w-[38vw] truncate text-sm text-muted-foreground sm:max-w-[20rem]">
@@ -5099,7 +5093,7 @@ export default function Dashboard() {
                         "radial-gradient(circle, color-mix(in oklab, var(--signal-cyan) 35%, transparent), transparent 70%)",
                     }}
                   />
-                  <JarvisOrb size={72} />
+                  <JarvisMark animate className="size-16" />
                 </div>
                 <p className="hud-label hud-label-cyan mt-7">Core online</p>
                 <h1 className="mt-3 text-2xl font-semibold tracking-tight">
@@ -5211,7 +5205,7 @@ export default function Dashboard() {
                       <div className="flex items-center gap-2.5">
                         {m.role === "assistant" ? (
                           <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary ring-1 ring-primary/30">
-                            <JarvisIcon className="size-3.5" />
+                            <JarvisMark className="size-3.5" />
                           </div>
                         ) : (
                           <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent text-[10px] font-medium text-muted-foreground ring-1 ring-border">

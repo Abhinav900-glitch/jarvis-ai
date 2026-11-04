@@ -23,6 +23,7 @@ import {
   Server,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { JarvisLogo } from "@/components/jarvis-logo";
 import { AUTHOR } from "@/lib/languages";
 
 const fadeUp = {
@@ -33,25 +34,7 @@ const fadeUp = {
 };
 
 function Wordmark({ className = "" }: { className?: string }) {
-  return (
-    <span className={`flex items-center gap-2.5 ${className}`}>
-      <svg
-        className="size-5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        aria-hidden
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5M9.5 9.5h5v5h-5z"
-        />
-      </svg>
-      <span className="text-sm font-semibold tracking-[0.22em]">JARVIS</span>
-    </span>
-  );
+  return <JarvisLogo className={className} />;
 }
 
 const stacks = [

@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/input-otp";
 
 import { useAuth } from "@/hooks/use-auth";
-import { JarvisIcon } from "@/components/jarvis-icon";
+import { JarvisLogo, JarvisMark } from "@/components/jarvis-logo";
 import { ArrowLeft, ArrowRight, Loader2, Mail, UserX } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
@@ -116,8 +116,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
           never a dead end: home and terms are both one tap away. */}
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 sm:px-6">
         <Link to="/" className="flex items-center gap-2.5">
-          <span className="size-1.5 rounded-full bg-primary shadow-[0_0_8px_var(--signal-cyan)]" />
-          <span className="text-sm font-semibold tracking-[0.22em]">JARVIS</span>
+          <JarvisLogo />
         </Link>
         <nav className="flex items-center gap-1">
           <Link
@@ -156,7 +155,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       }}
                       className="hud-panel hud-corners mb-4 mt-4 flex size-16 cursor-pointer items-center justify-center rounded-2xl"
                     >
-                      <JarvisIcon className="size-8" animate />
+                      <JarvisMark className="size-9" animate />
                       <span className="hud-dot absolute -top-1 -right-1" data-tone="cyan" />
                     </div>
                   </div>

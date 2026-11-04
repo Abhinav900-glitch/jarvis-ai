@@ -1,6 +1,8 @@
 import '@vly-ai/integrations';
 import { Toaster } from "@/components/ui/sonner";
 import { RequireAuth } from "@/components/RequireAuth";
+import { BootSplash } from "@/components/boot-splash";
+import { JarvisMark } from "@/components/jarvis-logo";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import { applyStoredPalette } from "./hooks/use-palette";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
@@ -32,11 +34,15 @@ const Terms = lazy(() => import("./pages/Terms.tsx"));
 const Resources = lazy(() => import("./pages/Resources.tsx"));
 const Embed = lazy(() => import("./pages/Embed.tsx"));
 
-// Simple loading fallback for route transitions
+// Route transitions get the same mark as the boot screen rather than a text
+// "Loading..." — the first thing a user sees should already be the brand.
 function RouteLoading() {
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="animate-pulse text-muted-foreground">Loading...</div>
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background">
+      <JarvisMark animate className="size-14" />
+      <span className="animate-pulse text-[11px] font-medium uppercase tracking-[0.3em] text-muted-foreground">
+        Loading
+      </span>
     </div>
   );
 }
@@ -134,6 +140,7 @@ createRoot(document.getElementById("root")!).render(
       <ConvexAuthProvider client={convex}>
         <BrowserRouter>
           <RouteSyncer />
+          <BootSplash />
           <Suspense fallback={<RouteLoading />}>
             <Routes>
               <Route path="/" element={<Landing />} />
