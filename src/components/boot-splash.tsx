@@ -64,7 +64,7 @@ export function BootSplash() {
         }}
       />
 
-      <div className="jarvis-boot-mark relative">
+      <div className="relative">
         <div
           aria-hidden
           className="absolute inset-0 rounded-full blur-3xl"
@@ -73,7 +73,14 @@ export function BootSplash() {
               "radial-gradient(circle, rgba(99,230,255,0.30), rgba(122,92,255,0.16) 55%, transparent 72%)",
           }}
         />
-        <JarvisMark animate className="relative size-32 sm:size-36" glow={false} />
+        {/* The J draws itself, the ring sweeps in behind it, the spark lands
+            last — the mark assembles rather than just fading up. */}
+        <JarvisMark
+          animate
+          drawIn
+          className="relative size-32 sm:size-36"
+          glow={false}
+        />
       </div>
 
       <p className="jarvis-boot-word mt-8 text-lg font-semibold text-white/90">

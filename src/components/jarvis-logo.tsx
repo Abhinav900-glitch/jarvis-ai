@@ -6,11 +6,17 @@ interface JarvisMarkProps {
   animate?: boolean;
   /** Soft colour bloom behind the glyph. */
   glow?: boolean;
+  /** Draw the ribbon, then sweep the ring in — for the boot screen. */
+  drawIn?: boolean;
 }
 
 /**
- * The Jarvis mark: a gradient ribbon "S" wrapped by a tilted orbit ring with a
- * four-point spark at its apex.
+ * The Jarvis mark: a gradient ribbon "J" — leaning, with a deep hook — wrapped
+ * by a tilted orbit ring with a four-point spark at its apex.
+ *
+ * The letterform is the point: the mark is the first letter of the name, so it
+ * reads as a monogram before it reads as a shape, and the italic lean plus the
+ * ring make it look like it is moving rather than sitting flat.
  *
  * Drawn as SVG rather than shipped as a PNG so one source renders correctly at
  * 16px in a tab and 140px on the boot screen, and so the parts can move
@@ -25,6 +31,7 @@ export function JarvisMark({
   className,
   animate = false,
   glow = true,
+  drawIn = false,
 }: JarvisMarkProps) {
   const uid = useId().replace(/:/g, "");
   const ribbonId = `jarvis-ribbon-${uid}`;
@@ -32,10 +39,14 @@ export function JarvisMark({
   const bloomId = `jarvis-bloom-${uid}`;
 
   // Classes rather than inline styles so the reduced-motion media query can
-  // switch all three loops off in one place.
-  const orbit = animate ? "jarvis-mark-orbit" : undefined;
-  const spark = animate ? "jarvis-mark-spark" : undefined;
-  const ribbon = animate ? "jarvis-mark-ribbon" : undefined;
+  // switch all three loops off in one place. The idle loops are suppressed
+  // while the mark is drawing itself in: both animations would write the same
+  // transform on the spark, and the boot screen is over before an idle loop
+  // would be visible anyway.
+  const idle = animate && !drawIn;
+  const orbit = idle ? "jarvis-mark-orbit" : undefined;
+  const spark = idle ? "jarvis-mark-spark" : undefined;
+  const ribbon = idle ? "jarvis-mark-ribbon" : undefined;
 
   return (
     <svg
@@ -50,10 +61,10 @@ export function JarvisMark({
             amber the mark ends on at the lower left. */}
         <linearGradient
           id={ribbonId}
-          x1="140"
-          y1="34"
-          x2="52"
-          y2="164"
+          x1="150"
+          y1="30"
+          x2="50"
+          y2="160"
           gradientUnits="userSpaceOnUse"
         >
           <stop offset="0%" stopColor="#63E6FF" />
@@ -96,18 +107,24 @@ export function JarvisMark({
           stroke={`url(#${ringId})`}
           strokeWidth="1.8"
           opacity="0.45"
+          pathLength={drawIn ? 100 : undefined}
+          className={drawIn ? "jarvis-draw-ring" : undefined}
         />
       </g>
 
-      {/* The ribbon S. Stroked rather than filled: one path carries the whole
-          gradient along the glyph's spine. */}
+      {/* The ribbon J. Stroked rather than filled: one path carries the whole
+          gradient along the glyph's spine — cyan down the stem, pink and amber
+          through the hook. */}
       <path
-        d="M132 46C106 32 70 42 70 72c0 30 62 26 62 58s-34 42-72 27"
+        d="M146 34L132 112C128 148 102 166 78 154C64 147 56 132 54 116"
         stroke={`url(#${ribbonId})`}
         strokeWidth="26"
         strokeLinecap="butt"
         strokeLinejoin="round"
-        className={ribbon}
+        pathLength={drawIn ? 100 : undefined}
+        className={[ribbon, drawIn ? "jarvis-draw-glyph" : ""]
+          .filter(Boolean)
+          .join(" ")}
       />
 
       <g className={orbit}>
@@ -118,14 +135,18 @@ export function JarvisMark({
           stroke={`url(#${ringId})`}
           strokeWidth="2.4"
           strokeLinecap="round"
+          pathLength={drawIn ? 100 : undefined}
+          className={drawIn ? "jarvis-draw-ring-front" : undefined}
         />
       </g>
 
-      {/* Four-point spark, clear of the ribbon's top end. */}
+      {/* Four-point spark, clear of the stem's top end. */}
       <path
-        d="M170 29c1.7 8.8 3.9 12.2 13 14.5-9.1 2.3-11.3 5.7-13 14.5-1.7-8.8-3.9-12.2-13-14.5 9.1-2.3 11.3-5.7 13-14.5Z"
+        d="M176 22c1.6 8.1 3.6 11.3 12 13.4-8.4 2.1-10.4 5.3-12 13.4-1.6-8.1-3.6-11.3-12-13.4 8.4-2.1 10.4-5.3 12-13.4Z"
         fill="#F8FBFF"
-        className={spark}
+        className={[spark, drawIn ? "jarvis-draw-spark" : ""]
+          .filter(Boolean)
+          .join(" ")}
       />
       <circle cx="186" cy="92" r="1.6" fill="#BFE9FF" opacity="0.85" />
     </svg>
