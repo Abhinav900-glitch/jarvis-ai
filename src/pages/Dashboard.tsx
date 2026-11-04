@@ -930,6 +930,22 @@ export default function Dashboard() {
     bytes: number;
   } | null>(null);
   const [skillCopied, setSkillCopied] = useState(false);
+  /**
+   * The plugin skill applied to this chat.
+   *
+   * Opening a skill used to only show its text in the code panel, so asking a
+   * question afterwards was answered in Jarvis's own voice — the skill was
+   * never given to the model. A skill chosen here is now pinned for every
+   * message in the conversation until it is removed, which is what "use this
+   * writing skill" was always meant to do. It works for any skill in any
+   * plugin, since the text is read from that skill's file at send time.
+   */
+  const [activeSkill, setActiveSkill] = useState<{
+    pluginId: Id<"plugins">;
+    skillName: string;
+    label: string;
+    pluginName: string;
+  } | null>(null);
 
   // Writing-skill load state: which stored skill the runner is pulling in.
   const [loadingSkill, setLoadingSkill] = useState<{
@@ -1310,12 +1326,30 @@ export default function Dashboard() {
             text: result.text,
             bytes: result.text.length,
           });
+          // Apply it, not just display it: the reply after this has to follow
+          // the skill, otherwise "open" is a preview of something the chat
+          // never uses.
+          const base = result.skillName.split("/").pop() ?? result.skillName;
+          setActiveSkill({
+            pluginId,
+            skillName: result.skillName,
+            label: base.replace(/\.md$/i, ""),
+            pluginName:
+              (pluginRows ?? []).find((row) => row._id === pluginId)?.name ??
+              "Plugin",
+          });
+          setShowPlugins(false);
+          toast.success("Skill applied to this chat", {
+            description: "Every reply now follows it until you remove it.",
+          });
         }
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not open that skill.");
       } finally {
         setLoadingSkill(null);
       }
     },
-    [runOpenSkill, insertSkill],
+    [runOpenSkill, insertSkill, pluginRows, setShowPlugins],
   );
 
   const [showLivePanel, setShowLivePanel] = useState(false);
@@ -2525,6 +2559,21 @@ export default function Dashboard() {
       pluginId: skill.pluginId as Id<"plugins">,
       skillName: skill.skillName,
     }));
+    // A skill applied from the Plugins dialog rides on every message in this
+    // chat, not only on the one whose text mentions it.
+    if (
+      activeSkill &&
+      !pinnedSkillEntries.some(
+        (skill) =>
+          skill.pluginId === activeSkill.pluginId &&
+          skill.skillName === activeSkill.skillName,
+      )
+    ) {
+      pinnedSkillEntries.unshift({
+        pluginId: activeSkill.pluginId,
+        skillName: activeSkill.skillName,
+      });
+    }
 
     // Nothing is written until the key exists. The server refuses an
     // unencrypted turn anyway, so failing here is both the honest answer and
@@ -4080,6 +4129,8 @@ export default function Dashboard() {
         return;
       case "new":
         setActiveId(null);
+        // A fresh conversation starts from the user's own instructions again.
+        setActiveSkill(null);
         return;
       default:
         // /image, /plot and /solve never reach here: the block above owns the
@@ -6332,8 +6383,29 @@ export default function Dashboard() {
                   </div>
                   {/* What the draft will run: resolved mentions as chips, and
                       the ones that name nothing as a warning, before sending. */}
-                  {hasDraftPins ? (
+                  {hasDraftPins || activeSkill ? (
                     <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3">
+                      {activeSkill ? (
+                        <span
+                          title="Every reply in this chat follows this skill until you remove it"
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 py-0.5 pl-2 pr-1 text-[11px]"
+                        >
+                          <Puzzle className="size-3 opacity-80" />
+                          <span className="font-medium">{activeSkill.label}</span>
+                          <span className="text-muted-foreground">
+                            {activeSkill.pluginName}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setActiveSkill(null)}
+                            aria-label={`Stop using ${activeSkill.label}`}
+                            title="Stop applying this skill"
+                            className="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        </span>
+                      ) : null}
                       {pinnedMcpDraft.map((hit, i) => (
                         <span
                           key={`mcp-${hit.token}-${i}`}
