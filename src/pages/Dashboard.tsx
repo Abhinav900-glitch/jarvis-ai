@@ -60,6 +60,7 @@ import {
   Pin,
   Sparkles,
   Bot,
+  Type,
   Gauge,
   BookOpen,
   ThumbsUp,
@@ -105,6 +106,13 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { PALETTES, usePalette } from "@/hooks/use-palette";
+import { draftKeyFor, loadDraft, saveDraft } from "@/lib/chat-drafts";
+import { memoryExcerpt } from "@/lib/remember";
+import {
+  READING_FONTS,
+  READING_SIZES,
+  useReadingType,
+} from "@/hooks/use-reading-type";
 import { useVoicePlayer, useVoiceRecorder } from "@/hooks/use-voice";
 import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
@@ -744,6 +752,28 @@ export default function Dashboard() {
   const canvaStatus = useQuery(api.canvaOAuth.getStatus);
 
   const [input, setInput] = useState("");
+
+  // ---- Draft autosave ----
+  //
+  // Every conversation keeps its own draft, so switching chats, closing the tab
+  // or following a citation into the PDF does not throw away half a thought.
+  // Restored once per conversation on switch; written on a short debounce,
+  // because a storage write per keystroke is pure waste.
+  const draftKey = draftKeyFor(activeId);
+  // Adjusting state during render, not in an effect: React's own pattern for
+  // "the input belongs to a different conversation now". An effect would paint
+  // the previous chat's text first, then swap it.
+  const [draftOwner, setDraftOwner] = useState(draftKey);
+  if (draftOwner !== draftKey) {
+    setDraftOwner(draftKey);
+    setInput(loadDraft(draftKey));
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => saveDraft(draftKey, input), 400);
+    return () => window.clearTimeout(timer);
+  }, [draftKey, input]);
+
   /**
    * The `/token` being typed, when the whole message so far is a command.
    *
@@ -986,6 +1016,14 @@ export default function Dashboard() {
     }
   });
   const { palette, setPalette } = usePalette();
+  // How the transcript is set: a reading preference, kept separate from the
+  // console's palette so changing the skin never changes the prose.
+  const {
+    font: readingFont,
+    size: readingSize,
+    setFont: setReadingFont,
+    setSize: setReadingSize,
+  } = useReadingType();
   const [pdfBusy, setPdfBusy] = useState(false);
   // --- Feature panels: memory, export, camera, live translation ---
   const [showMemory, setShowMemory] = useState(false);
@@ -1374,6 +1412,33 @@ export default function Dashboard() {
   // A verdict is a plain field on the reply — no encryption obligation, since
   // "good/bad" carries no content — so this one writes directly.
   const giveFeedback = useMutation(api.chats.setMessageFeedback);
+  const rememberFact = useAction(api.memory.remember);
+
+  /**
+   * Keep one reply as a durable fact.
+   *
+   * The point is the shortcut: the alternative is opening the Memory panel and
+   * retyping the sentence you just read. Markdown is stripped first — what is
+   * stored should be the claim, not the syntax it arrived in — and the server
+   * caps the length at 280 characters.
+   */
+  const rememberMessage = async (content: string) => {
+    const plain = memoryExcerpt(content);
+    if (!plain) {
+      toast.error("Nothing in that reply to remember.");
+      return;
+    }
+    try {
+      await rememberFact({ content: plain, kind: "note" });
+      toast.success("Saved to memory", {
+        description: "Jarvis will recall this in later conversations.",
+      });
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not save that to memory.",
+      );
+    }
+  };
   const setAlternative = useMutation(api.chats.setAlternative);
   const appendToBranch = useMutation(api.branches.appendToBranch);
   const convex = useConvex();
@@ -4903,6 +4968,67 @@ export default function Dashboard() {
                     {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
                     {isDark ? "Light mode" : "Dark mode"}
                   </DropdownMenuItem>
+                  {/* Reading type — the prose only, not the console skin. */}
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Type className="size-4" />
+                      Reading
+                      <span className="ml-auto mr-1 text-[10px] opacity-60">
+                        {READING_FONTS.find((f) => f.id === readingFont)?.label}
+                        {readingSize === "m"
+                          ? ""
+                          : ` · ${READING_SIZES.find((s) => s.id === readingSize)?.label}`}
+                      </span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="w-60">
+                      <DropdownMenuLabel className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                        Typeface
+                      </DropdownMenuLabel>
+                      {READING_FONTS.map((option) => (
+                        <DropdownMenuItem
+                          key={option.id}
+                          onClick={() => setReadingFont(option.id)}
+                        >
+                          <span
+                            aria-hidden
+                            className="w-5 shrink-0 text-center text-sm leading-none"
+                            style={{ fontFamily: option.id === "serif" ? "Cambria, Georgia, serif" : undefined }}
+                          >
+                            Aa
+                          </span>
+                          <span className="flex flex-col">
+                            <span>{option.name}</span>
+                            <span className="text-[10px] leading-3 text-muted-foreground">
+                              {option.hint}
+                            </span>
+                          </span>
+                          {readingFont === option.id ? (
+                            <Check className="ml-auto size-4 text-primary" />
+                          ) : null}
+                        </DropdownMenuItem>
+                      ))}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                        Size
+                      </DropdownMenuLabel>
+                      {READING_SIZES.map((option) => (
+                        <DropdownMenuItem
+                          key={option.id}
+                          onClick={() => setReadingSize(option.id)}
+                        >
+                          <span className="flex flex-col">
+                            <span>{option.name}</span>
+                            <span className="text-[10px] leading-3 text-muted-foreground">
+                              {option.hint}
+                            </span>
+                          </span>
+                          {readingSize === option.id ? (
+                            <Check className="ml-auto size-4 text-primary" />
+                          ) : null}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
                       <Shapes className="size-4" />
@@ -5153,7 +5279,12 @@ export default function Dashboard() {
           )}
 
           {/* ---- Messages ---- */}
-          <div ref={scrollRef} className="flex-1 overflow-y-auto">
+          <div
+            ref={scrollRef}
+            data-chat-font={readingFont}
+            data-chat-size={readingSize}
+            className="flex-1 overflow-y-auto"
+          >
             {!messages || messages.length === 0 ? (
               <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col items-center justify-center px-4 py-8 sm:px-6">
                 <div className="hud-panel hud-corners relative flex size-20 items-center justify-center rounded-full">
@@ -5320,6 +5451,15 @@ export default function Dashboard() {
                             <Copy className="size-3" />
                           )}
                         </button>
+                        {m.role === "assistant" ? (
+                          <button
+                            onClick={() => void rememberMessage(m.content)}
+                            title="Remember this — keep it in long-term memory"
+                            className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                          >
+                            <Brain className="size-3" />
+                          </button>
+                        ) : null}
                         {m.role === "assistant" && activeId ? (
                           <button
                             onClick={() =>

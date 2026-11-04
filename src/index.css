@@ -276,6 +276,41 @@ html[data-palette="ember"]:not(.dark) {
   overflow-wrap: break-word;
 }
 
+/* ---------------------------------------------------------------------------
+   Reading type for the transcript.
+
+   Set by the Reading menu and carried on the transcript container, so only the
+   prose changes: the console chrome, the composer and code blocks keep their
+   own faces. Cambria leads the serif stack because it was cut for screens and
+   holds up at these sizes; Times is the last resort, not the first choice.
+   --------------------------------------------------------------------------- */
+
+[data-chat-font="serif"] .md-body {
+  font-family: Cambria, Georgia, "Times New Roman", Times, serif;
+}
+
+[data-chat-font="mono"] .md-body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Relative, not absolute: the default size is set by the transcript's own
+   layout, and this control should scale around it rather than redefine it. */
+[data-chat-size="s"] .md-body {
+  font-size: 0.93em;
+}
+
+[data-chat-size="l"] .md-body {
+  font-size: 1.08em;
+}
+
+/* Headings scale with the reading size rather than staying fixed, or a large
+   body with small headings stops reading as hierarchy. */
+[data-chat-font="serif"] .md-body h1,
+[data-chat-font="serif"] .md-body h2,
+[data-chat-font="serif"] .md-body h3 {
+  letter-spacing: 0;
+}
+
 .md-body > :first-child {
   margin-top: 0;
 }
