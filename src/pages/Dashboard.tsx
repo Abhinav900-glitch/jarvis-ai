@@ -703,6 +703,7 @@ export default function Dashboard() {
   // before, but the text is sealed before it reaches the network.
   const startWithMessage = useStartWithMessage();
   const appendMessage = useAppendMessage();
+  const startAgentRun = useAction(api.agent.start);
   const askAction = useAction(api.ai.ask);
   const askStreamAction = useAction(api.ai.askStream);
   const deepResearchAction = useAction(api.ai.deepResearch);
@@ -843,6 +844,13 @@ export default function Dashboard() {
       return "balanced";
     }
   });
+  /**
+   * Agent mode: the next send is handed to the agent runner as a goal instead
+   * of being answered as a chat turn. Deliberately not persisted — a mode that
+   * silently redirects where messages go should be re-chosen, not remembered
+   * from a session the user has forgotten about.
+   */
+  const [agentMode, setAgentMode] = useState(false);
   useEffect(() => {
     try {
       localStorage.setItem("jarvis-effort", effort);
@@ -2688,6 +2696,26 @@ export default function Dashboard() {
       return;
     }
 
+    // Agent mode: the turn is a task, not a question. It goes to the runner,
+    // which plans it, works it step by step against a real file workspace, and
+    // stops only where a human has to decide. Handing off rather than
+    // answering here is the point — a chat reply can describe the work, but it
+    // cannot read, edit and verify files on the way.
+    if (agentMode && !editingId && text) {
+      try {
+        const { runId } = await startAgentRun({ goal: text });
+        setInput("");
+        setAeroHandoffRunId(runId);
+        setShowAeroTransform(true);
+        toast.success("Agent run started — watch the plan land.");
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not start that run.",
+        );
+      }
+      return;
+    }
+
     // PDF attachments route through the document-Q&A flow (extract text + ask)
     if (pendingFiles.some((f) => /pdf/.test(f.type)) && !editingId) {
       setInput("");
@@ -4156,6 +4184,26 @@ export default function Dashboard() {
   /** The single executor behind both Enter and the autocomplete. */
   const runSlashCommand = async (command: SlashCommand, args: string) => {
     switch (command.name) {
+      // Same destination as the Agent pill, reached by typing: the task goes
+      // to the runner, which is the only surface that can plan it and work it
+      // against the file workspace.
+      case "agent": {
+        if (!args) {
+          setAgentMode(true);
+          return;
+        }
+        try {
+          const { runId } = await startAgentRun({ goal: args });
+          setAeroHandoffRunId(runId);
+          setShowAeroTransform(true);
+          toast.success("Agent run started — watch the plan land.");
+        } catch (err) {
+          toast.error(
+            err instanceof Error ? err.message : "Could not start that run.",
+          );
+        }
+        return;
+      }
       case "time":
       case "weather":
       case "currency":
@@ -6645,14 +6693,36 @@ export default function Dashboard() {
                         ? "Listening… click the stop square when done."
                         : editingId
                           ? "Edit your message and press Enter…"
-                          : deepResearch
-                            ? "Research anything on the live web…"
-                            : "Message Jarvis… / commands, $ MCP, @ plugin skills"
+                          : agentMode
+                            ? "Give the agent a task — it plans the work, then does it…"
+                            : deepResearch
+                              ? "Research anything on the live web…"
+                              : "Message Jarvis… / commands, $ MCP, @ plugin skills"
                     }
                     rows={1}
                     className="max-h-40 w-full resize-none bg-transparent pl-12 pr-32 py-3 text-sm outline-none placeholder:text-muted-foreground/70 sm:pr-48"
                   />
                 <div className="absolute right-1.5 bottom-1.5 flex items-center gap-0.5">
+                  {/* Agent mode: the next send becomes a task the runner plans
+                      and works, instead of a chat turn that only describes it. */}
+                  <button
+                    type="button"
+                    onClick={() => setAgentMode((v) => !v)}
+                    aria-pressed={agentMode}
+                    title={
+                      agentMode
+                        ? "Agent mode is on — this message becomes a task Jarvis plans and works"
+                        : "Agent mode — hand the task to the runner: it plans, works and verifies"
+                    }
+                    className={`inline-flex h-7 items-center gap-1 rounded-lg px-1.5 text-[11px] font-medium transition-colors ${
+                      agentMode
+                        ? "bg-primary text-primary-foreground hover:opacity-90"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    }`}
+                  >
+                    <Bot className="size-3.5" />
+                    <span className="hidden sm:inline">Agent</span>
+                  </button>
                   {/* Effort: who decides how hard the question is. */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>

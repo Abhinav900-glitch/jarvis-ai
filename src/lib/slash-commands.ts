@@ -128,6 +128,16 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     example: "/pinned",
   },
   {
+    name: "agent",
+    aliases: ["run"],
+    group: "Session",
+    summary: "Hand a task to the agent: it plans, works and verifies",
+    argHint: "<task>",
+    // No argument is a valid use: bare `/agent` arms the mode so the task can
+    // be typed next, which is how the pill works too.
+    example: "/agent Add tests for the pricing module",
+  },
+  {
     name: "export",
     aliases: [],
     group: "Session",
