@@ -25,6 +25,7 @@ import {
   type RankedEngine,
 } from "./engines";
 import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
+import { depthDirective } from "../lib/answer-depth";
 import { getFreshAccessToken } from "./canva";
 
 // ---------------------------------------------------------------------------
@@ -86,6 +87,10 @@ export interface LlmResult {
  * when this is absent, so nothing has to pass it for the smart router to work
  * — live voice passes "live" because "answer quickly" is the point there.
  */
+const detailValidator = v.optional(
+  v.union(v.literal("brief"), v.literal("balanced"), v.literal("detailed")),
+);
+
 const taskValidator = v.optional(
   v.union(
     v.literal("chat"),
@@ -846,6 +851,11 @@ export const ask = action({
         }),
       ),
     ),
+    /**
+     * How long the answer should be. Omitted means the default length; the
+     * verification pass is controlled by `task`, not by this.
+     */
+    detail: detailValidator,
     /** Overrides the router's own guess about what this turn needs. */
     task: taskValidator,
   },
@@ -911,6 +921,8 @@ export const ask = action({
     // from the user's normal instructions again.
     const pinnedSkills = await pluginSkillsBlock(ctx, args.pluginSkills);
     if (pinnedSkills) systemPrompt = `${systemPrompt}${pinnedSkills}`;
+    const depth = depthDirective(args.task, args.detail);
+    if (depth) systemPrompt = `${systemPrompt}${depth}`;
 
     const plan = await routingFor(ctx, userId, {
       task: args.task,
@@ -1377,6 +1389,11 @@ export const askStream = action({
         }),
       ),
     ),
+    /**
+     * How long the answer should be. Omitted means the default length; the
+     * verification pass is controlled by `task`, not by this.
+     */
+    detail: detailValidator,
     /** Overrides the router's own guess about what this turn needs. */
     task: taskValidator,
   },
@@ -1399,6 +1416,8 @@ export const askStream = action({
     // from the user's normal instructions again.
     const pinnedSkills = await pluginSkillsBlock(ctx, args.pluginSkills);
     if (pinnedSkills) systemPrompt = `${systemPrompt}${pinnedSkills}`;
+    const depth = depthDirective(args.task, args.detail);
+    if (depth) systemPrompt = `${systemPrompt}${depth}`;
 
     // Same two context layers as `ask`: RAG history first, then long-term
     // memory on top of it.

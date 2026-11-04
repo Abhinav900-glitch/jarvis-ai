@@ -172,6 +172,14 @@ import { SlashMenu } from "@/components/slash-menu";
 import { McpMenu } from "@/components/mcp-menu";
 import { PluginMenu } from "@/components/plugin-menu";
 import {
+  DETAIL_OPTIONS,
+  EFFORT_OPTIONS,
+  taskForEffort,
+  type AnswerTuning,
+  type DetailLevel,
+  type EffortLevel,
+} from "@/lib/answer-depth";
+import {
   atTokenAt,
   filterPluginSkills,
   matchPluginMentions,
@@ -793,6 +801,42 @@ export default function Dashboard() {
   const [deepResearch, setDeepResearch] = useState(false);
   // Composer mode chips — arm News/Analyze for the next send (Gemini-style)
   const [modeNews, setModeNews] = useState(false);
+  /**
+   * How hard to think, and how long the answer may be.
+   *
+   * Persisted because it is a standing preference, not a per-message whim: a
+   * user who chose Brief should not have to choose it again on every reload.
+   */
+  const [effort, setEffort] = useState<EffortLevel>(() => {
+    try {
+      const saved = localStorage.getItem("jarvis-effort");
+      return saved === "fast" || saved === "deep" ? saved : "auto";
+    } catch {
+      return "auto";
+    }
+  });
+  const [detail, setDetail] = useState<DetailLevel>(() => {
+    try {
+      const saved = localStorage.getItem("jarvis-detail");
+      return saved === "brief" || saved === "detailed" ? saved : "balanced";
+    } catch {
+      return "balanced";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("jarvis-effort", effort);
+    } catch {
+      /* a private window that refuses storage is not an error */
+    }
+  }, [effort]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("jarvis-detail", detail);
+    } catch {
+      /* ignore */
+    }
+  }, [detail]);
   const [modeAnalyze, setModeAnalyze] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>([]);
   const [showSounds, setShowSounds] = useState(false);
@@ -2084,7 +2128,11 @@ export default function Dashboard() {
    * branch, so a worse regeneration costs nothing: the original answer is still
    * there, one click away in the branch bar.
    */
-  const handleRegenerate = async (assistantId: Id<"chatMessages">) => {
+  const handleRegenerate = async (
+    assistantId: Id<"chatMessages">,
+    /** Effort and length for this retry; omitted keeps the composer's choice. */
+    tuning?: AnswerTuning,
+  ) => {
     if (!activeId || sending) return;
     const list = messages ?? [];
     const index = list.findIndex((m) => m._id === assistantId);
@@ -2105,7 +2153,14 @@ export default function Dashboard() {
         atMessageId: prompt._id,
       });
       setActiveBranchId(branchId);
-      const answer = await runAsk(prompt.content, history);
+      const answer = await runAsk(
+        prompt.content,
+        history,
+        undefined,
+        undefined,
+        undefined,
+        tuning,
+      );
       await appendMessage({
         sessionId: activeId,
         branchId,
@@ -3067,7 +3122,13 @@ export default function Dashboard() {
     pinnedServers?: string[],
     /** Plugin skills pinned with `@plugin/skill`, applied to this turn only. */
     skillPins?: { pluginId: Id<"plugins">; skillName: string }[],
+    /** Effort and length for this turn; defaults to the composer's controls. */
+    tuning?: AnswerTuning,
   ) => {
+    const tuned = tuning ?? { effort, detail };
+    // Live voice trades a little depth for time to first word, so the router is
+    // told to weight responsiveness here rather than guessing.
+    const task = live.active ? ("live" as const) : taskForEffort(tuned.effort);
     const streamMsgId = await appendMessage({
       sessionId,
       branchId: branchId ?? null,
@@ -3088,7 +3149,8 @@ export default function Dashboard() {
           ? { mcpServers: pinnedServers }
           : {}),
         ...(skillPins && skillPins.length > 0 ? { pluginSkills: skillPins } : {}),
-        ...(live.active ? { task: "live" as const } : {}),
+        ...(task ? { task } : {}),
+        ...(tuned.detail !== "balanced" ? { detail: tuned.detail } : {}),
       });
     } catch (err) {
       // The placeholder would otherwise stay blank forever — write the error
@@ -3201,7 +3263,10 @@ export default function Dashboard() {
     imageUrls?: string[],
     pinnedServers?: string[],
     skillPins?: { pluginId: Id<"plugins">; skillName: string }[],
+    tuning?: AnswerTuning,
   ) => {
+    const tuned = tuning ?? { effort, detail };
+    const task = live.active ? ("live" as const) : taskForEffort(tuned.effort);
     return await askAction({
       prompt,
       history,
@@ -3211,9 +3276,8 @@ export default function Dashboard() {
         ? { mcpServers: pinnedServers }
         : {}),
       ...(skillPins && skillPins.length > 0 ? { pluginSkills: skillPins } : {}),
-      // Live voice trades a little depth for time to first word, so the router
-      // is told to weight responsiveness here rather than guessing.
-      ...(live.active ? { task: "live" as const } : {}),
+      ...(task ? { task } : {}),
+      ...(tuned.detail !== "balanced" ? { detail: tuned.detail } : {}),
     });
   };
 
@@ -5252,6 +5316,36 @@ export default function Dashboard() {
                             <RotateCcw className="size-3" />
                           </button>
                         )}
+                        {/* Same question, more or less effort — the thing people
+                            actually want instead of retyping a better prompt. */}
+                        {m.role === "assistant" && m._id === lastMsg?._id && !sending && (
+                          <>
+                            <button
+                              onClick={() =>
+                                void handleRegenerate(m._id, {
+                                  effort: "deep",
+                                  detail: "detailed",
+                                })
+                              }
+                              title="Go deeper — same question, with a verification pass"
+                              className="rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+                            >
+                              Deeper
+                            </button>
+                            <button
+                              onClick={() =>
+                                void handleRegenerate(m._id, {
+                                  effort: "fast",
+                                  detail: "brief",
+                                })
+                              }
+                              title="Short version — same question, conclusion only"
+                              className="rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+                            >
+                              Shorter
+                            </button>
+                          </>
+                        )}
                         {m.role === "assistant" &&
                           m._id === lastMsg?._id &&
                           !sending &&
@@ -6531,6 +6625,75 @@ export default function Dashboard() {
                     className="max-h-40 w-full resize-none bg-transparent pl-12 pr-32 py-3 text-sm outline-none placeholder:text-muted-foreground/70 sm:pr-48"
                   />
                 <div className="absolute right-1.5 bottom-1.5 flex items-center gap-0.5">
+                  {/* Effort: who decides how hard the question is. */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        title={`Effort — ${EFFORT_OPTIONS.find((o) => o.level === effort)?.hint ?? ""}`}
+                        className={`hidden h-7 items-center gap-1 rounded-lg px-1.5 text-[11px] font-medium transition-colors sm:inline-flex ${
+                          effort === "auto"
+                            ? "text-muted-foreground hover:bg-accent hover:text-foreground"
+                            : "bg-accent text-foreground"
+                        }`}
+                      >
+                        <Gauge className="size-3.5" />
+                        {EFFORT_OPTIONS.find((o) => o.level === effort)?.label}
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" side="top" className="w-64">
+                      {EFFORT_OPTIONS.map((option) => (
+                        <DropdownMenuItem
+                          key={option.level}
+                          onClick={() => setEffort(option.level)}
+                          className="flex-col items-start gap-0.5"
+                        >
+                          <span className="flex w-full items-center gap-1.5 text-xs font-medium">
+                            {option.label}
+                            {effort === option.level ? (
+                              <Check className="ml-auto size-3" />
+                            ) : null}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {option.hint}
+                          </span>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  {/* Length: a formatting choice, independent of effort. */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        title={`Answer length — ${DETAIL_OPTIONS.find((o) => o.level === detail)?.hint ?? ""}`}
+                        className={`hidden h-7 items-center rounded-lg px-1.5 text-[11px] font-medium transition-colors sm:inline-flex ${
+                          detail === "balanced"
+                            ? "text-muted-foreground hover:bg-accent hover:text-foreground"
+                            : "bg-accent text-foreground"
+                        }`}
+                      >
+                        {DETAIL_OPTIONS.find((o) => o.level === detail)?.label}
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" side="top" className="w-56">
+                      {DETAIL_OPTIONS.map((option) => (
+                        <DropdownMenuItem
+                          key={option.level}
+                          onClick={() => setDetail(option.level)}
+                          className="flex-col items-start gap-0.5"
+                        >
+                          <span className="flex w-full items-center gap-1.5 text-xs font-medium">
+                            {option.label}
+                            {detail === option.level ? (
+                              <Check className="ml-auto size-3" />
+                            ) : null}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {option.hint}
+                          </span>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <button
                     onClick={() => {
                       setShowVoices((v) => !v);
