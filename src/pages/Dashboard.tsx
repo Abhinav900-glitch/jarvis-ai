@@ -658,6 +658,27 @@ export default function Dashboard() {
     // async decrypt lands after the rows themselves stopped changing.
   }, [rawMessages, e2eKey, encryptedRows, decryptTick]);
 
+  // The document this conversation is about. Page citations in a reply
+  // [p. 12] link back into it, so the citation chip is only useful when we can
+  // name the file it came from — the newest attached PDF wins, because that is
+  // the one a follow-up question is answering.
+  //
+  // Computed inline rather than memoised: it is one backward scan of messages
+  // that are already in memory, and a manual memo here defeats the compiler's
+  // own optimisation of this component.
+  const sessionPdf = (() => {
+    if (!messages) return undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      const isPdf =
+        /pdf/i.test(m.fileType ?? "") || /\.pdf$/i.test(m.fileName ?? "");
+      if (isPdf && m.fileUrl) {
+        return { url: m.fileUrl, name: m.fileName ?? "the document" };
+      }
+    }
+    return undefined;
+  })();
+
   useEffect(() => {
     if (!lockedOut) {
       promptedUnlockFor.current = null;
@@ -3659,9 +3680,13 @@ export default function Dashboard() {
       const answer = await askAction({
         prompt:
           `A user uploaded a PDF document (${file.name}, ${pages} pages). ` +
-          `Here is its extracted text:\n\n<document>\n${text}\n</document>\n\n` +
+          `Its text follows page by page, each page introduced by a marker ` +
+          `such as [page 12]:\n\n<document>\n${text}\n</document>\n\n` +
           `The user asks: ${userQuestion}\n\n` +
-          "Answer grounded ONLY in the document. If the answer isn't in the document, say so.",
+          "Answer grounded ONLY in the document. Cite the page for every claim, " +
+          "inline and in square brackets as [p. 12] — or [pp. 12-14] for a range " +
+          "— using the page markers above, never an invented number. If the " +
+          "answer is not in the document, say so plainly instead of guessing.",
         history,
       });
 
@@ -5669,6 +5694,8 @@ export default function Dashboard() {
                           <MarkdownMessage
                             content={m.content}
                             sources={m.sources}
+                            pdfUrl={sessionPdf?.url}
+                            pdfName={sessionPdf?.name}
                           />
                           {/* Blinking caret on the row currently being
                               written, so an in-flight reply reads as live
@@ -5686,7 +5713,11 @@ export default function Dashboard() {
                                 </span>
                               </div>
                               <div className="text-sm leading-7 text-foreground/90">
-                                <MarkdownMessage content={translations[m._id].text} />
+                                <MarkdownMessage
+                                  content={translations[m._id].text}
+                                  pdfUrl={sessionPdf?.url}
+                                  pdfName={sessionPdf?.name}
+                                />
                               </div>
                             </div>
                           )}

@@ -26,6 +26,7 @@ import {
 } from "./engines";
 import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
 import { depthDirective } from "../lib/answer-depth";
+import { buildPageContext, hasReadableText } from "../lib/pdf-pages";
 import { getFreshAccessToken } from "./canva";
 
 // ---------------------------------------------------------------------------
@@ -3181,7 +3182,19 @@ function cleanTitle(raw: string): string | null {
 
 export const extractPdfText = action({
   args: { url: v.string() },
-  handler: async (ctx, args): Promise<{ text: string; pages: number }> => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    text: string;
+    pages: number;
+    /**
+     * One entry per page that fits the context budget, whitespace-collapsed.
+     * Separate from `text` because a citation is only honest if the page
+     * boundaries survive extraction — merging pages throws that away.
+     */
+    pageTexts: string[];
+  }> => {
     // Authenticated: an open download-and-parse endpoint is a free proxy for
     // bandwidth and CPU, whatever the URL guard says.
     const userId = await getAuthUserId(ctx);
@@ -3195,16 +3208,21 @@ export const extractPdfText = action({
     const buffer = await res.arrayBuffer();
     const { extractText, getDocumentProxy } = await import("unpdf");
     const pdf = await getDocumentProxy(new Uint8Array(buffer));
-    const { text, totalPages } = await extractText(pdf, { mergePages: true });
+    // Per page, not merged: the page a sentence came from is part of the
+    // answer, and it cannot be recovered once the pages are joined.
+    const { text: pageTexts, totalPages } = await extractText(pdf, {
+      mergePages: false,
+    });
 
-    const clean = text.replace(/\s+/g, " ").trim();
-    if (!clean) {
+    if (!hasReadableText(pageTexts)) {
       throw new Error(
         "No extractable text found in this PDF (it may be scanned images).",
       );
     }
 
-    return { text: clean.slice(0, 60_000), pages: totalPages };
+    const { text, kept } = buildPageContext(pageTexts);
+
+    return { text, pages: totalPages, pageTexts: kept };
   },
 });
 
