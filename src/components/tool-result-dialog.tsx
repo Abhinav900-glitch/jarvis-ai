@@ -5,9 +5,14 @@
 // they share one surface rather than twelve: a result should be readable,
 // copyable, and gone in one click. Errors land here too, because "10 km to
 // apples" is a message, not a reason to fail the turn.
+//
+// The new piece this file gained: tool results are not only lines of text.
+// When an agent returns a write/append as a file, or an HTML page as a web
+// result, the same dialog can show a full-file block or a live preview, with
+// copy available on each piece and on the whole body.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AlertTriangle,
   Copy,
@@ -28,18 +33,20 @@ import {
 
 export type ToolDialogState =
   | { status: "ready"; title: string; body: string; kind: "terminal" | "web" | "code"; previewPath?: string }
-  | { status: "error"; message: string }
+  | { status: "error"; message: string };
 
 export interface ToolResultDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   state: ToolDialogState | null;
+  onView?: (path: string) => void;
 }
 
 export function ToolResultDialog({
   open,
   onOpenChange,
   state,
+  onView,
 }: ToolResultDialogProps) {
   const [copyOnce, setCopyOnce] = useState<string | null>(null);
 
@@ -51,59 +58,64 @@ export function ToolResultDialog({
       setCopyOnce("tool");
       setTimeout(() => setCopyOnce(null), 1400);
     } catch {
-      toast.error("Could not copy that.");
+      // fail silently — the dialog is ephemeral and this is a best-effort copy
     }
   };
+
+  const headerIcon = useMemo(() => {
+    if (state?.status !== "ready") {
+      return (
+        <AlertTriangle className="size-4 text-destructive" />
+      );
+    }
+    switch (state.kind) {
+      case "web":
+        return <Globe className="size-4 text-primary" />;
+      case "code":
+        return <FileCode className="size-4 text-primary" />;
+      default:
+        return <Terminal className="size-4 text-primary" />;
+    }
+  }, [state]);
+
+  const headerTitle = useMemo(() => {
+    if (state?.status !== "ready") {
+      return "Tool error";
+    }
+    switch (state.kind) {
+      case "web":
+        return "Render preview";
+      case "code":
+        return "Full file";
+      default:
+        return "Tool output";
+    }
+  }, [state]);
+
+  const bodyHint = useMemo(() => {
+    if (state?.status !== "ready") {
+      return "Nothing was sent to a model.";
+    }
+    switch (state.kind) {
+      case "web":
+        return "A file the agent wrote, rendered in this frame. Open it on the left to inspect the source.";
+      case "code":
+        return "The file the agent wrote is available in full here and on the left for editing.";
+      default:
+        return "Computed locally — no model was involved.";
+    }
+  }, [state]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-sm">
-            {(() => {
-              switch (state?.status) {
-                case "error":
-                  return (
-                    <>
-                      <AlertTriangle className="size-4 text-destructive" />
-                      Tool error
-                    </>
-                  );
-                case "ready":
-                  switch (state.kind) {
-                    case "web":
-                      return (
-                        <>
-                          <Globe className="size-4 text-primary" />
-                          Render preview
-                        </>
-                      );
-                    case "code":
-                      return (
-                        <>
-                          <FileCode className="size-4 text-primary" />
-                          Full file
-                        </>
-                      );
-                    case "terminal":
-                    default:
-                      return (
-                        <>
-                          <Terminal className="size-4 text-primary" />
-                          Tool output
-                        </>
-                      );
-                  }
-            })()}
+            {headerIcon}
+            {headerTitle}
           </DialogTitle>
           <DialogDescription className="text-xs">
-            {state?.status === "ready"
-              ? state.kind === "web"
-                ? "A file the agent wrote, rendered in this frame. Open it on the left to inspect the source."
-                : state.kind === "code"
-                  ? "The file the agent wrote is available in full here and on the left for editing."
-                  : "Computed locally — no model was involved."
-              : "Nothing was sent to a model."}
+            {bodyHint}
           </DialogDescription>
         </DialogHeader>
 
@@ -113,7 +125,7 @@ export function ToolResultDialog({
             <span>{state.message}</span>
           </p>
         ) : state ? (
-          <ToolResultDialogContent state={state} onView={() => {}} />
+          <ToolResultDialogContent state={state} onView={onView ?? (() => {})} />
         ) : null}
 
         <div className="mt-3 flex justify-end gap-2">
@@ -139,13 +151,7 @@ export function ToolResultDialog({
   );
 }
 
-type ContentState =
-  | { status: "ready"; kind: "terminal"; }
-  | { status: "ready"; kind: "code"; }
-  | { status: "ready"; kind: "web"; }
-  | { status: "error" };
-
-export function ToolResultDialogContent({
+export export function ToolResultDialogContent({
   state,
   onView,
 }: {

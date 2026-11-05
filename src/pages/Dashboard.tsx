@@ -1216,6 +1216,10 @@ export default function Dashboard() {
     setAeroHandoffRunId(null);
     setShowAeroOverview(true);
   };
+
+  const setToolStateChecked = (next: unknown) => {
+    setToolState(readyTool(next));
+  };
   // One spring table for every row: prompts from the right, replies from the
   // left, and nothing at all when reduced motion is requested.
   const rowMotion = useChatRowVariants();
@@ -6762,6 +6766,7 @@ export default function Dashboard() {
               if (!open) setToolState(null);
             }}
             state={toolState}
+            onView={onToolView}
             onView={onToolView}
           />
 

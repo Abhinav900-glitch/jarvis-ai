@@ -11,6 +11,8 @@
 // ---------------------------------------------------------------------------
 
 import { v } from "convex/values";
+import type { GenericId } from "convex/values";
+import type { ToolDialogState } from "../components/tool-result-dialog";
 
 /** For "propose a change" notifications from the agent. */
 export type AgentProposalEvent = {
