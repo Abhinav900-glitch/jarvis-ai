@@ -169,6 +169,7 @@ import {
   ToolResultDialog,
   type ToolDialogState,
 } from "@/components/tool-result-dialog";
+import { CoreOrb } from "@/components/core-orb";
 import { runLocalTool } from "@/lib/local-tools";
 import { Radio, ExternalLink } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
@@ -5508,16 +5509,19 @@ export default function Dashboard() {
           >
             {!messages || messages.length === 0 ? (
               <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col items-center justify-center px-4 py-8 sm:px-6">
-                <div className="hud-panel hud-corners relative flex size-20 items-center justify-center rounded-full">
-                  <div
-                    aria-hidden
-                    className="absolute inset-0 rounded-full blur-xl"
-                    style={{
-                      background:
-                        "radial-gradient(circle, color-mix(in oklab, var(--signal-cyan) 35%, transparent), transparent 70%)",
-                    }}
+                {/* The core lives here: particles, linked neighbours and two
+                    turning rings, breathing faster while a reply is on its
+                    way. Cheap enough to run on a laptop fanless. */}
+                <div className="relative flex size-40 shrink-0 items-center justify-center">
+                  <CoreOrb
+                    size={160}
+                    intensity={sending ? 1 : 0}
+                    className="absolute inset-0"
                   />
-                  <JarvisMark animate className="size-16" />
+                  <JarvisMark
+                    animate
+                    className="relative size-14 drop-shadow-[0_0_18px_var(--signal-cyan)]"
+                  />
                 </div>
                 <p className="hud-label hud-label-cyan mt-7">Core online</p>
                 <h1 className="mt-3 text-2xl font-semibold tracking-tight">
@@ -6183,8 +6187,16 @@ export default function Dashboard() {
                           turns and the spark twinkles while the reply is
                           being decided, so "thinking" looks like Jarvis
                           rather than like a generic spinner. */}
-                      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent">
-                        <JarvisMark animate className="size-[18px]" />
+                      <span className="relative flex size-7 shrink-0 items-center justify-center">
+                        <CoreOrb
+                          size={28}
+                          intensity={1}
+                          className="absolute inset-0"
+                        />
+                        <JarvisMark
+                          animate
+                          className="relative size-[18px]"
+                        />
                       </span>
                       {/* The words themselves carry the light, so the row
                           reads as active even out of the corner of an eye. */}
