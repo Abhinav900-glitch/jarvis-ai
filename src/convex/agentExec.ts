@@ -92,6 +92,8 @@ export async function executeTool(
           args.prefix(parsed),
           args.limit(parsed),
         );
+      case "search_web":
+        return await searchWeb(ec, args.query(parsed), args.limit(parsed));
       case "write_file":
         return await writeFile(
           ec,
@@ -293,6 +295,73 @@ async function searchFiles(
           (hits.length >= cap ? `\n[stopped at ${cap} matches]` : ""),
     summary: `Search "${needle}" → ${hits.length} match${
       hits.length === 1 ? "" : "es"
+    }`,
+    mutated: false,
+  };
+}
+
+/**
+ * Live web search, delegated to the node action that holds the provider keys.
+ *
+ * The two endings matter as much as the results. A query with no hits tells the
+ * model to answer from its own knowledge and say it could not check the web,
+ * because inventing a citation is worse than admitting to an unchecked answer.
+ * An empty result is never reported as a tool error: it is information the
+ * model acts on, not a failed turn.
+ */
+async function searchWeb(
+  ec: ExecContext,
+  query: string,
+  limit: number | undefined,
+): Promise<ToolOutcome> {
+  const asked = query.trim();
+  if (!asked) {
+    return {
+      result: "Give search_web a query — a question or a few keywords.",
+      summary: "Web search had no query",
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const found = (await ec.ctx.runAction(internal.webSearchTool.search, {
+    query: asked,
+    limit: Math.min(Math.max(limit ?? 6, 1), 10),
+  })) as {
+    ok: boolean;
+    provider: string;
+    hits: { title: string; url: string; snippet: string }[];
+    note: string;
+  };
+
+  if (!found.ok || found.hits.length === 0) {
+    return {
+      result:
+        `The web could not be searched${found.note ? ` (${found.note})` : ""}. ` +
+        "Answer from your own knowledge, and say plainly that you could not check the web. " +
+        "Do not invent URLs, sources or timestamps.",
+      summary: "Web search found nothing",
+      mutated: false,
+    };
+  }
+
+  const lines = found.hits.map((hit, i) => {
+    const head = `[${i + 1}] ${hit.title}\n${hit.url}`;
+    return hit.snippet ? `${head}\n${hit.snippet}` : head;
+  });
+
+  return {
+    result: [
+      `${found.hits.length} web result${
+        found.hits.length === 1 ? "" : "s"
+      } for "${asked}"${found.provider ? ` (via ${found.provider})` : ""}:`,
+      "",
+      lines.join("\n\n"),
+      "",
+      "Answer from these and cite the URLs you rely on. If they do not settle the question, search again with different words rather than filling the gap from memory.",
+    ].join("\n"),
+    summary: `Web search via ${found.provider || "the web"} → ${found.hits.length} result${
+      found.hits.length === 1 ? "" : "s"
     }`,
     mutated: false,
   };

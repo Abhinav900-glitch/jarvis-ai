@@ -52,6 +52,16 @@ describe("toolSpecs", () => {
     expect(spec?.function.parameters?.required).toEqual(["path"]);
   });
 
+  test("web search is offered in every mode, including readonly", () => {
+    for (const mode of ["readonly", "ask", "auto"] as const) {
+      expect(names(mode)).toContain("search_web");
+    }
+    const spec = toolSpecs("auto").find(
+      (s) => s.function.name === "search_web",
+    );
+    expect(spec?.function.parameters?.required).toEqual(["query"]);
+  });
+
   test("readonly mode drops everything that can change or execute", () => {
     const listed = names("readonly");
     expect(listed).not.toContain("run_file");

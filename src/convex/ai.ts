@@ -2121,10 +2121,14 @@ async function searchStep(
   }
 }
 
-async function webSearch(
+export async function webSearch(
   query: string,
-): Promise<{ sources: SearchHit[]; errors: string[] }> {
+): Promise<{ sources: SearchHit[]; errors: string[]; answered: string[] }> {
   const errors: string[] = [];
+  // Which providers actually contributed a hit. `errors` cannot say this: a
+  // provider that was skipped because somebody above it answered reports
+  // nothing at all, so silence means "not asked" as often as it means "worked".
+  const answered: string[] = [];
   let sources: SearchHit[] = [];
 
   // Exa and Parallel are asked at the same time, and their results are merged
@@ -2150,6 +2154,9 @@ async function webSearch(
       : [],
   ]);
 
+  if (exaHits.length > 0) answered.push("exa");
+  if (parallelHits.length > 0) answered.push("parallel");
+
   // Exa's order is kept first, then anything Parallel found that it missed.
   const seen = new Set<string>();
   for (const hit of [...exaHits, ...parallelHits]) {
@@ -2168,6 +2175,7 @@ async function webSearch(
   if (tinyFishKey) {
     try {
       sources = await tinyFishSearch(tinyFishKey, query);
+      if (sources.length > 0) answered.push("tinyfish");
       console.log(
         `[deep-research] tinyfish returned ${sources.length} results`,
       );
@@ -2191,6 +2199,7 @@ async function webSearch(
   if (langsearchKey) {
     try {
       sources = await langsearchSearch(langsearchKey, query);
+      if (sources.length > 0) answered.push("langsearch");
       console.log(
         `[deep-research] langsearch returned ${sources.length} results`,
       );
@@ -2230,6 +2239,7 @@ async function webSearch(
             domain: r.domain,
           }))
           .filter((s) => s.url);
+        if (sources.length > 0) answered.push("serpstack");
         console.log(
           `[deep-research] serpstack returned ${sources.length} results`,
         );
@@ -2252,6 +2262,7 @@ async function webSearch(
     for (const serpApiKey of serpApiKeys) {
       try {
         sources = await serpApiSearch(serpApiKey, query);
+        if (sources.length > 0) answered.push("serpapi");
         console.log(
           `[deep-research] serpapi fallback returned ${sources.length} results`,
         );
@@ -2264,7 +2275,7 @@ async function webSearch(
     }
   }
 
-  return { sources, errors };
+  return { sources, errors, answered };
 }
 
 /**

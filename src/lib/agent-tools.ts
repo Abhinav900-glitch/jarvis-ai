@@ -297,6 +297,22 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
     {
       type: "function",
       function: {
+        name: "search_web",
+        description:
+          "Searches the live web and returns titles, URLs and excerpts. Use it when the answer depends on something outside this workspace that you cannot know for certain — current versions, prices, releases, documentation, news, or a fact you would otherwise be guessing at. Base the answer on what the results say and cite the URLs you used. If it reports the web is unavailable, answer from your own knowledge and say plainly that you could not check.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: strArg("What to search for — a question or a few keywords"),
+            limit: optInt("Maximum results to return. Default 6, max 10."),
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "search_files",
         description:
           "Searches file contents across the workspace and returns matching paths with the matching lines. Use it to find where something is defined or used before changing it.",
