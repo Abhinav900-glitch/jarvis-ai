@@ -12,7 +12,7 @@
 // recognise, and the parser can never accept something the menu does not show.
 // ---------------------------------------------------------------------------
 
-export type SlashGroup = "World" | "Create" | "Math" | "Session";
+export type SlashGroup = "World" | "Code" | "Create" | "Math" | "Session";
 
 export interface SlashCommand {
   /** Canonical name, matched case-insensitively. */
@@ -103,6 +103,15 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     summary: "Step-by-step worked solution with LaTeX",
     argHint: "<problem>",
     example: "/solve integrate x^2 sin(x) dx",
+    needsArg: true,
+  },
+  {
+    name: "github",
+    aliases: ["repo"],
+    group: "Code",
+    summary: "A GitHub repository at a glance, README included",
+    argHint: "<owner/repo>",
+    example: "/github convex-dev/convex",
     needsArg: true,
   },
   {

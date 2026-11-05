@@ -455,7 +455,78 @@ function RegionResultCard({ result, onClose }: { result: Record<string, unknown>
           {closeButton}
         </div>
         <p className="text-2xl font-semibold tabular-nums">{String(result.amount)} {String(result.from)} = <span className="text-primary">{String(result.result)} {String(result.to)}</span></p>
-        <p className="text-xs text-muted-foreground">1 {String(result.from)} = {String(result.rate)} {String(result.to)}</p>
+        {/* The feed's own timestamp, because a rate without one is a rumour:
+            it is the difference between today's number and last week's. */}
+        <p className="text-xs text-muted-foreground">
+          1 {String(result.from)} = {String(result.rate)} {String(result.to)}
+          {result.updated ? (
+            <> · rates as of {new Date(String(result.updated)).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</>
+          ) : null}
+        </p>
+      </div>
+    );
+  }
+
+  if (result.type === "github") {
+    const stars = typeof result.stars === "number" ? result.stars : 0;
+    const forks = typeof result.forks === "number" ? result.forks : 0;
+    const issues = typeof result.openIssues === "number" ? result.openIssues : 0;
+    const topics = Array.isArray(result.topics) ? (result.topics as string[]) : [];
+    const readme = typeof result.readme === "string" ? result.readme : "";
+
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+            GitHub{result.private ? " · private" : ""}
+            {result.archived ? " · archived" : ""}
+          </span>
+          {closeButton}
+        </div>
+
+        <a
+          href={String(result.url)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block truncate text-lg font-semibold hover:underline"
+        >
+          {String(result.owner)}/{String(result.name)}
+        </a>
+
+        {result.description ? (
+          <p className="text-xs text-muted-foreground">{String(result.description)}</p>
+        ) : null}
+
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs tabular-nums">
+          <span>★ {stars.toLocaleString()}</span>
+          <span>⑂ {forks.toLocaleString()}</span>
+          <span>◉ {issues.toLocaleString()} open issues</span>
+          {result.language ? <span>{String(result.language)}</span> : null}
+          {result.license ? <span>{String(result.license)}</span> : null}
+        </div>
+
+        {result.pushedAt ? (
+          <p className="text-[11px] text-muted-foreground">
+            Last push {new Date(String(result.pushedAt)).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+            {result.defaultBranch ? ` · default branch ${String(result.defaultBranch)}` : ""}
+          </p>
+        ) : null}
+
+        {topics.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {topics.map((topic) => (
+              <span key={topic} className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                {topic}
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {readme ? (
+          <div className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/60 p-2 text-[11px] leading-relaxed text-muted-foreground">
+            {readme}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -717,6 +788,7 @@ export default function Dashboard() {
   const deepResearchAction = useAction(api.ai.deepResearch);
   const analyzeAction = useAction(api.ai.analyzeText);
   const newsAction = useAction(api.ai.searchNews);
+  const repoCardAction = useAction(api.github.repoCard);
   const transcribeAction = useAction(api.voice.transcribe);
   const transcribeWhisperAction = useAction(api.voice.transcribeWhisper);
   const speakAction = useAction(api.voice.speak);
@@ -4016,6 +4088,12 @@ export default function Dashboard() {
           setRegionResult({ type: "country", ...result });
           break;
         }
+        case "github": {
+          if (!arg) throw new Error("Usage: /github <owner/repo>");
+          const result = await repoCardAction({ repo: arg });
+          setRegionResult({ type: "github", ...result });
+          break;
+        }
       }
     } catch (err) {
       setAssistantError(err instanceof Error ? err.message : "Command failed.");
@@ -4273,6 +4351,7 @@ export default function Dashboard() {
       case "weather":
       case "currency":
       case "country":
+      case "github":
         await handleRegionCommand(command.name, args);
         return;
       case "news": {

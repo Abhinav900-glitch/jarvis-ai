@@ -46,7 +46,13 @@ export function SlashMenu({ open, token, activeIndex, onHover, onSelect }: Slash
 
   const groups = useMemo(() => {
     const matching = SLASH_COMMANDS.filter((c) => matches(c, needle));
-    const order: SlashCommand["group"][] = ["World", "Create", "Math", "Session"];
+    const order: SlashCommand["group"][] = [
+      "World",
+      "Code",
+      "Create",
+      "Math",
+      "Session",
+    ];
     return order
       .map((group) => ({
         group,

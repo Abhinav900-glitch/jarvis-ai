@@ -77,6 +77,13 @@ export async function executeTool(
         return await listFiles(ec, args.prefix(parsed));
       case "read_file":
         return await readFile(ec, args.path(parsed));
+      case "read_repo":
+        return await readRepo(
+          ec,
+          args.repo(parsed),
+          args.path(parsed),
+          args.ref(parsed),
+        );
       case "search_files":
         return await searchFiles(
           ec,
@@ -202,6 +209,41 @@ async function readFile(ec: ExecContext, raw: string): Promise<ToolOutcome> {
   return {
     result: body,
     summary: `Read ${resolved.path} (${bytes(file.size)})`,
+    mutated: false,
+  };
+}
+
+/**
+ * A path inside a GitHub repository, through the node action that holds the
+ * token. Delegated rather than fetched here: this module runs in the default
+ * runtime, where the secret is not readable, and `codeRunner` is already the
+ * established shape for that hand-off.
+ */
+async function readRepo(
+  ec: ExecContext,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<ToolOutcome> {
+  if (!repo.trim()) {
+    return {
+      result: "Give read_repo a repository as owner/name, e.g. vercel/next.js.",
+      summary: "Read a repo with no name",
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const { text } = (await ec.ctx.runAction(internal.github.readRepoInternal, {
+    repo,
+    ...(path.trim() ? { path } : {}),
+    ...(ref.trim() ? { ref } : {}),
+  })) as { text: string };
+
+  const where = path.trim() ? `${repo}/${path.trim()}` : repo;
+  return {
+    result: text,
+    summary: `Read ${where} on GitHub`,
     mutated: false,
   };
 }

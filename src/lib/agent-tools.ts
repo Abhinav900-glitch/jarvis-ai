@@ -189,6 +189,8 @@ export const args = {
   oldString: (a: Record<string, unknown>) => str(a, "old_string"),
   newString: (a: Record<string, unknown>) => str(a, "new_string"),
   language: (a: Record<string, unknown>) => str(a, "language"),
+  repo: (a: Record<string, unknown>) => str(a, "repo"),
+  ref: (a: Record<string, unknown>) => str(a, "ref"),
   code: (a: Record<string, unknown>) => str(a, "code"),
   stdin: (a: Record<string, unknown>) => str(a, "stdin"),
 };
@@ -233,6 +235,25 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
           type: "object",
           properties: { path: strArg("Workspace-relative path, e.g. src/app.ts") },
           required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "read_repo",
+        description:
+          "Reads a file, or lists a directory, from a GitHub repository — public or private. Use it when the task is about code that lives on GitHub: pass path \"\" (or omit it) to list the repository root first, then read the files that matter. It does not modify the repository.",
+        parameters: {
+          type: "object",
+          properties: {
+            repo: strArg("Repository as owner/name, e.g. vercel/next.js"),
+            path: strArg(
+              "Path inside the repository, e.g. src/index.ts. Omit for the root listing.",
+            ),
+            ref: strArg("Optional branch, tag or commit. Defaults to the default branch."),
+          },
+          required: ["repo"],
         },
       },
     },

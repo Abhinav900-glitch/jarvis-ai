@@ -110,6 +110,17 @@ export interface Source {
   domain?: string;
 }
 
+/**
+ * A search result while it is still in the research pipeline.
+ *
+ * The extra `snippet` is what Exa and LangSearch hand back as page text: it
+ * goes into the synthesis prompt so the model reads evidence rather than eight
+ * headlines, and is stripped before the result is returned. Keeping it off
+ * `Source` is deliberate — `sources` is persisted on the message and its
+ * validator would reject an unknown field.
+ */
+type SearchHit = Source & { snippet?: string };
+
 // ---------------------------------------------------------------------------
 // Provider plumbing — engine registry in ./engines, one call implementation here
 // ---------------------------------------------------------------------------
@@ -1831,6 +1842,9 @@ export const alternativeAnswer = action({
 /** Never more than this many sources reach the model, in any research run. */
 const MAX_RESEARCH_SOURCES = 12;
 
+/** Ceiling on the excerpt material sent with a research prompt, in characters. */
+const MAX_RESEARCH_CONTEXT_CHARS = 14_000;
+
 export interface DeepResearchResult {
   answer: LlmResult;
   sources: Source[];
@@ -1850,17 +1864,91 @@ export interface DeepResearchResult {
  * sources must not fail because a second provider is unhappy, and a round-two
  * search that fails should quietly leave round one's material intact.
  */
+/**
+ * Exa — POST /search, `x-api-key`, JSON body.
+ *
+ * Asked for page text because that is the one thing the other providers here
+ * cannot give: a neural index that answers "this concept" rather than "this
+ * string", plus the paragraphs behind each hit. The text is trimmed hard —
+ * eight sources of a thousand characters each is already a long prompt, and the
+ * answer needs room too.
+ */
+async function exaSearch(key: string, query: string): Promise<SearchHit[]> {
+  const res = await fetch("https://api.exa.ai/search", {
+    method: "POST",
+    headers: { "x-api-key": key, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query,
+      numResults: 8,
+      // `auto` lets Exa choose between keyword and neural per query instead of
+      // guessing on the user's behalf for every search.
+      type: "auto",
+      contents: { text: { maxCharacters: 1000 } },
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("exa: invalid API key");
+  }
+  if (res.status === 429) throw new Error("exa: rate limited");
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`exa ${res.status}: ${text.slice(0, 120)}`);
+  }
+
+  const data = (await res.json()) as {
+    results?: {
+      title?: string | null;
+      url?: string;
+      text?: string;
+      summary?: string;
+    }[];
+  };
+
+  const results = (data.results ?? [])
+    .slice(0, 8)
+    .map((r) => ({
+      title: r.title?.trim() || "Untitled result",
+      url: r.url ?? "",
+      domain: r.url ? hostnameOf(r.url) : undefined,
+      snippet: (r.summary || r.text || "").replace(/\s+/g, " ").slice(0, 800) || undefined,
+    }))
+    .filter((s) => s.url);
+
+  if (results.length === 0) throw new Error("exa: no results");
+  return results;
+}
+
 async function webSearch(
   query: string,
-): Promise<{ sources: Source[]; errors: string[] }> {
+): Promise<{ sources: SearchHit[]; errors: string[] }> {
   const errors: string[] = [];
-  let sources: Source[] = [];
+  let sources: SearchHit[] = [];
 
-  // TinyFish first: it is free to 12,000 searches a day, while serpstack and
+  // Exa first, when the key is present. It is the only provider here that
+  // returns the page text with the result, which is the difference between an
+  // answer built on what the sources say and one built on their titles. The
+  // free providers keep their place behind it.
+  const exaKey = (process.env.EXA_API ?? process.env.EXA_API_KEY)?.trim();
+  if (exaKey) {
+    try {
+      sources = await exaSearch(exaKey, query);
+      console.log(`[deep-research] exa returned ${sources.length} results`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "failed";
+      console.error("[deep-research] exa exception:", msg);
+      errors.push(`exa: ${msg}`);
+    }
+  } else {
+    errors.push("exa: EXA_API not configured");
+  }
+
+  // TinyFish next: it is free to 12,000 searches a day, while serpstack and
   // SerApi both sit at roughly 100 a month on their free tiers. Spending the
   // abundant key first leaves the scarce ones doing what they are good at —
-  // catching a result the first two missed.
-  const tinyFishKey = process.env.TINYFISH_API_KEY?.trim();
+  // catching a result the ones above missed.
+  const tinyFishKey =
+    sources.length === 0 ? process.env.TINYFISH_API_KEY?.trim() : undefined;
   if (tinyFishKey) {
     try {
       sources = await tinyFishSearch(tinyFishKey, query);
@@ -1872,7 +1960,7 @@ async function webSearch(
       console.error("[deep-research] tinyfish exception:", msg);
       errors.push(`tinyfish: ${msg}`);
     }
-  } else {
+  } else if (sources.length === 0) {
     errors.push("tinyfish: TINYFISH_API_KEY not configured");
   }
 
@@ -2039,7 +2127,7 @@ export const deepResearch = action({
 
     // 1) Search the live web: serpstack primary → SerApi fallback.
     const searchErrors: string[] = [];
-    let sources: Source[] = [];
+    let sources: SearchHit[] = [];
     let rounds = 0;
 
     const first = await webSearch(args.query);
@@ -2085,8 +2173,15 @@ export const deepResearch = action({
     }
 
     const context = sources
-      .map((s, i) => `[${i + 1}] ${s.title} (${s.domain ?? ""})\n${s.url}`)
-      .join("\n\n");
+      .map((s, i) => {
+        const head = `[${i + 1}] ${s.title} (${s.domain ?? ""})\n${s.url}`;
+        return s.snippet ? `${head}\n${s.snippet}` : head;
+      })
+      .join("\n\n")
+      // A snippet is evidence, not a document: the whole answer still has to
+      // fit next to the material, so the pile is capped rather than trusted to
+      // stay small.
+      .slice(0, MAX_RESEARCH_CONTEXT_CHARS);
 
     // 3) Synthesize, with the same router every other entry point uses — a
     // research turn is exactly the case where reasoning matters most.
@@ -2106,7 +2201,9 @@ export const deepResearch = action({
         `Search succeeded (${sources.length} sources) but all AI models failed:`,
         plan,
       ),
-      sources,
+      // Stripped back to the persisted shape: the excerpts did their job in
+      // the prompt and would only bloat the message row.
+      sources: sources.map(({ title, url, domain }) => ({ title, url, domain })),
       rounds,
       followUp,
       errors: searchErrors,
@@ -2311,6 +2408,7 @@ async function langsearchSearch(key: string, query: string): Promise<Source[]> {
       // `displayUrl` can carry a path; the other providers hand back a bare
       // site name, so derive one rather than showing a whole URL as a domain.
       domain: r.url ? hostnameOf(r.url) : undefined,
+      snippet: r.snippet?.replace(/\s+/g, " ").slice(0, 800) || undefined,
     }))
     .filter((s) => s.url);
 
@@ -2756,6 +2854,10 @@ export const getCurrencyRate = action({
     amount: number;
     result: number;
     rate: number;
+    /** When the feed last updated its rates, ISO-8601. Absent if unknown. */
+    updated?: string;
+    /** Which feed answered, so a stale number can be traced to its source. */
+    source?: string;
   }> => {
     const from = args.from.toUpperCase().trim();
     const to = args.to.toUpperCase().trim();
@@ -2765,14 +2867,68 @@ export const getCurrencyRate = action({
       return { from, to, amount, result: amount, rate: 1 };
     }
 
-    // Use open.er-api.com (free, no key)
+    const done = (rate: number, updated?: string, source?: string) => ({
+      from,
+      to,
+      amount,
+      result: Math.round(amount * rate * 100) / 100,
+      rate: Math.round(rate * 10000) / 10000,
+      ...(updated ? { updated } : {}),
+      ...(source ? { source } : {}),
+    });
+
+    // Keyed feed first: it publishes an update timestamp with the rates, which
+    // is the difference between "1 USD is 0.92 EUR" and "1 USD was 0.92 EUR
+    // when this table was last refreshed".
+    const key = (
+      process.env.EXCHANGE_RATE_API ??
+      process.env.EXCHANGE_RATE_API_KEY ??
+      process.env.EXCHANGERATE_API_KEY
+    )?.trim();
+    if (key) {
+      try {
+        const res = await fetch(
+          `https://v6.exchangerate-api.com/v6/${encodeURIComponent(key)}/latest/${encodeURIComponent(from)}`,
+          { signal: AbortSignal.timeout(10_000) },
+        );
+        if (res.ok) {
+          const data = (await res.json()) as {
+            result?: string;
+            "error-type"?: string;
+            conversion_rates?: Record<string, number>;
+            time_last_update_unix?: number;
+          };
+          const rate = data.conversion_rates?.[to];
+          if (data.result === "success" && rate) {
+            const stamp = data.time_last_update_unix
+              ? new Date(data.time_last_update_unix * 1000).toISOString()
+              : undefined;
+            return done(rate, stamp, "exchangerate-api.com");
+          }
+          console.error(
+            `[currency] keyed feed refused ${from}->${to}: ${data.result ?? res.status} ${data["error-type"] ?? ""}`,
+          );
+        }
+      } catch (err) {
+        // A bad key or a timeout must not take `/currency` down with it — the
+        // keyless feed below answers the same question.
+        console.error(
+          "[currency] keyed feed failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    // Fallback: open.er-api.com (free, no key, updated daily)
     const res = await fetch(
       `https://open.er-api.com/v6/latest/${encodeURIComponent(from)}`,
+      { signal: AbortSignal.timeout(10_000) },
     );
     if (!res.ok) throw new Error(`Currency API failed (${res.status})`);
     const data = (await res.json()) as {
       result?: string;
       rates?: Record<string, number>;
+      time_last_update_unix?: number;
     };
 
     if (data.result !== "success" || !data.rates) {
@@ -2782,13 +2938,13 @@ export const getCurrencyRate = action({
     const rate = data.rates[to];
     if (!rate) throw new Error(`Unknown target currency: ${to}`);
 
-    return {
-      from,
-      to,
-      amount,
-      result: Math.round(amount * rate * 100) / 100,
-      rate: Math.round(rate * 10000) / 10000,
-    };
+    return done(
+      rate,
+      data.time_last_update_unix
+        ? new Date(data.time_last_update_unix * 1000).toISOString()
+        : undefined,
+      "open.er-api.com",
+    );
   },
 });
 
