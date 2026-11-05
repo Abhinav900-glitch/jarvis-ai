@@ -32,6 +32,12 @@ import {
   REVIEW_SYSTEM_PROMPT,
   type AnswerReview,
 } from "../lib/answer-review";
+import {
+  DIGEST_SYSTEM_PROMPT,
+  digestPrompt,
+  parseChatDigest,
+  type ChatDigest,
+} from "../lib/chat-digest";
 import { buildPageContext, hasReadableText } from "../lib/pdf-pages";
 import {
   PARALLEL_SEARCH_URL,
@@ -1918,6 +1924,61 @@ export const reviewAnswer = action({
       reviewer: result.model,
       reviewerEngineId: result.engineId ?? null,
       independent,
+    };
+  },
+});
+
+/**
+ * Condense a conversation into what was settled, what is open, and what is next.
+ *
+ * The transcript is passed in from the client rather than re-read here: the
+ * client already holds the visible branch, so the digest describes the messages
+ * on screen instead of every branch ever forked off them.
+ *
+ * Summarising is routed as its own task, which is the point of having a router —
+ * a model that writes well is not always the one that compresses a transcript
+ * without inventing detail.
+ */
+export const digestChat = action({
+  args: {
+    title: v.optional(v.string()),
+    turns: v.array(v.object({ role: v.string(), content: v.string() })),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<ChatDigest & { model: string; engineId: string | null }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to recap a conversation.");
+
+    const turns = args.turns.filter((turn) => turn.content.trim());
+    const chars = turns.reduce((total, turn) => total + turn.content.length, 0);
+    // One question and one answer is not a conversation to catch up on, and a
+    // digest of it would be longer than the transcript.
+    if (turns.length < 2 || chars < 200) {
+      throw new Error(
+        "This conversation is too short to recap — the digest needs a few exchanges to work from.",
+      );
+    }
+
+    const prompt = digestPrompt(turns, args.title);
+    const plan = await routingFor(ctx, userId, {
+      task: "summarize",
+      hasImages: false,
+      prompt,
+    });
+
+    const result = await runProviderChain(
+      [{ role: "user", content: prompt }],
+      DIGEST_SYSTEM_PROMPT,
+      "No engine was available to recap this conversation.",
+      plan,
+    );
+
+    return {
+      ...parseChatDigest(result.text),
+      model: result.model,
+      engineId: result.engineId ?? null,
     };
   },
 });

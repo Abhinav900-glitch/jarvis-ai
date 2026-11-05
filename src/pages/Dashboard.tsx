@@ -161,6 +161,10 @@ import {
   AnswerReviewDialog,
   type AnswerReviewState,
 } from "@/components/answer-review-dialog";
+import {
+  ChatRecapDialog,
+  type ChatDigestState,
+} from "@/components/chat-recap-dialog";
 import { Radio, ExternalLink } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
@@ -1192,9 +1196,11 @@ export default function Dashboard() {
   const deleteMessageAndTail = useMutation(api.chats.deleteMessageAndTail);
   const continueReplyAction = useAction(api.ai.continueReply);
   const reviewAnswerAction = useAction(api.ai.reviewAnswer);
+  const digestChatAction = useAction(api.ai.digestChat);
   // Null when the review dialog is closed; the state it carries is also the
   // dialog's body, so "loading" survives a re-render mid-request.
   const [reviewState, setReviewState] = useState<AnswerReviewState | null>(null);
+  const [recapState, setRecapState] = useState<ChatDigestState | null>(null);
   // Streaming is on by default: for a long answer, seeing the first sentence
   // immediately is worth far more than the handful of ms it costs.
   const [streamReplies, setStreamReplies] = useState(true);
@@ -3463,6 +3469,46 @@ export default function Dashboard() {
   );
 
   /**
+   * Summarise the conversation so far into decided / open / next.
+   *
+   * The visible branch is sent, not the whole chat tree: a recap should describe
+   * the messages on screen, or it would report decisions from a branch the user
+   * abandoned. Images and files are skipped — the digest is about what was said.
+   */
+  const handleRecapChat = useCallback(
+    async (title?: string) => {
+      const turns = (messages ?? [])
+        .filter((m) => m.content.trim())
+        .map((m) => ({ role: m.role, content: m.content }));
+
+      // Checked here as well as on the server so an empty chat does not open a
+      // dialog just to show an error in it.
+      if (turns.length < 2) {
+        toast.error("Have a bit more of a conversation first — there is nothing to recap yet.");
+        return;
+      }
+
+      setRecapState({ status: "loading" });
+      try {
+        const digest = await digestChatAction({
+          turns,
+          ...(title ? { title } : {}),
+        });
+        setRecapState({ status: "ready", digest });
+      } catch (err) {
+        setRecapState({
+          status: "error",
+          message:
+            err instanceof Error ? err.message : "The recap did not come back.",
+        });
+      }
+    },
+    // The title is a parameter rather than a dependency: it is derived further
+    // down the component body, and reading it here would be a use-before-init.
+    [messages, digestChatAction],
+  );
+
+  /**
    * Delete a message and everything after it on this branch.
    *
    * Takes the tail rather than the single message because a conversation with
@@ -4447,6 +4493,9 @@ export default function Dashboard() {
         listening.start(from);
         return;
       }
+      case "recap":
+        await handleRecapChat(sessionTitle);
+        return;
       case "verify":
         await handleReviewAnswer();
         return;
@@ -6460,6 +6509,16 @@ export default function Dashboard() {
             onOpenChange={setShowStats}
             title={sessionTitle}
             messages={messages ?? []}
+          />
+
+          {/* ---- Recap ---- */}
+          <ChatRecapDialog
+            open={recapState !== null}
+            onOpenChange={(open) => {
+              if (!open) setRecapState(null);
+            }}
+            state={recapState ?? { status: "loading" }}
+            title={sessionTitle}
           />
 
           {/* ---- Answer review ---- */}
