@@ -1210,16 +1210,57 @@ export default function Dashboard() {
   const [recapState, setRecapState] = useState<ChatDigestState | null>(null);
   const [toolState, setToolState] = useState<ToolDialogState | null>(null);
   const openToolState = setToolState;
+  const setToolStateCoerced: React.Dispatch<React.SetStateAction<ToolDialogState | null>> = (
+    next,
+  ) => {
+    setToolState(readyTool(next));
+  };
   const toolStateRef = useRef(toolState);
   toolStateRef.current = toolState;
+
+  const readyTool = (
+    next: unknown,
+  ): ToolDialogState | null => {
+    if (next === null || next === undefined) return null;
+    const raw = next as Record<string, unknown>;
+    if (String(raw.status) === "error") {
+      return {
+        status: "error",
+        message: typeof raw.message === "string" ? raw.message : String(raw.message ?? ""),
+      };
+    }
+    const kind =
+      raw.kind === "web"
+        ? "web"
+        : raw.kind === "code"
+          ? "code"
+          : "terminal";
+    const title =
+      typeof raw.title === "string" ? raw.title : "";
+    const body =
+      typeof raw.body === "string" ? raw.body : "";
+    const previewPath =
+      typeof raw.previewPath === "string" ? raw.previewPath : undefined;
+    const state: ToolDialogState = {
+      status: "ready",
+      title,
+      body,
+      kind,
+    };
+    if (previewPath !== undefined) {
+      state.previewPath = previewPath;
+    }
+    return state;
+  };
+
   const onToolView = (path: string) => {
     setAeroHandoffRunId(null);
     setShowAeroOverview(true);
   };
 
-  const setToolStateChecked = (next: unknown) => {
-    setToolState(readyTool(next));
-  };
+  const setToolStateChecked = setToolStateCoerced;
+
+
   // One spring table for every row: prompts from the right, replies from the
   // left, and nothing at all when reduced motion is requested.
   const rowMotion = useChatRowVariants();
@@ -4571,10 +4612,10 @@ export default function Dashboard() {
     // need no engine, and the prompt ones that are nothing but their text.
     const local = await runLocalTool(command.name, args);
     if (local) {
-      setToolState(
+      setToolStateChecked(
         "error" in local
           ? { status: "error", message: local.error }
-          : { status: "ready", title: local.title, body: local.body },
+          : { status: "ready", title: local.title, body: local.body, kind: "terminal" },
       );
       return;
     }
@@ -6766,7 +6807,6 @@ export default function Dashboard() {
               if (!open) setToolState(null);
             }}
             state={toolState}
-            onView={onToolView}
             onView={onToolView}
           />
 

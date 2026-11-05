@@ -151,7 +151,7 @@ export function ToolResultDialog({
   );
 }
 
-export export function ToolResultDialogContent({
+export function ToolResultDialogContent({
   state,
   onView,
 }: {
@@ -160,7 +160,9 @@ export export function ToolResultDialogContent({
 }) {
   const ready = state?.status === "ready";
   const body = ready ? state.body : "";
-  const kind = state?.kind ?? "terminal";
+  const kind = ready ? (state.kind ?? "terminal") : "terminal";
+  const title = ready ? (state.title ?? "") : "";
+  const previewPath = ready && state.previewPath ? state.previewPath : undefined;
 
   const [copied, setCopied] = useState<string | null>(null);
   const copy = async (text: string, key: string) => {
@@ -180,7 +182,7 @@ export export function ToolResultDialogContent({
             <details className="group mb-2">
               <summary className="flex cursor-pointer items-baseline gap-1.5 rounded px-1 py-0.5 font-mono text-[11px] text-foreground/80 hover:bg-accent">
                 <span className="shrink-0 text-muted-foreground/50 group-open:opacity-60">▸</span>
-                <span>{state.title}</span>
+                <span>{title}</span>
                 <span className="hud-readout text-[10px] text-muted-foreground/60 ml-auto">
                   {body.split("\n").length} lines
                 </span>
@@ -193,7 +195,7 @@ export export function ToolResultDialogContent({
             </details>
           )
         : null,
-    [ready, kind, body, state?.title],
+    [ready, kind, body, title],
   );
 
   const preview = useMemo(
@@ -204,7 +206,7 @@ export export function ToolResultDialogContent({
               <div className="flex items-center gap-2">
                 <Globe className="size-3.5 text-primary" />
                 <span className="flex-1 truncate text-[11px] text-foreground/80">
-                  {state.previewPath ?? "Agent page"}
+                  {ready && state.previewPath ? state.previewPath : "Agent page"}
                 </span>
                 <button
                   type="button"
@@ -223,7 +225,7 @@ export export function ToolResultDialogContent({
             </div>
           )
         : null,
-    [ready, kind, body, state?.previewPath, onView],
+    [ready, kind, body, previewPath, onView],
   );
 
   const code = useMemo(
@@ -233,7 +235,7 @@ export export function ToolResultDialogContent({
             <details className="group mb-2">
               <summary className="flex cursor-pointer items-baseline gap-1.5 rounded px-1 py-0.5 font-mono text-[11px] text-foreground/80 hover:bg-accent">
                 <span className="shrink-0 text-muted-foreground/50 group-open:opacity-60">▸</span>
-                <span>{state.title}</span>
+                <span>{title}</span>
                 <span className="hud-readout text-[10px] text-muted-foreground/60 ml-auto">
                   {body.length.toLocaleString()} chars
                 </span>
@@ -246,7 +248,7 @@ export export function ToolResultDialogContent({
             </details>
           )
         : null,
-    [ready, kind, body, state?.title],
+    [ready, kind, body, title],
   );
 
   return (
