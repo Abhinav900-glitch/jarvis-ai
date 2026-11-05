@@ -203,6 +203,43 @@ const strArg = (description: string) => ({ type: "string", description });
 const optInt = (description: string) => ({ type: "integer", description });
 
 /**
+ * Which sandbox runner can execute a workspace file.
+ *
+ * Only extensions a runner can genuinely take are listed. `ts`/`tsx` are
+ * deliberately absent: handing TypeScript to the Node runner fails on the
+ * syntax rather than on the code, which is a worse signal than no run at all.
+ * `null` means the file cannot be run on its own, so nothing should try.
+ */
+const RUNNERS_BY_EXTENSION: Record<string, string> = {
+  py: "python3",
+  js: "nodejs",
+  mjs: "nodejs",
+  cjs: "nodejs",
+  rb: "ruby",
+  sh: "bash",
+  bash: "bash",
+  php: "php",
+  go: "go",
+  rs: "rust",
+  java: "java",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  cc: "cpp",
+  cxx: "cpp",
+  hpp: "cpp",
+  cs: "csharp",
+};
+
+/** The runner for a path, or null when the file is not independently runnable. */
+export function languageForPath(path: string): string | null {
+  const name = path.trim().toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return null;
+  return RUNNERS_BY_EXTENSION[name.slice(dot + 1)] ?? null;
+}
+
+/**
  * The tools handed to the model, filtered by mode at send time.
  *
  * `readonly` mode drops the mutating declarations outright rather than
@@ -323,6 +360,22 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
         parameters: {
           type: "object",
           properties: { path: strArg("Workspace-relative path") },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "run_file",
+        description:
+          "Runs a file that already exists in the workspace and returns its stdout, stderr and exit code. This is how you check what you just wrote: run the file itself rather than pasting a copy into run_code, so the thing you test is the thing that was saved. The language comes from the extension.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: strArg("Workspace-relative path, e.g. main.py or src/check.js"),
+            stdin: strArg("Optional text piped to standard input"),
+          },
           required: ["path"],
         },
       },

@@ -20,6 +20,7 @@ import { internal } from "./_generated/api";
 import type { ToolCall } from "./ai";
 import {
   args,
+  languageForPath,
   MAX_READ_CHARS,
   MAX_WRITE_CHARS,
   normalizePath,
@@ -106,6 +107,8 @@ export async function executeTool(
         );
       case "delete_file":
         return await deleteFile(ec, args.path(parsed));
+      case "run_file":
+        return await runFile(ec, args.path(parsed), args.stdin(parsed));
       case "run_code":
         return await runCode(
           ec,
@@ -557,8 +560,6 @@ async function runCode(
     requestError?: string | null;
   };
 
-  const out = (result.output ?? "").trim();
-  const err = (result.error ?? "").trim();
   const note = result.requestError?.trim();
 
   if (note) {
@@ -570,6 +571,70 @@ async function runCode(
     };
   }
 
+  return describe(result, `Ran ${slug}`);
+}
+
+/**
+ * Run a saved workspace file.
+ *
+ * The point is fidelity: `run_code` executes a copy the model typed into the
+ * call, so a file it just edited can differ from the snippet it tested. Reading
+ * the file from the workspace and running *that* means a clean exit is evidence
+ * about the file, not about the paste.
+ */
+async function runFile(
+  ec: ExecContext,
+  raw: string,
+  stdin: string,
+): Promise<ToolOutcome> {
+  const resolved = safePath(raw);
+  if ("error" in resolved) return resolved.error;
+
+  const language = languageForPath(resolved.path);
+  if (!language) {
+    return {
+      result: `${resolved.path} is not a file this sandbox can run on its own (supported: .py, .js, .mjs, .cjs, .rb, .sh, .php, .go, .rs, .java, .c, .cpp, .cs). Write a small driver script that imports it, then run the driver with run_file.`,
+      summary: `Cannot run ${resolved.path}`,
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const file = (await ec.ctx.runQuery(internal.agentStore.getFile, {
+    userId: ec.userId,
+    path: resolved.path,
+  })) as FileRow | null;
+  if (!file) {
+    return {
+      result: `${resolved.path} does not exist, so there is nothing to run. Call list_files to see what does.`,
+      summary: `Missing ${resolved.path}`,
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const outcome = await runCode(
+    ec,
+    language,
+    // A shebang is a valid script but a syntax error to the runner that is
+    // already executing it, so the first line is dropped for those files.
+    file.content.replace(/^#![^\n]*\n/, ""),
+    stdin,
+  );
+  return { ...outcome, summary: outcome.summary.replace("Ran ", `Ran ${resolved.path} `) };
+}
+
+/** Shared tail of a runner result: exit code, streams, and a verdict. */
+function describe(
+  result: {
+    output?: string;
+    error?: string;
+    exitCode?: number | null;
+  },
+  label: string,
+): ToolOutcome {
+  const out = (result.output ?? "").trim();
+  const err = (result.error ?? "").trim();
   const parts: string[] = [];
   if (result.exitCode !== null && result.exitCode !== undefined) {
     parts.push(`exit code ${result.exitCode}`);
@@ -583,7 +648,7 @@ async function runCode(
       parts.length > 0
         ? parts.join("\n\n")
         : "The program ran and produced no output.",
-    summary: `Ran ${slug}${failed ? " — failed" : ""}`,
+    summary: `${label}${failed ? " — failed" : ""}`,
     mutated: false,
     refused: failed,
   };

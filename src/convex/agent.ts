@@ -50,6 +50,7 @@ import { gateFor } from "../lib/agent-contract";
 import { executeTool, type ExecContext } from "./agentExec";
 import {
   assistantToolMessage,
+  languageForPath,
   toolMessage,
   toolSpecs,
   type AgentMode,
@@ -114,6 +115,7 @@ How to work:
 - Use the tools. A step that needs to know what a file says is done by reading it, not by recalling what such a file usually says. You cannot see the workspace otherwise.
 - Read before you write. An edit must match the current text exactly; guessing wastes the attempt and the request.
 - Make one change at a time, then check it. Prefer edit_file over write_file — a full overwrite silently discards whatever you did not read.
+- Run what you write. A file you created or changed is unverified until run_file has executed it here and you have read its exit code and stderr. Looking correct is not evidence; code that has never run is not finished. If it genuinely cannot run in this sandbox, say so plainly instead of implying it works.
 - If a tool tells you it was refused or the edit was only proposed, believe it and adapt. Never claim a file contains something you have not seen.
 - Stop when the step is done. Say so rather than starting the next piece of work.
 
@@ -122,7 +124,7 @@ When the step is finished, reply with JSON only, no prose and no code fence:
 
 Status:
 - "continue" — step worked, more to do.
-- "done" — the whole goal is now satisfied. \`output\` is the complete answer, written for the person who set the task.
+- "done" — the whole goal is now satisfied. \`output\` is the complete answer, written for the person who set the task. Never for code you have written but not run.
 - "needs_decision" — you hit a genuine fork. Only for a real choice between materially different directions, never to confirm routine progress. Put the decision in \`question\` and the options in \`options\`.
 - "blocked" — you cannot proceed without something you do not have. Say what in \`output\`.
 
@@ -309,6 +311,16 @@ interface StepRow {
 const message = (err: unknown) =>
   err instanceof Error ? err.message : String(err).slice(0, 200);
 
+/** The `path` a tool call names, or an empty string when it names none. */
+function callPath(call: { arguments: string }): string {
+  try {
+    const parsed = JSON.parse(call.arguments || "{}") as { path?: unknown };
+    return typeof parsed.path === "string" ? parsed.path.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Work one step, letting the model reach for tools until it answers in prose.
  *
@@ -352,6 +364,12 @@ async function runStepWithTools(
   const messages: ChatTurn[] = [{ role: "user", content: prompt }];
   const tools = toolSpecs(ec.mode);
   const activity: string[] = [];
+  /** A runnable file this step changed and has not executed since. */
+  let unrun: string | null = null;
+  /** How the last execution went, so "done" can be checked against evidence. */
+  let lastRun: { path: string; ok: boolean; detail: string } | null = null;
+  /** One forced repair round; after that the step is reported honestly. */
+  let nudged = false;
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     const stepText = `${step.title}. ${step.detail ?? ""}`;
@@ -407,7 +425,30 @@ async function runStepWithTools(
     }
 
     if (roundCalls.length === 0) {
-      return { env: parseEnvelope(result.text), proposed: false, activity };
+      const env = parseEnvelope(result.text);
+      // A model can be certain about code it never ran; the sandbox cannot be.
+      // When the last execution failed, the step is not finished, so one repair
+      // round is forced and the failure has to be dealt with here instead of
+      // being described away in the final answer.
+      const canRetry = i < MAX_TOOL_ITERATIONS - 1;
+      const claimsProgress = env.status !== "blocked" && env.status !== "needs_decision";
+      if (lastRun && !lastRun.ok && !nudged && canRetry && claimsProgress) {
+        nudged = true;
+        messages.push({
+          role: "assistant",
+          content: result.text.trim() || "Not finished.",
+        });
+        messages.push({
+          role: "user",
+          content: [
+            `Not finished: ${lastRun.path} fails when it runs.`,
+            lastRun.detail.slice(0, 2500),
+            "Fix the cause and run it again with run_file. Only answer once it exits clean, or say plainly what you could not make work.",
+          ].join("\n\n"),
+        });
+        continue;
+      }
+      return { env, proposed: false, activity };
     }
 
     messages.push(assistantToolMessage(result.text, roundCalls));
@@ -435,8 +476,61 @@ async function runStepWithTools(
       });
       messages.push(toolMessage(call.id, call.name, outcome.result));
       if (outcome.proposed) proposed = true;
+      // A change to a file this sandbox can execute is unverified until it has
+      // actually run, so remember the last one. A run of any kind clears it.
+      if (outcome.mutated && (call.name === "write_file" || call.name === "edit_file")) {
+        const path = callPath(call);
+        if (path && languageForPath(path)) unrun = path;
+      }
+      if (call.name === "run_file" || call.name === "run_code") {
+        unrun = null;
+        lastRun = {
+          path: call.name === "run_file" ? callPath(call) || "that file" : "that snippet",
+          ok: !outcome.refused,
+          detail: outcome.result,
+        };
+      }
     }
     if (proposed) return { env: null, proposed: true, activity };
+
+    // The model may simply forget to check its work, so the check is not left
+    // solely to it: a runnable file changed this round gets run once here, and
+    // the output goes back into the transcript. Its next round sees the real
+    // exit code, and a model that skips straight to prose gets nudged above.
+    // Only when a round remains to act on the result — a run nobody reads costs
+    // sandbox time and changes nothing.
+    if (unrun && i < MAX_TOOL_ITERATIONS - 1) {
+      const target = unrun;
+      unrun = null;
+      const called = Date.now();
+      const check = await executeTool(ec, {
+        id: `verify-${i}`,
+        name: "run_file",
+        arguments: JSON.stringify({ path: target }),
+      });
+      activity.push(`run_file → ${check.summary}`);
+      await ctx.runMutation(internal.agentStore.logStep, {
+        stepId: step._id,
+        entry: {
+          at: Date.now(),
+          kind: "tool",
+          label: "run_file",
+          detail: `checked ${target} — ${check.summary}`,
+          ms: Date.now() - called,
+        },
+      });
+      lastRun = { path: target, ok: !check.refused, detail: check.result };
+      messages.push({
+        role: "user",
+        content: [
+          `AUTOMATIC CHECK — ${target} was changed on this step but never run, so it was run here.`,
+          check.result,
+          check.refused
+            ? "It failed. Fix the cause above, run it with run_file until it exits clean, and only then finish this step."
+            : "It exited clean.",
+        ].join("\n\n"),
+      });
+    }
   }
 
   return {

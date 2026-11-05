@@ -311,7 +311,7 @@ export const appendVerifyStep = internalMutation({
       position: run.planned,
       title: "Verify the finished work by running it",
       detail:
-        "Everything planned is written, so check it rather than asserting it: run the entry point with run_code, read the output, fix what fails, then run it again. Finish with status \"done\" and say in output exactly what you ran and what happened.",
+        "Everything planned is written, so check it rather than asserting it: run each file you created or changed with run_file, read its exit code and stderr, fix what fails, then run it again. Finish with status \"done\" and say in output exactly what you ran and what happened.",
       status: "pending",
       createdAt: args.now,
     });
