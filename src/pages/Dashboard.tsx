@@ -4220,6 +4220,109 @@ export default function Dashboard() {
     }
   };
 
+  // ---- Selection actions ---------------------------------------------------
+  // Selecting a passage is how you point at *that* sentence instead of
+  // retyping it. The bar floats over the transcript and offers the three things
+  // worth doing with a fragment: reuse it as a quote, ask about it, copy it.
+  const [selectionMenu, setSelectionMenu] = useState<{
+    text: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const quoteLines = (text: string) =>
+    text
+      .split("\n")
+      .map((line) => (line.trim() ? `> ${line}` : ">"))
+      .join("\n");
+
+  const clearSelection = () => {
+    window.getSelection()?.removeAllRanges();
+    setSelectionMenu(null);
+  };
+
+  const handleTranscriptSelection = (
+    e: React.PointerEvent<HTMLUListElement>,
+  ) => {
+    const sel = window.getSelection();
+    const text = sel?.toString().trim() ?? "";
+    // A stray click also fires this; only a real, multi-word selection should
+    // raise the bar, otherwise it would flash on every tap in the transcript.
+    if (!sel || sel.isCollapsed || text.length < 4) {
+      setSelectionMenu(null);
+      return;
+    }
+    if (!sel.anchorNode || !e.currentTarget.contains(sel.anchorNode)) {
+      setSelectionMenu(null);
+      return;
+    }
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    // Clamped to the viewport so a selection at the right edge or near the top
+    // does not push the bar half off screen.
+    setSelectionMenu({
+      text,
+      x: Math.min(Math.max(rect.left + rect.width / 2, 110), window.innerWidth - 110),
+      y: Math.max(rect.top - 44, 8),
+    });
+  };
+
+  const quoteSelection = (text: string) => {
+    const quoted = quoteLines(text);
+    setInput((prev) => (prev.trim() ? `${quoted}\n\n${prev}` : `${quoted}\n\n`));
+    clearSelection();
+    // The composer grows after the value lands, so the caret is placed on the
+    // next tick — setting it now would measure the old text.
+    window.setTimeout(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      setCaret(el.value.length);
+    }, 0);
+  };
+
+  const explainSelection = (text: string) => {
+    clearSelection();
+    void runSendWithText(
+      `Explain this passage from your earlier reply in plain language, then say why it matters here. Do not repeat it back — assume I am looking at it:\n\n${quoteLines(text)}`,
+    );
+  };
+
+  const copySelection = async (text: string) => {
+    const words = text.split(/\s+/).filter(Boolean).length;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`Copied ${words} ${words === 1 ? "word" : "words"}`);
+    } catch {
+      toast.error("Could not reach the clipboard.");
+    }
+    clearSelection();
+  };
+
+  // The bar is transient by nature: any click outside it, any scroll of the
+  // transcript and Escape all dismiss it, so it never sits over the text it
+  // was pointing at.
+  useEffect(() => {
+    if (!selectionMenu) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("[data-selection-bar]")) return;
+      setSelectionMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelectionMenu(null);
+    };
+    const dismiss = () => setSelectionMenu(null);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", dismiss, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", dismiss, true);
+    };
+  }, [selectionMenu]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // The `@` menu behaves exactly like the `$` one: while it is open the
     // arrows and Enter belong to it, so picking a skill cannot send a
@@ -5618,7 +5721,10 @@ export default function Dashboard() {
                     onNewBranch={() => void handleForkLatest()}
                   />
                 ) : null}
-                <ul className="space-y-8">
+                <ul
+                  className="space-y-8"
+                  onPointerUp={handleTranscriptSelection}
+                >
                   {messages.map((m) => (
                     <motion.li
                       key={m._id}
@@ -6247,6 +6353,52 @@ export default function Dashboard() {
                     </li>
                   )}
                 </ul>
+
+                {/* Selection actions — appears only while text is selected */}
+                <AnimatePresence>
+                  {selectionMenu && (
+                    <motion.div
+                      key="selection-bar"
+                      data-selection-bar
+                      initial={{ opacity: 0, y: 6, x: "-50%", scale: 0.94 }}
+                      animate={{ opacity: 1, y: 0, x: "-50%", scale: 1 }}
+                      exit={{ opacity: 0, y: 6, x: "-50%", scale: 0.94 }}
+                      transition={SPRING_SOFT}
+                      style={{ top: selectionMenu.y, left: selectionMenu.x }}
+                      className="fixed z-50 flex items-center gap-0.5 rounded-full border bg-popover/95 p-1 text-popover-foreground shadow-lg backdrop-blur"
+                      onPointerDown={(e) => e.preventDefault()}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => quoteSelection(selectionMenu.text)}
+                        title="Quote this into the composer"
+                        className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        <CornerDownRight className="size-3.5" />
+                        Quote
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => explainSelection(selectionMenu.text)}
+                        disabled={sending || streaming}
+                        title="Ask Jarvis to explain this passage"
+                        className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                      >
+                        <Sparkles className="size-3.5" />
+                        Explain
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void copySelection(selectionMenu.text)}
+                        title="Copy just this selection"
+                        className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        <Copy className="size-3.5" />
+                        Copy
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             )}
           </div>
