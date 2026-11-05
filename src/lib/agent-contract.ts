@@ -12,6 +12,31 @@
 
 import { v } from "convex/values";
 
+/** For "propose a change" notifications from the agent. */
+export type AgentProposalEvent = {
+  type: "proposal";
+  runId: GenericId<"agentRuns">;
+  path: string;
+  summary: string;
+  beforeLen: number;
+  afterLen: number | null;
+};
+
+/**
+ * The one tool result the Mortal Agent's read-only write path yields.
+ *
+ * A run that cannot change the workspace still has an answer worth preserving:
+ * the file it would have written, and the page the user can preview before
+ * approving it. That is what this carries — the rest of the runner's exec
+ * loop is all `ToolOutcome` and already has a home.
+ */
+export type AgentToolResultEvent = {
+  type: "tool_result";
+  runId: GenericId<"agentRuns">;
+  state: ToolDialogState;
+  sourcePath?: string;
+};
+
 export const runStatus = v.union(
   v.literal("planning"),
   v.literal("running"),

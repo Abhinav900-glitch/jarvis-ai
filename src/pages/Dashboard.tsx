@@ -1209,6 +1209,13 @@ export default function Dashboard() {
   const [reviewState, setReviewState] = useState<AnswerReviewState | null>(null);
   const [recapState, setRecapState] = useState<ChatDigestState | null>(null);
   const [toolState, setToolState] = useState<ToolDialogState | null>(null);
+  const openToolState = setToolState;
+  const toolStateRef = useRef(toolState);
+  toolStateRef.current = toolState;
+  const onToolView = (path: string) => {
+    setAeroHandoffRunId(null);
+    setShowAeroOverview(true);
+  };
   // One spring table for every row: prompts from the right, replies from the
   // left, and nothing at all when reduced motion is requested.
   const rowMotion = useChatRowVariants();
@@ -6755,6 +6762,7 @@ export default function Dashboard() {
               if (!open) setToolState(null);
             }}
             state={toolState}
+            onView={onToolView}
           />
 
           {/* ---- Recap ---- */}
