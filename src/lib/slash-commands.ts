@@ -12,7 +12,18 @@
 // recognise, and the parser can never accept something the menu does not show.
 // ---------------------------------------------------------------------------
 
-export type SlashGroup = "World" | "Code" | "Create" | "Math" | "Session";
+import { LOCAL_TOOLS } from "./local-tools";
+import { PROMPT_TEMPLATES } from "./prompt-templates";
+
+export type SlashGroup =
+  | "World"
+  | "Code"
+  | "Write"
+  | "Create"
+  | "Think"
+  | "Math"
+  | "Tools"
+  | "Session";
 
 export interface SlashCommand {
   /** Canonical name, matched case-insensitively. */
@@ -31,9 +42,16 @@ export interface SlashCommand {
    * fall through to sending the literal text as a chat message.
    */
   needsArg?: boolean;
+  /**
+   * Present on the commands that are a job rather than a destination: the
+   * returned text is what gets sent. Absent commands are handled in Dashboard
+   * by name because they need state the table cannot see.
+   */
+  buildPrompt?: (args: string) => string;
 }
 
-export const SLASH_COMMANDS: SlashCommand[] = [
+/** Commands with their own handler in the Dashboard. */
+const CORE_COMMANDS: SlashCommand[] = [
   {
     name: "time",
     aliases: [],
@@ -212,6 +230,44 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
 ];
 
+/**
+ * The workflow commands, generated from the template table so a prompt can
+ * never exist without a menu entry (or the other way round).
+ */
+const PROMPT_COMMANDS: SlashCommand[] = Object.entries(PROMPT_TEMPLATES).map(
+  ([name, template]) => ({
+    name,
+    aliases: template.aliases,
+    group: template.group,
+    summary: template.summary,
+    ...(template.argHint ? { argHint: template.argHint } : {}),
+    example: template.example,
+    buildPrompt: template.build,
+  }),
+);
+
+/**
+ * The exact ones — no model involved, so they work with every engine down and
+ * return in a millisecond. Grouped last before Session in the menu.
+ */
+const TOOL_COMMANDS: SlashCommand[] = Object.entries(LOCAL_TOOLS).map(
+  ([name, tool]) => ({
+    name,
+    aliases: tool.aliases,
+    group: "Tools" as const,
+    summary: tool.summary,
+    ...(tool.argHint ? { argHint: tool.argHint } : {}),
+    example: tool.example,
+    ...(tool.needsArg ? { needsArg: true } : {}),
+  }),
+);
+
+export const SLASH_COMMANDS: SlashCommand[] = [
+  ...CORE_COMMANDS,
+  ...PROMPT_COMMANDS,
+  ...TOOL_COMMANDS,
+];
+
 export interface SlashMatch {
   command: SlashCommand;
   /** Everything after the command name, trimmed. */
@@ -222,7 +278,8 @@ export interface SlashMatch {
 export function matchSlashCommand(text: string): SlashMatch | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
-  const match = trimmed.match(/^\/([a-z]+)\s*([\s\S]*)$/i);
+  // Names may carry digits — /base64 and /el5 are commands too.
+  const match = trimmed.match(/^\/([a-z][a-z0-9]*)\s*([\s\S]*)$/i);
   if (!match) return null;
   const [, name, rest] = match;
   const command = SLASH_COMMANDS.find(
@@ -275,6 +332,46 @@ export function slashTokenAt(
   const match = before.match(/^\/[^\s]*$/);
   if (!match) return null;
   return { token: match[0], start: 0 };
+}
+
+/** Menu order, so the grouped view and the keyboard agree on row numbers. */
+export const SLASH_GROUP_ORDER: SlashGroup[] = [
+  "World",
+  "Code",
+  "Write",
+  "Create",
+  "Think",
+  "Math",
+  "Tools",
+  "Session",
+];
+
+/** Subsequence match, so `/wt` still finds `/weather`. */
+export function slashMatches(command: SlashCommand, needle: string): boolean {
+  const names = [command.name, ...command.aliases];
+  return names.some((name) => {
+    let i = 0;
+    for (const ch of name) {
+      if (ch === needle[i]) i += 1;
+      if (i === needle.length) return true;
+    }
+    return needle.length === 0;
+  });
+}
+
+/**
+ * The menu's rows, flattened.
+ *
+ * The keydown handler and the menu must agree on what row N is; with forty
+ * commands a mismatch meant Enter could run a different command than the one
+ * highlighted. Both now read this one list.
+ */
+export function slashMenuCommands(token: string): SlashCommand[] {
+  const needle = token.replace(/^\//, "").toLowerCase();
+  const matching = SLASH_COMMANDS.filter((c) => slashMatches(c, needle));
+  return SLASH_GROUP_ORDER.flatMap((group) =>
+    matching.filter((c) => c.group === group),
+  );
 }
 
 /** The hint shown in the composer placeholder. */

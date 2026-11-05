@@ -165,6 +165,11 @@ import {
   ChatRecapDialog,
   type ChatDigestState,
 } from "@/components/chat-recap-dialog";
+import {
+  ToolResultDialog,
+  type ToolDialogState,
+} from "@/components/tool-result-dialog";
+import { runLocalTool } from "@/lib/local-tools";
 import { Radio, ExternalLink } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
@@ -225,8 +230,8 @@ import type { IntegrationPanel } from "@/lib/integrations";
 import { LiveSessionPanel } from "@/live/live-session-panel";
 import { useListeningQueue } from "@/hooks/use-listening-queue";
 import {
-  filterSlashCommands,
   matchSlashCommand,
+  slashMenuCommands,
   type SlashCommand,
 } from "@/lib/slash-commands";
 
@@ -1201,6 +1206,7 @@ export default function Dashboard() {
   // dialog's body, so "loading" survives a re-render mid-request.
   const [reviewState, setReviewState] = useState<AnswerReviewState | null>(null);
   const [recapState, setRecapState] = useState<ChatDigestState | null>(null);
+  const [toolState, setToolState] = useState<ToolDialogState | null>(null);
   // Streaming is on by default: for a long answer, seeing the first sentence
   // immediately is worth far more than the handful of ms it costs.
   const [streamReplies, setStreamReplies] = useState(true);
@@ -4276,7 +4282,9 @@ export default function Dashboard() {
     // rather than to the textarea: otherwise choosing a command with Enter
     // would also send whatever half-typed text is in the box.
     if (slashOpen) {
-      const options = filterSlashCommands(slashToken);
+      // The same flattened list the menu renders, so Enter runs the row the
+      // user is looking at.
+      const options = slashMenuCommands(slashToken);
       if (options.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
@@ -4433,6 +4441,23 @@ export default function Dashboard() {
 
   /** The single executor behind both Enter and the autocomplete. */
   const runSlashCommand = async (command: SlashCommand, args: string) => {
+    // Two whole families of command run before the switch: the exact ones that
+    // need no engine, and the prompt ones that are nothing but their text.
+    const local = await runLocalTool(command.name, args);
+    if (local) {
+      setToolState(
+        "error" in local
+          ? { status: "error", message: local.error }
+          : { status: "ready", title: local.title, body: local.body },
+      );
+      return;
+    }
+    if (command.buildPrompt) {
+      setInput("");
+      void runSendWithText(command.buildPrompt(args));
+      return;
+    }
+
     switch (command.name) {
       // Same destination as the Agent pill, reached by typing: the task goes
       // to the runner, which is the only surface that can plan it and work it
@@ -6509,6 +6534,15 @@ export default function Dashboard() {
             onOpenChange={setShowStats}
             title={sessionTitle}
             messages={messages ?? []}
+          />
+
+          {/* ---- Local tool result ---- */}
+          <ToolResultDialog
+            open={toolState !== null}
+            onOpenChange={(open) => {
+              if (!open) setToolState(null);
+            }}
+            state={toolState}
           />
 
           {/* ---- Recap ---- */}

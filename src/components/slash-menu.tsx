@@ -14,7 +14,12 @@ import { useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { CornerDownLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SLASH_COMMANDS, type SlashCommand } from "@/lib/slash-commands";
+import {
+  SLASH_COMMANDS,
+  SLASH_GROUP_ORDER,
+  slashMatches,
+  type SlashCommand,
+} from "@/lib/slash-commands";
 
 export interface SlashMenuProps {
   open: boolean;
@@ -26,34 +31,14 @@ export interface SlashMenuProps {
   onSelect: (command: SlashCommand) => void;
 }
 
-/** Subsequence match, so `/wt` still finds `/weather`. */
-function matches(command: SlashCommand, needle: string): boolean {
-  const names = [command.name, ...command.aliases];
-  return names.some((name) => {
-    let i = 0;
-    for (const ch of name) {
-      if (ch === needle[i]) i++;
-      if (i === needle.length) return true;
-    }
-    return needle.length === 0;
-  });
-}
-
 export function SlashMenu({ open, token, activeIndex, onHover, onSelect }: SlashMenuProps) {
   const listRef = useRef<HTMLDivElement>(null);
 
   const needle = token.replace(/^\//, "").toLowerCase();
 
   const groups = useMemo(() => {
-    const matching = SLASH_COMMANDS.filter((c) => matches(c, needle));
-    const order: SlashCommand["group"][] = [
-      "World",
-      "Code",
-      "Create",
-      "Math",
-      "Session",
-    ];
-    return order
+    const matching = SLASH_COMMANDS.filter((c) => slashMatches(c, needle));
+    return SLASH_GROUP_ORDER
       .map((group) => ({
         group,
         items: matching.filter((c) => c.group === group),
@@ -74,8 +59,6 @@ export function SlashMenu({ open, token, activeIndex, onHover, onSelect }: Slash
   // Guard against the index outliving a narrowed list.
   const safeIndex = flat.length === 0 ? -1 : Math.min(activeIndex, flat.length - 1);
 
-  let cursor = -1;
-
   return (
     <AnimatePresence>
       {open && flat.length > 0 && (
@@ -93,8 +76,9 @@ export function SlashMenu({ open, token, activeIndex, onHover, onSelect }: Slash
                 {group}
               </div>
               {items.map((command) => {
-                cursor += 1;
-                const index = cursor;
+                // Read the row number off the flattened list rather than
+                // counting through the groups during render.
+                const index = flat.indexOf(command);
                 const active = index === safeIndex;
                 return (
                   <button
