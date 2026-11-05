@@ -1467,3 +1467,115 @@ html[data-palette="ember"]:not(.dark) {
     stroke-dasharray: none;
   }
 }
+
+/* --------------------------------------------------------------------------
+   Live chat states: the caret on a reply being written, the wave of dots that
+   marks a stream, and the shimmer on "Thinking…". All three exist to say the
+   same thing — the answer is still moving — so they share one cyan signal and
+   one rhythm.
+   -------------------------------------------------------------------------- */
+
+.jarvis-caret {
+  display: inline-block;
+  width: 2px;
+  height: 0.95em;
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--signal-cyan) 85%, white),
+    var(--signal-cyan)
+  );
+  box-shadow: 0 0 7px color-mix(in oklab, var(--signal-cyan) 55%, transparent);
+  animation: jarvis-caret 1.05s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes jarvis-caret {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scaleY(0.7);
+  }
+}
+
+.jarvis-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.jarvis-dots > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--signal-cyan);
+  animation: jarvis-dot 1.2s ease-in-out infinite;
+}
+
+.jarvis-dots > span:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.jarvis-dots > span:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+@keyframes jarvis-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.32;
+    transform: translateY(0) scale(0.85);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1);
+  }
+}
+
+.jarvis-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    color-mix(in oklab, currentColor 40%, transparent) 25%,
+    currentColor 45%,
+    color-mix(in oklab, currentColor 40%, transparent) 65%
+  );
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: jarvis-shimmer 1.9s ease-in-out infinite;
+}
+
+@keyframes jarvis-shimmer {
+  from {
+    background-position: 135% 0;
+  }
+  to {
+    background-position: -35% 0;
+  }
+}
+
+/* Reduced motion keeps the meaning (a caret is there, dots are there) and
+   drops the pulsing, which is the part that can be unpleasant. */
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-caret,
+  .jarvis-dots > span,
+  .jarvis-shimmer {
+    animation: none !important;
+  }
+
+  .jarvis-dots > span {
+    opacity: 0.7;
+  }
+
+  .jarvis-shimmer {
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}

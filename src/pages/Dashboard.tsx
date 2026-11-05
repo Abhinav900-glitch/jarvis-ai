@@ -234,6 +234,7 @@ import {
   slashMenuCommands,
   type SlashCommand,
 } from "@/lib/slash-commands";
+import { SPRING_SOFT, chipTransition, useChatRowVariants } from "@/lib/motion";
 
 /** An uploaded document waiting on the composer, not yet sent. */
 interface PendingFile {
@@ -1207,6 +1208,9 @@ export default function Dashboard() {
   const [reviewState, setReviewState] = useState<AnswerReviewState | null>(null);
   const [recapState, setRecapState] = useState<ChatDigestState | null>(null);
   const [toolState, setToolState] = useState<ToolDialogState | null>(null);
+  // One spring table for every row: prompts from the right, replies from the
+  // left, and nothing at all when reduced motion is requested.
+  const rowMotion = useChatRowVariants();
   // Streaming is on by default: for a long answer, seeing the first sentence
   // immediately is worth far more than the handful of ms it costs.
   const [streamReplies, setStreamReplies] = useState(true);
@@ -5612,9 +5616,16 @@ export default function Dashboard() {
                 ) : null}
                 <ul className="space-y-8">
                   {messages.map((m) => (
-                    <li
+                    <motion.li
                       key={m._id}
                       data-message-id={m._id}
+                      initial="hidden"
+                      animate="visible"
+                      variants={
+                        m.role === "user"
+                          ? rowMotion.user
+                          : rowMotion.assistant
+                      }
                       className={cn(
                         "group rounded-lg px-3 py-2 transition-colors",
                         highlight === m._id && "bg-amber-400/10 ring-1 ring-amber-400/40",
@@ -6117,7 +6128,7 @@ export default function Dashboard() {
                               written, so an in-flight reply reads as live
                               rather than as a finished short answer. */}
                           {streaming && m._id === lastMsg?._id ? (
-                            <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-foreground/70 align-text-bottom" />
+                            <span className="jarvis-caret" aria-hidden="true" />
                           ) : null}
                           {translations[m._id] && (
                             <div className="mt-3 rounded-lg border border-dashed bg-muted/30 px-3.5 py-2.5">
@@ -6156,13 +6167,18 @@ export default function Dashboard() {
                           <SourceList sources={m.sources} />
                         </div>
                       ) : null}
-                    </li>
+                    </motion.li>
                   ))}
                   {/* While streaming, the reply is already on screen growing
                       token by token — a second "thinking" row underneath it
                       would just be noise. */}
                   {sending && !streaming && (
-                    <li className="flex items-center gap-2.5 py-1 text-sm text-muted-foreground">
+                    <motion.li
+                      initial="hidden"
+                      animate="visible"
+                      variants={rowMotion.assistant}
+                      className="flex items-center gap-2.5 py-1 text-sm text-muted-foreground"
+                    >
                       {/* The mark works as its own activity light: the orbit
                           turns and the spark twinkles while the reply is
                           being decided, so "thinking" looks like Jarvis
@@ -6170,24 +6186,42 @@ export default function Dashboard() {
                       <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent">
                         <JarvisMark animate className="size-[18px]" />
                       </span>
-                      {deepResearch
-                        ? "Searching the web, then thinking…"
-                        : "Thinking…"}
-                    </li>
+                      {/* The words themselves carry the light, so the row
+                          reads as active even out of the corner of an eye. */}
+                      <span className="jarvis-shimmer">
+                        {deepResearch
+                          ? "Searching the web, then thinking…"
+                          : "Thinking…"}
+                      </span>
+                    </motion.li>
                   )}
                   {streaming && (
-                    <li className="flex items-center gap-2 py-1 text-[11px] text-muted-foreground">
-                      <span className="ml-9 inline-flex items-center gap-1.5">
-                        <span className="size-1.5 animate-pulse rounded-full bg-foreground/60" />
+                    <motion.li
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="flex items-center gap-2 py-1 text-[11px] text-muted-foreground"
+                    >
+                      <span className="ml-9 inline-flex items-center gap-2">
+                        <span className="jarvis-dots" aria-hidden="true">
+                          <span />
+                          <span />
+                          <span />
+                        </span>
                         streaming
                       </span>
-                    </li>
+                    </motion.li>
                   )}
                   {!sending && followUps.length > 0 && (
                     <li className="ml-9 mt-1 flex flex-wrap gap-1.5">
-                      {followUps.map((f) => (
-                        <button
+                      {followUps.map((f, i) => (
+                        <motion.button
                           key={f}
+                          initial={{ opacity: 0, y: 6, scale: 0.96 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          transition={chipTransition(i)}
+                          whileHover={{ y: -1 }}
+                          whileTap={{ scale: 0.95 }}
                           onClick={() => {
                             setFollowUps([]);
                             void runSendWithText(f);
@@ -6196,7 +6230,7 @@ export default function Dashboard() {
                         >
                           <Lightbulb className="size-3" />
                           {f}
-                        </button>
+                        </motion.button>
                       ))}
                     </li>
                   )}
@@ -6207,18 +6241,25 @@ export default function Dashboard() {
 
           {/* Jump-to-latest pill when the user scrolled up during a stream */}
           <div className="relative z-10 h-0">
-            {!atBottom && messages && messages.length > 0 && (
-              <button
-                onClick={() => {
-                  scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-                  setAtBottom(true);
-                }}
-                className="absolute -top-5 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <ArrowDown className="size-3" />
-                Jump to latest
-              </button>
-            )}
+            <AnimatePresence>
+              {!atBottom && messages && messages.length > 0 && (
+                <motion.button
+                  key="jump-to-latest"
+                  initial={{ opacity: 0, y: 8, x: "-50%", scale: 0.94 }}
+                  animate={{ opacity: 1, y: 0, x: "-50%", scale: 1 }}
+                  exit={{ opacity: 0, y: 8, x: "-50%", scale: 0.94 }}
+                  transition={SPRING_SOFT}
+                  onClick={() => {
+                    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+                    setAtBottom(true);
+                  }}
+                  className="absolute -top-5 left-1/2 inline-flex items-center gap-1.5 rounded-full border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <ArrowDown className="size-3" />
+                  Jump to latest
+                </motion.button>
+              )}
+            </AnimatePresence>
           </div>
 
           {/* ---- Search panel ---- */}
@@ -7297,7 +7338,7 @@ export default function Dashboard() {
                           sending ||
                           panelBusy !== null
                     }
-                    className="size-7 rounded-lg"
+                    className="size-7 rounded-lg transition-transform active:scale-90"
                   >
                     {sending ? (
                       <Loader2 className="size-3.5 animate-spin" />
