@@ -27,6 +27,12 @@ import {
 import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
 import { depthDirective } from "../lib/answer-depth";
 import { buildPageContext, hasReadableText } from "../lib/pdf-pages";
+import {
+  PARALLEL_SEARCH_URL,
+  parallelRequestBody,
+  parallelResults,
+  type ParallelPayload,
+} from "../lib/parallel-search";
 import { getFreshAccessToken } from "./canva";
 
 // ---------------------------------------------------------------------------
@@ -1857,8 +1863,8 @@ export interface DeepResearchResult {
 }
 
 /**
- * One web search across four providers:
- * TinyFish → LangSearch → serpstack → SerApi.
+ * One web search across six providers, in the order below:
+ * Exa → Parallel → TinyFish → LangSearch → serpstack → SerApi.
  *
  * Errors are returned rather than thrown: a research run that already has
  * sources must not fail because a second provider is unhappy, and a round-two
@@ -1919,29 +1925,97 @@ async function exaSearch(key: string, query: string): Promise<SearchHit[]> {
   return results;
 }
 
+/**
+ * Parallel AI — POST /v1/search, `x-api-key`, JSON body.
+ *
+ * The second provider that returns page text, and the one that reads the
+ * question rather than the keywords: `objective` carries the whole question and
+ * `search_queries` the short form the API requires. Request and response
+ * shapes live in ../lib/parallel-search; this is only the fetch.
+ */
+async function parallelSearch(key: string, query: string): Promise<SearchHit[]> {
+  const res = await fetch(PARALLEL_SEARCH_URL, {
+    method: "POST",
+    headers: { "x-api-key": key, "Content-Type": "application/json" },
+    body: JSON.stringify(parallelRequestBody(query)),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("parallel: invalid API key");
+  }
+  if (res.status === 429) throw new Error("parallel: rate limited");
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`parallel ${res.status}: ${detail.slice(0, 120)}`);
+  }
+
+  const hits = parallelResults((await res.json()) as ParallelPayload).map(
+    (hit) => ({ ...hit, domain: hostnameOf(hit.url) }),
+  );
+  if (hits.length === 0) throw new Error("parallel: no results");
+  return hits;
+}
+
+/**
+ * Run one provider, recording why it failed instead of throwing.
+ *
+ * Research never fails because one provider is unhappy: a run with sources
+ * from anyone else is still a run, and the reasons are reported alongside it.
+ */
+async function searchStep(
+  name: string,
+  run: () => Promise<SearchHit[]>,
+  errors: string[],
+): Promise<SearchHit[]> {
+  try {
+    const hits = await run();
+    console.log(`[deep-research] ${name} returned ${hits.length} results`);
+    return hits;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "failed";
+    console.error(`[deep-research] ${name} exception:`, msg);
+    errors.push(`${name}: ${msg}`);
+    return [];
+  }
+}
+
 async function webSearch(
   query: string,
 ): Promise<{ sources: SearchHit[]; errors: string[] }> {
   const errors: string[] = [];
   let sources: SearchHit[] = [];
 
-  // Exa first, when the key is present. It is the only provider here that
-  // returns the page text with the result, which is the difference between an
-  // answer built on what the sources say and one built on their titles. The
-  // free providers keep their place behind it.
+  // Exa and Parallel are asked at the same time, and their results are merged
+  // rather than one being kept as a standby. Both return the page text behind
+  // each hit — that is the difference between an answer built on what the
+  // sources say and one built on their titles — but they index differently:
+  // Exa is neural over its own crawl, Parallel ranks against the question as an
+  // objective. On the same query they routinely return different pages, so a
+  // fallback chain would pay for two keys and use one. Eight from each fits the
+  // twelve-source budget with room for the follow-up round to add to it.
   const exaKey = (process.env.EXA_API ?? process.env.EXA_API_KEY)?.trim();
-  if (exaKey) {
-    try {
-      sources = await exaSearch(exaKey, query);
-      console.log(`[deep-research] exa returned ${sources.length} results`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "failed";
-      console.error("[deep-research] exa exception:", msg);
-      errors.push(`exa: ${msg}`);
-    }
-  } else {
-    errors.push("exa: EXA_API not configured");
+  const parallelKey = (
+    process.env.PARALLEL_AI_API_KEY ?? process.env.PARALLEL_API_KEY
+  )?.trim();
+
+  if (!exaKey) errors.push("exa: EXA_API not configured");
+  if (!parallelKey) errors.push("parallel: PARALLEL_AI_API_KEY not configured");
+
+  const [exaHits, parallelHits] = await Promise.all([
+    exaKey ? searchStep("exa", () => exaSearch(exaKey, query), errors) : [],
+    parallelKey
+      ? searchStep("parallel", () => parallelSearch(parallelKey, query), errors)
+      : [],
+  ]);
+
+  // Exa's order is kept first, then anything Parallel found that it missed.
+  const seen = new Set<string>();
+  for (const hit of [...exaHits, ...parallelHits]) {
+    if (seen.has(hit.url)) continue;
+    seen.add(hit.url);
+    sources.push(hit);
   }
+  sources = sources.slice(0, MAX_RESEARCH_SOURCES);
 
   // TinyFish next: it is free to 12,000 searches a day, while serpstack and
   // SerApi both sit at roughly 100 a month on their free tiers. Spending the
