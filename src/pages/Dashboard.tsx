@@ -4256,7 +4256,14 @@ export default function Dashboard() {
       setSelectionMenu(null);
       return;
     }
-    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    // `rangeCount` can be zero for a selection living somewhere else entirely
+    // (an input, an iframe); reading a range then would throw.
+    const range = sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    if (!range) {
+      setSelectionMenu(null);
+      return;
+    }
+    const rect = range.getBoundingClientRect();
     // Clamped to the viewport so a selection at the right edge or near the top
     // does not push the bar half off screen.
     setSelectionMenu({

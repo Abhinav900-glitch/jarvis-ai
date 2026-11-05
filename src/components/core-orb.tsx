@@ -38,7 +38,15 @@ export function CoreOrb({ size = 176, intensity = 0, className }: CoreOrbProps) 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+    // A decoration must never be able to take the page down: no 2D context, a
+    // locked-down canvas or an exotic WebView should cost the orb, not the app.
+    const ctx = (() => {
+      try {
+        return canvas.getContext("2d");
+      } catch {
+        return null;
+      }
+    })();
     if (!ctx) return;
 
     // Takes its colour from the theme, and follows a theme switch: light and
