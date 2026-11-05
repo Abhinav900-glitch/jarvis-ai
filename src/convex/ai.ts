@@ -26,6 +26,12 @@ import {
 } from "./engines";
 import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
 import { depthDirective } from "../lib/answer-depth";
+import {
+  answerReviewPrompt,
+  parseAnswerReview,
+  REVIEW_SYSTEM_PROMPT,
+  type AnswerReview,
+} from "../lib/answer-review";
 import { buildPageContext, hasReadableText } from "../lib/pdf-pages";
 import {
   PARALLEL_SEARCH_URL,
@@ -1837,6 +1843,81 @@ export const alternativeAnswer = action({
       ...result,
       available: true,
       reason: `Second opinion from ${result.model}`,
+    };
+  },
+});
+
+/**
+ * A different engine reviews the last answer and says what does not hold up.
+ *
+ * The route is the same one a second opinion takes — a real reply from a real
+ * engine, not a classifier — but the question is different: not "what else
+ * could be said" but "what here is wrong". The engine that wrote the answer is
+ * excluded where possible, because a model reviewing its own output mostly
+ * agrees with it. When the account has exactly one engine, or has pinned one,
+ * exclusion would empty the plan, so the review runs anyway and the caller is
+ * told who did it.
+ *
+ * The parser never throws, so a reviewer that ignores the format still returns
+ * something the dialog can show rather than an error.
+ */
+export const reviewAnswer = action({
+  args: {
+    /** The question the answer was replying to. */
+    question: v.string(),
+    answer: v.string(),
+    /** The engine that wrote the answer, kept out of the review where possible. */
+    excludeEngineId: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<
+    AnswerReview & {
+      reviewer: string;
+      reviewerEngineId: string | null;
+      /** False when the reviewer had to be the engine that wrote the answer. */
+      independent: boolean;
+    }
+  > => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to review an answer.");
+
+    const answer = args.answer.trim();
+    if (!answer) throw new Error("There is no answer to review yet.");
+    // A one-liner has nothing to check, and a review of it costs a call anyway.
+    if (answer.length < 40) {
+      throw new Error("That answer is too short to be worth reviewing.");
+    }
+
+    const prompt = answerReviewPrompt(args.question, answer);
+    const request = {
+      task: "reason" as const,
+      hasImages: false,
+      prompt: answer,
+    };
+
+    const excluded = await routingFor(ctx, userId, {
+      ...request,
+      excludeEngineId: args.excludeEngineId ?? null,
+    });
+    const independent = Boolean(excluded.primary);
+    const plan = independent
+      ? excluded
+      : await routingFor(ctx, userId, { ...request, excludeEngineId: null });
+
+    const result = await runProviderChain(
+      [{ role: "user", content: prompt }],
+      REVIEW_SYSTEM_PROMPT,
+      "No engine was available to review that answer.",
+      plan,
+    );
+
+    return {
+      ...parseAnswerReview(result.text),
+      reviewer: result.model,
+      reviewerEngineId: result.engineId ?? null,
+      independent,
     };
   },
 });

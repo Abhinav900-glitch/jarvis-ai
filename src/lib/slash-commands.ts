@@ -130,6 +130,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     example: "/listen",
   },
   {
+    name: "verify",
+    aliases: ["review", "audit"],
+    group: "Session",
+    summary: "A second engine audits the last answer",
+    example: "/verify",
+  },
+  {
     name: "pinned",
     aliases: ["pins"],
     group: "Session",

@@ -39,6 +39,7 @@ import {
   AlertTriangle,
   Settings,
   Shapes,
+  ShieldCheck,
   Square,
   Sun,
   Trash2,
@@ -156,6 +157,10 @@ import {
 } from "@/lib/messages";
 import { PassphraseGate } from "@/components/passphrase-gate";
 import { SessionStatsDialog } from "@/components/session-stats-dialog";
+import {
+  AnswerReviewDialog,
+  type AnswerReviewState,
+} from "@/components/answer-review-dialog";
 import { Radio, ExternalLink } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
@@ -1186,6 +1191,10 @@ export default function Dashboard() {
   const requestStop = useMutation(api.chats.requestStop);
   const deleteMessageAndTail = useMutation(api.chats.deleteMessageAndTail);
   const continueReplyAction = useAction(api.ai.continueReply);
+  const reviewAnswerAction = useAction(api.ai.reviewAnswer);
+  // Null when the review dialog is closed; the state it carries is also the
+  // dialog's body, so "loading" survives a re-render mid-request.
+  const [reviewState, setReviewState] = useState<AnswerReviewState | null>(null);
   // Streaming is on by default: for a long answer, seeing the first sentence
   // immediately is worth far more than the handful of ms it costs.
   const [streamReplies, setStreamReplies] = useState(true);
@@ -3402,6 +3411,58 @@ export default function Dashboard() {
   );
 
   /**
+   * Ask a different engine to check the latest answer and say what is wrong.
+   *
+   * The question goes with it: a reviewer shown only the answer cannot tell a
+   * wrong claim from a correct answer to a different question. It is looked up
+   * from the transcript rather than stored, so reviewing any message still
+   * finds what was being asked.
+   *
+   * The dialog opens before the request is sent and stays open through it —
+   * the wait is the feature working, so it belongs in the same surface as the
+   * result instead of behind a spinner in the action row.
+   */
+  const handleReviewAnswer = useCallback(
+    async (messageId?: Id<"chatMessages">) => {
+      const list = messages ?? [];
+      const target = messageId
+        ? list.find((m) => m._id === messageId)
+        : list[list.length - 1];
+      if (!target || target.role !== "assistant") {
+        toast.error("Send a message first — there is no answer to review.");
+        return;
+      }
+
+      const index = list.findIndex((m) => m._id === target._id);
+      const question = list
+        .slice(0, Math.max(0, index))
+        .reverse()
+        .find((m) => m.role === "user")?.content;
+
+      setReviewState({ status: "loading" });
+      try {
+        const review = await reviewAnswerAction({
+          question: question ?? "",
+          answer: target.content,
+          // Kept out of the plan where possible: a model reviewing its own
+          // answer mostly agrees with itself.
+          ...(target.engineId ? { excludeEngineId: target.engineId } : {}),
+        });
+        setReviewState({ status: "ready", review });
+      } catch (err) {
+        setReviewState({
+          status: "error",
+          message:
+            err instanceof Error
+              ? err.message
+              : "The review did not come back.",
+        });
+      }
+    },
+    [messages, reviewAnswerAction],
+  );
+
+  /**
    * Delete a message and everything after it on this branch.
    *
    * Takes the tail rather than the single message because a conversation with
@@ -4386,6 +4447,9 @@ export default function Dashboard() {
         listening.start(from);
         return;
       }
+      case "verify":
+        await handleReviewAnswer();
+        return;
       case "pinned":
         setShowPins(true);
         return;
@@ -5709,6 +5773,17 @@ export default function Dashboard() {
                               )}
                             </button>
                           )}
+                        {m.role === "assistant" &&
+                          m._id === lastMsg?._id &&
+                          !sending && (
+                            <button
+                              onClick={() => void handleReviewAnswer(m._id)}
+                              title="Have another engine check this answer for mistakes"
+                              className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                            >
+                              <ShieldCheck className="size-3" />
+                            </button>
+                          )}
                         {m.role === "assistant" && m.altMessageId && (
                           <span className="hud-label rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[9px] font-semibold text-primary">
                             2 engines
@@ -6385,6 +6460,15 @@ export default function Dashboard() {
             onOpenChange={setShowStats}
             title={sessionTitle}
             messages={messages ?? []}
+          />
+
+          {/* ---- Answer review ---- */}
+          <AnswerReviewDialog
+            open={reviewState !== null}
+            onOpenChange={(open) => {
+              if (!open) setReviewState(null);
+            }}
+            state={reviewState ?? { status: "loading" }}
           />
 
           {/* ---- Panel (NLP / news / voice / errors) ---- */}
