@@ -109,6 +109,7 @@ export function IntegrationsPanel({
   const [keyValue, setKeyValue] = useState("");
   const [keyHeader, setKeyHeader] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [allFeatures, setAllFeatures] = useState(false);
 
   const mapping = useMemo<McpServerRow[]>(() => rows ?? [], [rows]);
 
@@ -150,6 +151,19 @@ export function IntegrationsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [mapping],
   );
+
+  const freshCount = RECENT_FEATURES.filter((feature) => feature.fresh).length;
+
+  /**
+   * The newest features by default, the whole inventory once expanded.
+   *
+   * Thirty cards inside an 84vh dialog would bury the sections below them, so
+   * the list opens short and the rest is one click away — the section is still a
+   * complete map of the build, just not all at once.
+   */
+  const visibleFeatures = allFeatures
+    ? RECENT_FEATURES
+    : RECENT_FEATURES.filter((feature) => feature.fresh);
 
   /** Skill files inside the user's enabled plugin zips, addressed as `@plugin/skill`. */
   const pluginSkills = useMemo(
@@ -351,12 +365,19 @@ export function IntegrationsPanel({
                     New features
                   </span>
                   <span className="text-[10px] text-muted-foreground/60">
-                    {RECENT_FEATURES.length} added recently
+                    {freshCount} new · {RECENT_FEATURES.length} in this build
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => setAllFeatures((v) => !v)}
+                    className="ml-auto rounded-md border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    {allFeatures ? "Show newest" : `Show all ${RECENT_FEATURES.length}`}
+                  </button>
                 </div>
 
                 <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">
-                  {RECENT_FEATURES.map((feature) => (
+                  {visibleFeatures.map((feature) => (
                     <li key={feature.id}>
                       <button
                         type="button"
@@ -375,9 +396,11 @@ export function IntegrationsPanel({
                           <span className="truncate text-xs font-medium">
                             {feature.name}
                           </span>
-                          <span className="shrink-0 rounded-full border border-primary/40 bg-primary/15 px-1.5 py-px text-[9px] uppercase leading-4 tracking-wider text-primary">
-                            new
-                          </span>
+                          {feature.fresh ? (
+                            <span className="shrink-0 rounded-full border border-primary/40 bg-primary/15 px-1.5 py-px text-[9px] uppercase leading-4 tracking-wider text-primary">
+                              new
+                            </span>
+                          ) : null}
                           {feature.panel ? (
                             <ArrowUpRight className="ml-auto size-3 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground" />
                           ) : null}
