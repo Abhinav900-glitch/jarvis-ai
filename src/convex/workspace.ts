@@ -4,6 +4,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import type { GenericDatabaseReader } from "convex/server";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
 import { DEFAULT_BEHAVIOR_INSTRUCTIONS } from "../lib/identity";
+import { behaviorBlock, isBehaviorPolicy } from "../lib/personalization";
 import { ENGINES } from "./engines";
 
 /** Every engine id the registry knows, for validating a pinned choice. */
@@ -177,6 +178,7 @@ export const getSettings = query({
         ? await ctx.db.get(settings.activePersonaId)
         : null,
       profile: settings.profile ?? null,
+      behavior: isBehaviorPolicy(settings.behavior) ? settings.behavior : null,
       // Derived view for the Profile tab: read-only summary of personas,
       // memory and AI concepts for this account.
       personaCount: settings.activePersonaId
@@ -274,6 +276,70 @@ export const saveProfile = mutation({
 
     const patch: Partial<Doc<"userSettings">> = {
       profile: filled ? profile : undefined,
+      updatedAt: Date.now(),
+    };
+
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+      return existing._id;
+    }
+    return await ctx.db.insert("userSettings", { userId, ...patch });
+  },
+});
+
+/**
+ * Writes the personalization policy, creating the settings row on first use.
+ *
+ * `null` clears it, which is how "reset to default" is expressed: an absent
+ * policy sends no regulation block at all, rather than sending the default one
+ * and making an untouched account look configured.
+ *
+ * Validated through the shared guard rather than by trusting the client, so a
+ * hand-rolled mutation cannot store a value the prompt builder cannot read.
+ */
+export const saveBehavior = mutation({
+  args: {
+    behavior: v.union(
+      v.object({
+        length: v.union(
+          v.literal("brief"),
+          v.literal("balanced"),
+          v.literal("detailed"),
+        ),
+        tone: v.union(
+          v.literal("warm"),
+          v.literal("neutral"),
+          v.literal("direct"),
+        ),
+        register: v.union(
+          v.literal("casual"),
+          v.literal("plain"),
+          v.literal("formal"),
+        ),
+        emoji: v.union(
+          v.literal("never"),
+          v.literal("light"),
+          v.literal("frequent"),
+        ),
+      }),
+      v.null(),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    const existing = await ctx.db
+      .query("userSettings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+
+    if (args.behavior !== null && !isBehaviorPolicy(args.behavior)) {
+      throw new Error("That personalization setting is not one I recognise.");
+    }
+
+    const patch: Partial<Doc<"userSettings">> = {
+      behavior: args.behavior ?? undefined,
       updatedAt: Date.now(),
     };
 
@@ -384,6 +450,11 @@ export async function instructionBlockFor(
   if (profileText) parts.push(profileText);
   const conceptsText = conceptsBlock(settings?.profile);
   if (conceptsText) parts.push(conceptsText);
+  // The user's structured regulation goes above the house style: it is the
+  // instruction the model must satisfy, and a rule that appears after a block
+  // of default style is the one more likely to be treated as commentary.
+  const behavior = settings?.behavior;
+  if (isBehaviorPolicy(behavior)) parts.push(behaviorBlock(behavior));
   const custom = settings?.customInstructions?.trim();
 
   if (custom) {
@@ -545,6 +616,12 @@ export const livePersona = query({
     if (profileText) parts.push(profileText);
     const conceptsText = conceptsBlock(settings?.profile);
     if (conceptsText) parts.push(conceptsText);
+    // Same regulation as chat, minus the emoji and Markdown rules — this block
+    // is spoken through a synthesiser, where those are read out as punctuation.
+    const behavior = settings?.behavior;
+    if (isBehaviorPolicy(behavior)) {
+      parts.push(behaviorBlock(behavior, { spoken: true }));
+    }
     const custom = settings?.customInstructions?.trim();
     if (custom) {
       parts.push(

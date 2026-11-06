@@ -18,16 +18,20 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { DEFAULT_BEHAVIOR_INSTRUCTIONS } from "@/lib/identity";
+import { PersonalizationEditor } from "@/components/personalization-editor";
 import { Separator } from "@/components/ui/separator";
 
 /**
  * How Jarvis should work.
  *
- * Two independent controls, deliberately kept apart:
+ * Three independent controls, deliberately kept apart:
  *
+ * - PERSONALIZATION is behaviour as settings: length, tone, register, emoji.
+ *   It goes out as a numbered regulation with a compliance step, so it is
+ *   checked rather than merely described. It gets the first tab because it is
+ *   the one users ask for when they say "make it behave my way".
  * - INSTRUCTIONS are one block of free text that applies everywhere. "Always
- *   reply in Hindi", "never use bullet points", "cite the file and line". This
- *   is what most people reach for, so it gets the first tab.
+ *   reply in Hindi", "never use bullet points", "cite the file and line".
  * - PERSONAS are reusable characters ("concise", "teacher") that can be pinned
  *   to one chat, so a research chat can run as an analyst while a scratch chat
  *   stays plain.
@@ -335,6 +339,7 @@ export function PersonaPanel({
   const list = useQuery(api.workspace.listPersonas);
   const saveSettings = useMutation(api.workspace.saveSettings);
   const saveProfile = useMutation(api.workspace.saveProfile);
+  const saveBehavior = useMutation(api.workspace.saveBehavior);
   const savePersona = useMutation(api.workspace.savePersona);
   const deletePersona = useMutation(api.workspace.deletePersona);
 
@@ -409,23 +414,34 @@ export function PersonaPanel({
             How Jarvis works for you
           </DialogTitle>
           <DialogDescription>
-            Saved instantly and applied to every reply. Changes to the safety
-            rules are not possible — and not intended.
+            Personalization and instructions are sent with every reply as rules
+            Jarvis has to follow. Changes to the safety rules are not possible —
+            and not intended.
           </DialogDescription>
         </DialogHeader>
 
-        <Tabs defaultValue="instructions">
+        <Tabs defaultValue="behavior">
           <TabsList className="w-full">
-            <TabsTrigger value="instructions" className="flex-1">
-              Instructions
+            <TabsTrigger value="behavior" className="flex-1 max-sm:text-xs">
+              Behaviour
             </TabsTrigger>
-            <TabsTrigger value="profile" className="flex-1">
+            <TabsTrigger value="instructions" className="flex-1 max-sm:text-xs">
+              Rules
+            </TabsTrigger>
+            <TabsTrigger value="profile" className="flex-1 max-sm:text-xs">
               Profile
             </TabsTrigger>
-            <TabsTrigger value="personas" className="flex-1">
+            <TabsTrigger value="personas" className="flex-1 max-sm:text-xs">
               Personas
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="behavior" className="pt-4">
+            <PersonalizationEditor
+              value={settings?.behavior ?? null}
+              saveBehavior={saveBehavior}
+            />
+          </TabsContent>
 
           <TabsContent value="instructions" className="pt-4">
             <InstructionsEditor

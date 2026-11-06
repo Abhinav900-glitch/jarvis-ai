@@ -78,7 +78,7 @@ export function PersonaPicker({
         ))}
         {personas.length === 0 && (
           <DropdownMenuItem disabled>
-            No personas yet — create one in “How Jarvis works”
+            No personas yet — create one in “Personalization & behaviour”
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />

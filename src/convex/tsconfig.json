@@ -12,6 +12,15 @@
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
 
+    /* Shared modules in src/lib reach UI files through the app's `@/` alias
+     * (agent-contract pulls in ToolDialogState), so this project has to resolve
+     * it the same way the app does or Convex's typecheck fails on imports it
+     * does not own. */
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
     /* These compiler options are required by Convex */
     "target": "ESNext",
     "lib": ["ES2021", "dom"],

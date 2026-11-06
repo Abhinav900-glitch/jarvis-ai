@@ -4864,9 +4864,9 @@ export default function Dashboard() {
       },
       {
         id: "instructions",
-        label: "How Jarvis works (instructions & personas)",
+        label: "Personalization (behaviour, rules & personas)",
         group: "Configure",
-        keywords: "custom prompt system behaviour rules persona mode",
+        keywords: "custom prompt system behaviour rules regulation tone length emoji persona mode",
         icon: <Sparkles className="size-4" />,
         run: () => setShowPersona(true),
       },
@@ -5463,7 +5463,7 @@ export default function Dashboard() {
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setShowPersona(true)}>
                     <Sparkles className="size-4" />
-                    How Jarvis works
+                    Personalization &amp; behaviour
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setShowTasks(true)}>
                     <AlarmClock className="size-4" />

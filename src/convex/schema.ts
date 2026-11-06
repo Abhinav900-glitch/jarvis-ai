@@ -87,6 +87,36 @@ const schema = defineSchema(
         }),
       ),
       /**
+       * The structured half of personalization — length, tone, register, emoji.
+       * Rendered into the prompt as a regulation with a compliance step, so the
+       * rules are checked against each reply instead of merely describing a
+       * mood. Absent means the user never configured it.
+       */
+      behavior: v.optional(
+        v.object({
+          length: v.union(
+            v.literal("brief"),
+            v.literal("balanced"),
+            v.literal("detailed"),
+          ),
+          tone: v.union(
+            v.literal("warm"),
+            v.literal("neutral"),
+            v.literal("direct"),
+          ),
+          register: v.union(
+            v.literal("casual"),
+            v.literal("plain"),
+            v.literal("formal"),
+          ),
+          emoji: v.union(
+            v.literal("never"),
+            v.literal("light"),
+            v.literal("frequent"),
+          ),
+        }),
+      ),
+      /**
        * Let the engine router choose a model per turn instead of walking a
        * fixed provider order. On by default; the pin in Settings overrides it.
        */
