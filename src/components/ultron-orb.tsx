@@ -21,6 +21,25 @@ import {
 import type { Mood } from "@/lib/voice-mood";
 import { cn } from "@/lib/utils";
 
+/**
+ * Can this browser create a WebGL context at all?
+ *
+ * Asked before the scene is built, because the failure we care about is not an
+ * exception — it is a context that is handed back and then renders nothing
+ * (GPU blocklisted, software GL disabled, a preview frame that allows the call
+ * but drops the drawing buffer). Probing first lets the caller show the
+ * plain-HTML orb instead of a blank square with a 3D scene attached to it.
+ */
+function webglAvailable(): boolean {
+  if (typeof document === "undefined") return false;
+  try {
+    const canvas = document.createElement("canvas");
+    return Boolean(canvas.getContext("webgl2") ?? canvas.getContext("webgl"));
+  } catch {
+    return false;
+  }
+}
+
 export interface UltroneOrbProps {
   /** 0..1 — mic level while listening, speech level while replying. */
   energy?: number;
@@ -79,7 +98,6 @@ export function UltronOrb({
     gesture: "idle",
   });
   const [trackingError, setTrackingError] = useState<string | null>(null);
-  const [webglFailed, setWebglFailed] = useState(false);
   const [internalGestures, setInternalGestures] = useState(false);
 
   // Uncontrolled when the caller does not pass `gesturesEnabled`, so the orb
@@ -95,19 +113,22 @@ export function UltronOrb({
     const host = mountRef.current;
     if (!host) return;
 
+    if (!webglAvailable()) {
+      // Nothing to render into. Deferred so this reads as an external-system
+      // update rather than a cascading render, and so the caller swaps in the
+      // HTML orb before this mounts a scene that could never draw.
+      queueMicrotask(() => onUnavailableRef.current?.());
+      return;
+    }
+
     let scene: OrbSceneApi | null = null;
     try {
       scene = createOrbScene(host);
       sceneRef.current = scene;
     } catch {
-      // No WebGL context (old GPU, blocklisted driver). The CSS sphere the HUD
-      // already renders stays visible underneath, so this is survivable.
-      // Deferred so this reads as an external-system update rather than a
-      // cascading render.
-      queueMicrotask(() => {
-        setWebglFailed(true);
-        onUnavailableRef.current?.();
-      });
+      // No WebGL context (old GPU, blocklisted driver). The HTML orb the HUD
+      // renders instead stays visible, so this is survivable.
+      queueMicrotask(() => onUnavailableRef.current?.());
       return;
     }
 
@@ -232,12 +253,6 @@ export function UltronOrb({
           ) : (
             <span>Open palm to zoom · pinch to spin · clap to switch on</span>
           )}
-        </div>
-      ) : null}
-
-      {webglFailed ? (
-        <div className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-muted-foreground">
-          Orb unavailable on this device
         </div>
       ) : null}
     </div>

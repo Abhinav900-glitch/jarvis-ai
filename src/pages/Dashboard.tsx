@@ -5203,16 +5203,29 @@ export default function Dashboard() {
                 </Button>
               </div>
 
-              {/* The local WebSocket live pipeline, which is a different thing
-                  from the in-app live mode and is not otherwise reachable. */}
+              {/* Live voice + vision: the same in-app live mode as the Radio
+                  button, with the camera switched on first so each turn comes
+                  with a frame. The camera is opened here and only here — the
+                  button says vision, so the camera light is expected. */}
               <Button
                 variant="ghost"
                 size="icon-sm"
                 className="hidden sm:inline-flex"
-                title="Local live session (WebSocket pipeline)"
-                onClick={() => setShowLivePanel(true)}
+                title={
+                  live.active
+                    ? "Live voice + vision (running)"
+                    : "Start live voice + vision — camera frame per turn"
+                }
+                onClick={() => {
+                  if (!live.active) {
+                    if (!camera.enabled) void camera.enable();
+                    void live.start();
+                  } else {
+                    live.stop();
+                  }
+                }}
               >
-                <Waves className="size-4" />
+                <Waves className={`size-4 ${live.active ? "animate-pulse" : ""}`} />
               </Button>
 
               {/* Tools menu */}
@@ -5272,6 +5285,10 @@ export default function Dashboard() {
                     {camera.enabled ? (
                       <Check className="ml-auto size-4" />
                     ) : null}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowLivePanel(true)}>
+                    <Waves className="size-4" />
+                    Local pipeline session
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => setShowMemory((v) => !v)}
@@ -8062,7 +8079,9 @@ export default function Dashboard() {
         language={getCountry(countryCode).name}
         mood={live.mood}
         energy={live.level}
-        cameraStream={live.cameraStream}
+        cameraStream={camera.stream ?? live.cameraStream}
+        visionOn={camera.enabled}
+        onToggleVision={() => void camera.toggle()}
         gesturesEnabled={orbGestures}
         onToggleGestures={() => setOrbGestures((v) => !v)}
         muted={live.muted}

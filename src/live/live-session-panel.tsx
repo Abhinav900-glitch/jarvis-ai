@@ -194,6 +194,19 @@ export function LiveSessionPanel({ open, onClose, ...options }: LiveSessionPanel
               </div>
             )}
 
+            {/* This panel speaks to the local Python pipeline and nothing
+                else; the socket retries forever, so without a word here a
+                session with no server looks like a stuck "reconnecting". */}
+            {session.active && session.status !== "open" && (
+              <div className="w-full rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-[11px] leading-5 text-amber-200">
+                Waiting for the local live pipeline
+                {options.url ? ` at ${options.url}` : " (see live-server/README.md)"}.
+                Start it with <code className="font-mono">uvicorn app.main:app</code>, or end
+                this session and use <b>Live voice + vision</b> in the toolbar for the
+                in-app call.
+              </div>
+            )}
+
             <div className="flex flex-col items-center gap-2">
               <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.35em] text-cyan-200/80">
                 <span className="inline-block size-1.5 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.9)]" />

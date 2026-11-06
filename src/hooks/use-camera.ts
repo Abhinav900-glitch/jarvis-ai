@@ -23,6 +23,13 @@ export interface CameraState {
   error: string | null;
   /** Attach to the <video> element that should show the preview. */
   bindVideo: (el: HTMLVideoElement | null) => void;
+  /**
+   * The open camera, or null. Exposed so live mode can show its own preview and
+   * share the stream with the orb's hand tracker — a second `getUserMedia` on
+   * the same device fights this one for the hardware and hands back black
+   * frames.
+   */
+  stream: MediaStream | null;
   /** The most recent captured frame as a data URL, or null. */
   lastFrame: string | null;
   enable: () => Promise<void>;
@@ -45,6 +52,9 @@ export function useCamera(): CameraState {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
+  // Mirrors streamRef for consumers; a ref read during render is not safe, and
+  // the live HUD needs the stream as a value to bind its preview.
+  const [stream, setStream] = useState<MediaStream | null>(null);
 
   const streamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -53,6 +63,7 @@ export function useCamera(): CameraState {
   const disable = useCallback(() => {
     stopStream(streamRef.current);
     streamRef.current = null;
+    setStream(null);
     const video = videoRef.current;
     if (video) video.srcObject = null;
     setEnabled(false);
@@ -76,6 +87,7 @@ export function useCamera(): CameraState {
         audio: false,
       });
       streamRef.current = stream;
+      setStream(stream);
       const video = videoRef.current;
       if (video) {
         video.srcObject = stream;
@@ -165,6 +177,7 @@ export function useCamera(): CameraState {
     starting,
     error,
     bindVideo,
+    stream,
     lastFrame,
     enable,
     disable,

@@ -13,6 +13,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  Camera,
+  CameraOff,
   Mic,
   MicOff,
   SkipForward,
@@ -35,6 +37,7 @@ import { WAKE_PHRASE } from "@/lib/wake-word";
 import type { Mood } from "@/lib/voice-mood";
 import type { GestureAction } from "@/lib/gesture-actions";
 import { UltronOrb } from "@/components/ultron-orb";
+import { HtmlOrb } from "@/components/html-orb";
 
 export type HudPhase = "listening" | "processing" | "speaking" | "idle";
 
@@ -62,8 +65,15 @@ export interface JarvisHudProps {
   onSkip: () => void;
   /** 0..1 mic / speech level, drives the orb's energy. */
   energy?: number;
-  /** A camera stream already open (live mode holds one for vision). */
+  /** The open camera stream, if the user turned vision on for this call. */
   cameraStream?: MediaStream | null;
+  /**
+   * Camera vision for the live call: when on, one frame is attached to each
+   * turn, which is what lets Jarvis answer about what it can see.
+   */
+  visionOn?: boolean;
+  /** Turn camera vision on or off mid-call. */
+  onToggleVision?: () => void;
   /** Webcam hand tracking for the orb. */
   gesturesEnabled?: boolean;
   /** Turn webcam hand tracking on or off. */
@@ -153,6 +163,43 @@ function Equalizer() {
 // ---------------------------------------------------------------------------
 
 /** Pill toggle used by the control row. `tone` picks the spectrum step. */
+/**
+ * The live camera, small and out of the way.
+ *
+ * Live vision has to show what the model is seeing. A vision toggle that
+ * changes nothing visible reads as broken, and people frame themselves
+ * differently once they can see the framing.
+ */
+function VisionPreview({ stream }: { stream: MediaStream }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    el.srcObject = stream;
+    el.muted = true;
+    el.playsInline = true;
+    void el.play().catch(() => {
+      // Autoplay can be blocked; the frame still lands once it is allowed.
+    });
+  }, [stream]);
+
+  return (
+    <div className="absolute top-5 left-5 z-20 overflow-hidden rounded-xl border border-white/15 bg-black/60 shadow-lg">
+      <video
+        ref={videoRef}
+        muted
+        playsInline
+        className="h-20 w-28 -scale-x-100 object-cover"
+      />
+      <span className="absolute bottom-1 left-1 inline-flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[9px] font-medium tracking-wide text-white uppercase">
+        <span className="size-1.5 animate-pulse rounded-full bg-red-500" />
+        Vision
+      </span>
+    </div>
+  );
+}
+
 function Pill({
   on,
   onClick,
@@ -374,6 +421,8 @@ export function JarvisHud({
   onSkip,
   energy = 0,
   cameraStream = null,
+  visionOn = false,
+  onToggleVision,
   gesturesEnabled = false,
   onToggleGestures,
   muted = false,
@@ -435,6 +484,11 @@ export function JarvisHud({
         ) : null}
       </div>
 
+      {/* Camera preview. Only mounted once the user has turned vision on, and
+          mirrored so moving left feels like moving left — the same read a
+          front-facing camera gives in any video call. */}
+      {visionOn && cameraStream ? <VisionPreview stream={cameraStream} /> : null}
+
       {/* Close button */}
       <button
         onClick={onStop}
@@ -452,45 +506,17 @@ export function JarvisHud({
             className="sphere-frame relative grid aspect-square w-[78vw] max-w-[300px] place-items-center"
             style={{ transform: `scale(${1 + glowBoost * 0.06})` }}
           >
-            <button
-              type="button"
-              onClick={() => setBoost((v) => !v)}
-              aria-pressed={boosting}
-              aria-label={
-                boosting ? "Return the sphere to its normal speed" : "Spin the sphere faster"
-              }
-              className={cn("sphere-button", orbLive && "hidden", fast && "fast")}
-            >
-              {/* The lit body. It only breathes — all rotation is in the cage,
-                  because in-plane rotation is what makes a sphere read flat. */}
-              <span className="sphere" />
-              {/* 3D wireframe cage: latitude great circles (sized to
-                    R·sinθ so they sit on the ball), meridian great circles,
-                    and two orbits whose paired dots swap in/out of view via
-                    backface-visibility. This is what makes the sphere read as
-                    a rotating sphere rather than a spinning flat disc. */}
-              <span className="sphere-axis" aria-hidden="true">
-                <i className="sphere-lat" style={{ transform: "rotateX(72deg)" }} />
-                <i className="sphere-lat-36" style={{ transform: "rotateX(36deg)" }} />
-                <i className="sphere-lat-12" style={{ transform: "rotateX(12deg)" }} />
-                <i className="sphere-lat-12" style={{ transform: "rotateX(-12deg)" }} />
-                <i className="sphere-lat-36" style={{ transform: "rotateX(-36deg)" }} />
-                <i className="sphere-lat" style={{ transform: "rotateX(-72deg)" }} />
-                <i className="sphere-mer" style={{ transform: "rotateY(0deg)" }} />
-                <i className="sphere-mer" style={{ transform: "rotateY(45deg)" }} />
-                <i className="sphere-mer" style={{ transform: "rotateY(90deg)" }} />
-                <i className="sphere-mer" style={{ transform: "rotateY(135deg)" }} />
-                <span className="sphere-orbit sphere-orbit-a">
-                  <i />
-                  <i />
-                </span>
-                <span className="sphere-orbit sphere-orbit-b">
-                  <i />
-                  <i />
-                </span>
-              </span>
-            </button>
-            <span className={cn("sphere-glow", orbLive && "hidden")} aria-hidden="true" />
+            {/* Plain-HTML orb: the floor the WebGL scene is allowed to fail
+                down to. Rendered whenever the 3D scene is unavailable, so the
+                live HUD never shows an empty stage where its face should be. */}
+            {!orbLive && (
+              <HtmlOrb
+                fast={fast}
+                boosting={boosting}
+                level={level}
+                onToggleBoost={() => setBoost((v) => !v)}
+              />
+            )}
             <UltronOrb
               className={cn("absolute inset-0 rounded-full", !orbLive && "hidden")}
               energy={energy}
@@ -561,6 +587,21 @@ export function JarvisHud({
               Gestures
               {muted ? " · off" : ""}
             </button>
+            {onToggleVision && (
+              <Pill
+                on={visionOn}
+                onClick={onToggleVision}
+                accent="var(--spec-2)"
+                title={
+                  visionOn
+                    ? "Vision on — one camera frame is attached to each turn and nothing is recorded"
+                    : "Vision off — live turns are audio only"
+                }
+              >
+                {visionOn ? <Camera className="size-3" /> : <CameraOff className="size-3" />}
+                Vision
+              </Pill>
+            )}
             <button
               onClick={onToggleWake}
               title={
