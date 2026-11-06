@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { motion, AnimatePresence } from "framer-motion";
@@ -7,14 +7,21 @@ import {
   BarChart3,
   Equal,
   Grid3X3,
+  Sigma,
   Loader2,
   X,
 } from "lucide-react";
+import {
+  OPERATOR_HINTS,
+  computeAlgebra,
+  type AlgebraMode,
+  type AlgebraOutput,
+} from "@/lib/math-engine";
 
-type Tab = "regression" | "stats" | "equation" | "matrix";
+type Tab = "algebra" | "regression" | "stats" | "equation" | "matrix";
 
 export function CalculatorPanel({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<Tab>("regression");
+  const [tab, setTab] = useState<Tab>("algebra");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<unknown>(null);
@@ -25,6 +32,7 @@ export function CalculatorPanel({ onClose }: { onClose: () => void }) {
   const matrixAction = useAction(api.math.matrixOperation);
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "algebra", label: "Algebra", icon: <Sigma className="size-3.5" /> },
     { id: "regression", label: "Regression", icon: <TrendingUp className="size-3.5" /> },
     { id: "stats", label: "Statistics", icon: <BarChart3 className="size-3.5" /> },
     { id: "equation", label: "Equations", icon: <Equal className="size-3.5" /> },
@@ -44,7 +52,7 @@ export function CalculatorPanel({ onClose }: { onClose: () => void }) {
         <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold">🧮 Calculator</span>
-            <span className="text-[10px] text-muted-foreground">ML & Math Tools</span>
+            <span className="text-[10px] text-muted-foreground">Algebra, calculus & ML</span>
           </div>
           <button onClick={onClose} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
             <X className="size-4" />
@@ -71,6 +79,13 @@ export function CalculatorPanel({ onClose }: { onClose: () => void }) {
 
         {/* Content */}
         <AnimatePresence mode="wait">
+          {tab === "algebra" && (
+            <AlgebraForm
+              key="alg"
+              error={error}
+              setError={setError}
+            />
+          )}
           {tab === "regression" && (
             <RegressionForm
               key="reg"
@@ -137,6 +152,204 @@ export function CalculatorPanel({ onClose }: { onClose: () => void }) {
         )}
       </div>
     </motion.div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Algebra & calculus form
+// ---------------------------------------------------------------------------
+
+/** What each mode needs beyond the expression itself. */
+const ALGEBRA_MODES: { id: AlgebraMode; label: string; value: boolean }[] = [
+  { id: "evaluate", label: "Evaluate", value: true },
+  { id: "derivative", label: "d/dx", value: true },
+  { id: "integral", label: "∫ dx", value: false },
+  { id: "limit", label: "lim", value: true },
+  { id: "solve", label: "Solve = 0", value: false },
+  { id: "expand", label: "Expand", value: false },
+];
+
+function AlgebraForm({ setError }: { error: string | null; setError: (v: string | null) => void }) {
+  const [input, setInput] = useState("3x^2 - 2x + 1");
+  const [mode, setMode] = useState<AlgebraMode>("evaluate");
+  const [variable, setVariable] = useState("x");
+  const [at, setAt] = useState("2");
+  const [from, setFrom] = useState("0");
+  const [to, setTo] = useState("1");
+  const [result, setResult] = useState<AlgebraOutput | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const needsValue = ALGEBRA_MODES.find((m) => m.id === mode)?.value ?? false;
+  const bounded = mode === "integral" && from.trim() !== "" && to.trim() !== "";
+
+  const insert = (text: string) => {
+    const el = inputRef.current;
+    const start = el?.selectionStart ?? input.length;
+    const end = el?.selectionEnd ?? input.length;
+    setInput(input.slice(0, start) + text + input.slice(end));
+    const caret = start + (text === "()" ? 1 : text.length);
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(caret, caret);
+    });
+  };
+
+  const run = () => {
+    try {
+      setError(null);
+      setResult(
+        computeAlgebra({
+          input,
+          mode,
+          variable: variable.trim() || "x",
+          value: needsValue && at.trim() !== "" ? Number(at) : undefined,
+          from: bounded ? Number(from) : undefined,
+          to: bounded ? Number(to) : undefined,
+        }),
+      );
+    } catch (err) {
+      setResult(null);
+      setError(err instanceof Error ? err.message : "Could not compute that.");
+    }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-3">
+      <p className="text-[11px] leading-4 text-muted-foreground">
+        Any expression or equation. Operators: <span className="font-mono">+ − * / ^ % ! ( )</span> and implicit
+        products (2x, 3(x+1)) — plus sin, cos, tan, ln, log, exp, sqrt, abs, nCr, nPr, gcd, π, e.
+      </p>
+
+      <div className="flex items-center gap-2">
+        <input
+          ref={inputRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") run();
+          }}
+          placeholder="3x^2 - 2x + 1"
+          spellCheck={false}
+          className="min-w-0 flex-1 rounded-lg border bg-transparent px-3 py-2 font-mono text-sm outline-none placeholder:text-muted-foreground/50 focus:border-foreground/30"
+        />
+        <button
+          onClick={() => run()}
+          className="shrink-0 rounded-lg bg-foreground px-4 py-2 text-xs font-medium text-background transition-colors hover:opacity-90"
+        >
+          Compute
+        </button>
+      </div>
+
+      {/* Insertable operators: the whole set, one tap each. */}
+      <div className="flex gap-1 overflow-x-auto pb-0.5">
+        {OPERATOR_HINTS.map((op) => (
+          <button
+            key={op.label}
+            type="button"
+            title={op.title}
+            onClick={() => insert(op.insert)}
+            className="shrink-0 rounded-md border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {op.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap gap-1 rounded-lg bg-muted/50 p-0.5">
+        {ALGEBRA_MODES.map((m) => (
+          <button
+            key={m.id}
+            onClick={() => {
+              setMode(m.id);
+              setResult(null);
+              setError(null);
+            }}
+            className={`rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+              mode === m.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2 text-[11px] text-muted-foreground">
+        <label className="flex items-center gap-1">
+          variable
+          <input
+            value={variable}
+            onChange={(e) => setVariable(e.target.value)}
+            className="w-10 rounded border bg-transparent px-1.5 py-1 text-center font-mono text-xs text-foreground outline-none focus:border-foreground/30"
+          />
+        </label>
+
+        {needsValue && (
+          <label className="flex items-center gap-1">
+            {mode === "limit" ? "approach" : "at"}
+            <input
+              value={at}
+              onChange={(e) => setAt(e.target.value)}
+              className="w-20 rounded border bg-transparent px-1.5 py-1 text-center font-mono text-xs text-foreground outline-none focus:border-foreground/30"
+            />
+          </label>
+        )}
+
+        {mode === "integral" && (
+          <div className="flex items-center gap-1">
+            bounds
+            <input
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              placeholder="a"
+              className="w-16 rounded border bg-transparent px-1.5 py-1 text-center font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/50 focus:border-foreground/30"
+            />
+            <span>→</span>
+            <input
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              placeholder="b"
+              className="w-16 rounded border bg-transparent px-1.5 py-1 text-center font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/50 focus:border-foreground/30"
+            />
+            <span className="text-muted-foreground/70">empty = symbolic</span>
+          </div>
+        )}
+      </div>
+
+      {result && <AlgebraResult data={result} />}
+    </motion.div>
+  );
+}
+
+function AlgebraResult({ data }: { data: AlgebraOutput }) {
+  return (
+    <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+      <p className="font-mono text-sm font-semibold break-words text-primary">{data.answer}</p>
+      <p className="text-[11px] text-muted-foreground">
+        parsed as <span className="font-mono">{data.display}</span>
+      </p>
+      {data.detail.length > 0 && (
+        <div className="space-y-0.5">
+          {data.detail.map((d, i) => (
+            <p key={i} className="text-xs">
+              <span className="text-muted-foreground">{d.label}: </span>
+              <span className="font-mono">{d.value}</span>
+            </p>
+          ))}
+        </div>
+      )}
+      {data.steps.length > 0 && (
+        <div>
+          <p className="mb-1 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Working</p>
+          <ol className="list-inside list-decimal space-y-0.5">
+            {data.steps.map((s, i) => (
+              <li key={i} className="text-xs break-words text-muted-foreground">
+                {s}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </div>
   );
 }
 

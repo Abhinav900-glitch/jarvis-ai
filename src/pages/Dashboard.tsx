@@ -4917,8 +4917,9 @@ export default function Dashboard() {
       },
       {
         id: "calculator",
-        label: "Calculator",
+        label: "Calculator (algebra & calculus)",
         group: "Configure",
+        keywords: "math expression derivative integral limit solve matrix statistics operator",
         icon: <Equal className="size-4" />,
         run: () => setShowCalculator((v) => !v),
       },
@@ -5345,7 +5346,7 @@ export default function Dashboard() {
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => { setShowCalculator((v) => !v); setRegionResult(null); }}>
-                    🧮 Calculator (ML & Math)
+                    🧮 Calculator (algebra, calculus & ML)
                     {showCalculator ? (
                       <Check className="ml-auto size-4" />
                     ) : null}
