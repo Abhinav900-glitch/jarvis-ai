@@ -45,9 +45,15 @@ export interface LiveMode {
   /** Coarse delivery read of the user's last turn, or null if unmeasurable. */
   mood: Mood | null;
   /**
-   * The camera stream live mode already holds, if any. The orb's hand tracker
+   * A camera stream live mode already holds, if any. The orb's hand tracker
    * attaches to this rather than opening a second getUserMedia, which would
    * compete with this one for the same device.
+   *
+   * Live mode itself is audio-only, so this is null: the mic stream that
+   * `getUserMedia` returns here carries no video track, and handing it to the
+   * tracker left it reading frames from a stream that never had a picture.
+   * Null is the honest answer, and it makes the tracker open the camera itself
+   * when the user turns gestures on.
    */
   cameraStream: MediaStream | null;
   error: string | null;
@@ -848,7 +854,13 @@ export function useLiveMode(
         },
       });
       streamRef.current = stream;
-      setCameraStream(stream);
+      // Only a stream that really carries video may be advertised as the
+      // camera. The mic stream below is `audio:` only, so assigning it here
+      // made the orb's hand tracker attach to a stream it could never read a
+      // frame from: `video.play()` resolved, the frame loop ran, and no
+      // landmark was ever found — which is why gestures silently did nothing
+      // for the whole session.
+      setCameraStream(stream.getVideoTracks().length > 0 ? stream : null);
 
       const track = stream.getAudioTracks()[0];
       const applied = track?.getSettings?.() ?? {};
