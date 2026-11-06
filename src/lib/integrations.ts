@@ -46,6 +46,59 @@ export interface BuiltInIntegration {
   defaultOn: boolean;
 }
 
+/**
+ * The newest additions to the app, shown as their own section so a returning
+ * user can see what changed without reading a changelog elsewhere.
+ *
+ * These are the features that shipped most recently and are already live — an
+ * entry belongs here only while it is actually new, and it points at the panel
+ * that exercises it so the card is a route, not an announcement.
+ */
+export interface RecentFeature {
+  id: string;
+  name: string;
+  /** One line for the card. */
+  blurb: string;
+  /** Panel that shows the feature, when one exists. */
+  panel?: IntegrationPanel;
+  /** Where the feature is used, for the card's footer line. */
+  where: string;
+}
+
+export const RECENT_FEATURES: RecentFeature[] = [
+  {
+    id: "web-search-tool",
+    name: "Web search tool",
+    blurb:
+      "The assistant searches live sources itself before answering, and cites the pages it used.",
+    where: "in chat, automatically",
+  },
+  {
+    id: "connector-skills",
+    name: "Skills from connectors",
+    blurb:
+      "Every connected account is listed as a skill, so its tools are visible before you ask.",
+    panel: "mcp",
+    where: "Settings → Integrations",
+  },
+  {
+    id: "copy-and-preview",
+    name: "Copy and preview results",
+    blurb:
+      "Tool results open in a viewer: copy the whole output, or preview a generated page before editing it.",
+    panel: "code",
+    where: "tool result viewer",
+  },
+  {
+    id: "connector-directory",
+    name: "Connector directory",
+    blurb:
+      "Searchable catalogue of verified endpoints, with one-click connect or an inline key form.",
+    panel: "mcp",
+    where: "Settings → Integrations",
+  },
+];
+
 export const BUILT_IN_INTEGRATIONS: BuiltInIntegration[] = [
   {
     id: "voice-out",

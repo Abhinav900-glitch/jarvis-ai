@@ -37,6 +37,7 @@ import {
   Sparkles,
   Wand2,
   X,
+  Zap,
 } from "lucide-react";
 import {
   MCP_PRESETS,
@@ -46,6 +47,7 @@ import {
 } from "@/lib/mcp-presets";
 import {
   BUILT_IN_INTEGRATIONS,
+  RECENT_FEATURES,
   type BuiltInIntegration,
   type IntegrationPanel,
 } from "@/lib/integrations";
@@ -339,6 +341,57 @@ export function IntegrationsPanel({
                     </p>
                   </div>
                 ))}
+              </div>
+
+              {/* ---- new features ---- */}
+              <div className="px-4 py-3">
+                <div className="flex items-center gap-1.5">
+                  <Zap className="size-3.5 text-primary" />
+                  <span className="hud-label" data-tone="cyan">
+                    New features
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/60">
+                    {RECENT_FEATURES.length} added recently
+                  </span>
+                </div>
+
+                <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                  {RECENT_FEATURES.map((feature) => (
+                    <li key={feature.id}>
+                      <button
+                        type="button"
+                        disabled={feature.panel === undefined}
+                        onClick={() => {
+                          if (feature.panel) openPanel(feature.panel);
+                        }}
+                        className={cn(
+                          "group flex h-full w-full flex-col items-start gap-1 rounded-lg border border-border/60 bg-card/40 p-2 text-left transition-colors",
+                          feature.panel
+                            ? "hover:border-primary/40 hover:bg-accent/40"
+                            : "cursor-default",
+                        )}
+                      >
+                        <span className="flex w-full items-center gap-1.5">
+                          <span className="truncate text-xs font-medium">
+                            {feature.name}
+                          </span>
+                          <span className="shrink-0 rounded-full border border-primary/40 bg-primary/15 px-1.5 py-px text-[9px] uppercase leading-4 tracking-wider text-primary">
+                            new
+                          </span>
+                          {feature.panel ? (
+                            <ArrowUpRight className="ml-auto size-3 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground" />
+                          ) : null}
+                        </span>
+                        <span className="line-clamp-2 block text-[10px] leading-4 text-muted-foreground/70">
+                          {feature.blurb}
+                        </span>
+                        <span className="mt-auto block truncate text-[9px] uppercase tracking-wider text-muted-foreground/50">
+                          {feature.where}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </div>
 
               {/* ---- built in ---- */}
