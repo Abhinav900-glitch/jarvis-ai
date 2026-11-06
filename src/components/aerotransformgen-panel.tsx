@@ -538,7 +538,7 @@ export function AeroTransformGenPanel({
             "flex items-start justify-center overflow-y-auto",
             embed
               ? "h-screen w-screen bg-background p-0"
-              : "fixed inset-0 z-50 bg-[#020a14]/75 p-4 pt-[6vh] backdrop-blur-sm",
+              : "fixed inset-0 z-50 bg-[#020a14]/75 p-0 backdrop-blur-sm sm:p-4 sm:pt-[6vh]",
           )}
           onClick={embed ? undefined : onClose}
       >
@@ -550,7 +550,9 @@ export function AeroTransformGenPanel({
           onClick={(e) => e.stopPropagation()}
           className={cn(
             "hud-panel hud-corners flex flex-col",
-            embed ? "h-full w-full max-w-none" : "max-h-[86vh] w-full max-w-6xl",
+            embed
+              ? "h-full w-full max-w-none"
+              : "h-full max-h-none w-full max-w-none pt-[env(safe-area-inset-top)] sm:h-auto sm:max-h-[86vh] sm:max-w-6xl sm:rounded-2xl sm:pt-0",
           )}
           role="dialog"
           aria-modal="true"

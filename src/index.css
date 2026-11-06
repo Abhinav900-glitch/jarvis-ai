@@ -268,6 +268,70 @@ html[data-palette="ember"]:not(.dark) {
 }
 
 /* --------------------------------------------------------------------------
+   Handheld and packaged-app chrome
+
+   The same build ships as a website, an Android APK (Capacitor) and a desktop
+   window. Three things differ in those shells and none of them are visible in a
+   desktop browser:
+     - The notch/status bar. With viewport-fit=cover the WebView reaches the
+       edges, so anything pinned to an edge needs the inset as padding — the
+       panels and the composer read these variables.
+     - Tap feedback. A 300ms tap highlight on every button makes the app feel
+       like a page; on a pointer-coarse screen we suppress it and keep
+       touch-action: manipulation so scrolling stays immediate.
+     - iOS zoom-on-focus. WKWebView zooms any focused field under 16px, which
+       shoves the composer off screen. Scoped to WebKit so the desktop build
+       keeps its designed type scale.
+   -------------------------------------------------------------------------- */
+
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  /* Rubber-banding the whole page inside a native shell reads as a bug. */
+  overscroll-behavior-y: none;
+}
+
+@media (pointer: coarse) {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  [role="button"],
+  a,
+  summary,
+  label[for] {
+    touch-action: manipulation;
+  }
+}
+
+@media (pointer: coarse) {
+  /* A fixed background repaints the whole viewport on scroll in mobile
+     WebViews; the grid still reads the same when it scrolls with the page. */
+  body {
+    background-attachment: scroll;
+  }
+}
+
+@supports (-webkit-touch-callout: none) {
+  input,
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* --------------------------------------------------------------------------
    Markdown prose — minimal, hairline rules, generous rhythm
    -------------------------------------------------------------------------- */
 

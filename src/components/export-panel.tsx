@@ -56,7 +56,7 @@ export function ExportPanel({
       className="border-t px-6 py-3"
     >
       <div className="mx-auto max-w-2xl">
-        <div className="mb-2 flex items-center gap-2">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
           <Download className="size-3.5 text-muted-foreground" />
           <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
             Export conversation

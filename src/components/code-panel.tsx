@@ -371,7 +371,7 @@ export function CodePanel({
     >
       <div className="mx-auto max-w-4xl">
         {/* ---- Header ---- */}
-        <div className="mb-2 flex items-center gap-2">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
           <Code2 className="size-3.5 text-muted-foreground" />
           <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
             Code runner

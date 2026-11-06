@@ -570,7 +570,7 @@ export function AeroTransformGenDashboard({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[#020a14]/75 p-4 pt-[6vh] backdrop-blur-sm"
+        className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[#020a14]/75 p-0 backdrop-blur-sm sm:p-4 sm:pt-[6vh]"
         onClick={onClose}
       >
         <motion.div
@@ -579,7 +579,7 @@ export function AeroTransformGenDashboard({
           exit={{ opacity: 0, y: 12, scale: 0.99 }}
           transition={{ duration: 0.18 }}
           onClick={(e) => e.stopPropagation()}
-          className="hud-panel hud-corners flex max-h-[86vh] w-full max-w-4xl flex-col"
+          className="hud-panel hud-corners flex h-full max-h-none w-full max-w-none flex-col pt-[env(safe-area-inset-top)] sm:h-auto sm:max-h-[86vh] sm:max-w-4xl sm:rounded-2xl sm:pt-0"
           role="dialog"
           aria-modal="true"
           aria-label="AeroTransformGen"

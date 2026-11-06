@@ -52,12 +52,12 @@ export function CalculatorPanel({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Tabs */}
-        <div className="mb-3 flex gap-1 rounded-lg bg-muted/50 p-0.5">
+        <div className="mb-3 flex gap-1 overflow-x-auto rounded-lg bg-muted/50 p-0.5">
           {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => { setTab(t.id); setResult(null); setError(null); }}
-              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                 tab === t.id
                   ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground"

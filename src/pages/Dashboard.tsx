@@ -1209,14 +1209,17 @@ export default function Dashboard() {
   const [reviewState, setReviewState] = useState<AnswerReviewState | null>(null);
   const [recapState, setRecapState] = useState<ChatDigestState | null>(null);
   const [toolState, setToolState] = useState<ToolDialogState | null>(null);
-  const openToolState = setToolState;
   const setToolStateCoerced: React.Dispatch<React.SetStateAction<ToolDialogState | null>> = (
     next,
   ) => {
     setToolState(readyTool(next));
   };
   const toolStateRef = useRef(toolState);
-  toolStateRef.current = toolState;
+  // Mirrored in an effect rather than during render: writing a ref while
+  // rendering is an error in React 19, and only handlers read the latest value.
+  useEffect(() => {
+    toolStateRef.current = toolState;
+  }, [toolState]);
 
   const readyTool = (
     next: unknown,
@@ -1253,7 +1256,7 @@ export default function Dashboard() {
     return state;
   };
 
-  const onToolView = (path: string) => {
+  const onToolView = () => {
     setAeroHandoffRunId(null);
     setShowAeroOverview(true);
   };
@@ -5025,7 +5028,7 @@ export default function Dashboard() {
                 animate={{ x: 0 }}
                 exit={{ x: -280 }}
                 transition={{ type: "spring", damping: 30, stiffness: 350 }}
-                className="fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r bg-sidebar md:hidden"
+                className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r bg-sidebar pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] md:hidden"
               >
                 <div className="flex items-center justify-between px-5 py-4">
                   <Link
@@ -5080,7 +5083,14 @@ export default function Dashboard() {
           onDrop={handleDrop}
         >
           {/* ---- Menu bar ---- */}
-          <header className="flex items-center justify-between border-b px-4 py-2 sm:px-6">
+          <header
+            className="flex items-center justify-between border-b px-4 py-2 sm:px-6"
+            style={{
+              // The status bar is part of the app in the APK, so the header
+              // carries the top inset instead of sitting under it.
+              paddingTop: "calc(0.5rem + env(safe-area-inset-top, 0px))",
+            }}
+          >
             {/* Left: hamburger + title. min-w-0 is what lets the title
                 actually truncate instead of pushing the buttons sideways. */}
             <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -6871,7 +6881,13 @@ export default function Dashboard() {
           </AnimatePresence>
 
           {/* ---- Composer ---- */}
-          <div className="border-t px-4 py-3 sm:px-6 sm:py-4">
+          <div
+            className="border-t px-4 py-3 sm:px-6 sm:py-4"
+            style={{
+              // Home indicator / gesture bar: keep the composer above it.
+              paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))",
+            }}
+          >
             <div className="mx-auto max-w-2xl">
               <div
                 onDrop={handleDrop}

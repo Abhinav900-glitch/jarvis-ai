@@ -10,7 +10,16 @@
   <meta name="apple-mobile-web-app-title" content="Jarvis" />
   <meta name="application-name" content="Jarvis" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- viewport-fit=cover: without it the Android/iOS WebView letterboxes the
+       app away from the notch and env(safe-area-inset-*) reports 0, which is
+       what made the packaged build sit under the status bar.
+       interactive-widget: the keyboard resizes the layout instead of sliding
+       over the composer. -->
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+  />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="referrer" content="strict-origin-when-cross-origin" />
   <meta name="theme-color" content="#0a0a0a" />
   <meta

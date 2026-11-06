@@ -25,10 +25,12 @@ const buttonVariants = cva(
       },
       size: {
         default: "h-9 px-4 py-2 has-[>svg]:px-3",
-        sm: "h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5",
+        // max-sm grows the compact sizes by 4px: a 32px icon is a mouse
+        // target, not a thumb one.
+        sm: "h-8 max-sm:h-9 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5",
         lg: "h-10 rounded-md px-6 has-[>svg]:px-4",
         icon: "size-9",
-        "icon-sm": "size-8",
+        "icon-sm": "size-8 max-sm:size-9",
         "icon-lg": "size-10",
       },
     },

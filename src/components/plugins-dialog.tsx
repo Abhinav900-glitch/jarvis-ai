@@ -281,7 +281,7 @@ export function PluginsDialog({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/75 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/75 p-0 backdrop-blur-sm sm:p-4"
       onClick={onClose}
     >
       <motion.div
@@ -290,7 +290,7 @@ export function PluginsDialog({
         exit={{ opacity: 0, y: 8, scale: 0.99 }}
         transition={{ duration: 0.16 }}
         onClick={(e) => e.stopPropagation()}
-        className="hud-panel hud-corners flex max-h-[84vh] w-full max-w-2xl flex-col"
+        className="hud-panel hud-corners flex h-full max-h-none w-full max-w-none flex-col pt-[env(safe-area-inset-top)] sm:h-auto sm:max-h-[84vh] sm:max-w-2xl sm:rounded-2xl sm:pt-0"
         role="dialog"
         aria-modal="true"
         aria-label="Plugins"

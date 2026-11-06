@@ -63,7 +63,7 @@ export function EnginePanel({ open, onClose }: EnginePanelProps) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-0 backdrop-blur-sm sm:p-4"
         onClick={onClose}
       >
         <motion.div
@@ -72,7 +72,7 @@ export function EnginePanel({ open, onClose }: EnginePanelProps) {
           exit={{ opacity: 0, y: 10, scale: 0.99 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="max-h-[84vh] w-full max-w-lg overflow-hidden rounded-2xl border bg-background shadow-2xl"
+          className="h-full max-h-none w-full max-w-none overflow-hidden bg-background pt-[env(safe-area-inset-top)] shadow-2xl sm:h-auto sm:max-h-[84vh] sm:max-w-lg sm:rounded-2xl sm:border sm:pt-0"
         >
           <div className="flex items-center gap-2 border-b px-4 py-3">
             <Brain className="size-4 text-muted-foreground" />
