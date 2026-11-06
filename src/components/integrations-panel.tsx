@@ -42,6 +42,7 @@ import {
 import {
   MCP_PRESETS,
   MCP_PRESET_CATEGORIES,
+  POPULAR_PRESETS,
   presetAuthLabel,
   type McpPreset,
 } from "@/lib/mcp-presets";
@@ -526,6 +527,54 @@ export function IntegrationsPanel({
                     </button>
                   ))}
                 </div>
+
+                {POPULAR_PRESETS.some((preset) => !isConnected(preset)) ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {POPULAR_PRESETS.map((preset) => {
+                      const connected = isConnected(preset);
+                      const busy = busyId === preset.id;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          disabled={connected || busy}
+                          title={
+                            preset.auth === "oauth"
+                              ? `${preset.note} Sign-in happens on ${preset.name}'s own site.`
+                              : preset.note
+                          }
+                          onClick={() => {
+                            // The app can only complete the flows it runs itself:
+                            // open and token servers connect from here. An OAuth
+                            // server needs the vendor's consent screen, so the
+                            // pill narrows the list to that row instead of
+                            // pretending a click connected it.
+                            if (preset.auth === "oauth") {
+                              setCategory("all");
+                              setQuery(preset.name);
+                              setLimit(12);
+                              return;
+                            }
+                            void connect(preset);
+                          }}
+                          className={cn(
+                            "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                            connected
+                              ? "cursor-default border-primary/30 bg-primary/10 text-primary/80"
+                              : "border-border/70 text-muted-foreground hover:border-primary/40 hover:text-foreground",
+                          )}
+                        >
+                          {busy ? (
+                            <Loader2 className="size-2.5 animate-spin" />
+                          ) : connected ? (
+                            <Check className="size-2.5" />
+                          ) : null}
+                          {preset.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
 
                 <ul className="mt-2 space-y-1">
                   {visible.length === 0 ? (

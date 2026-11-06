@@ -1298,6 +1298,38 @@ export const MCP_PRESETS: McpPreset[] = ROWS.map(
   }),
 );
 
+/**
+ * The connectors worth showing before anyone searches: one or two per
+ * category, so every part of the catalogue — design, CRM, payments,
+ * observability — is a click away instead of twelve rows down a list.
+ *
+ * Ids rather than copies of the rows, so a popular entry can never drift from
+ * the catalogue row it points at.
+ */
+export const POPULAR_PRESET_IDS: string[] = [
+  "exa",
+  "context7",
+  "canva",
+  "notion",
+  "slack",
+  "github",
+  "figma",
+  "linear",
+  "supabase",
+  "vercel",
+  "cloudflare",
+  "stripe",
+  "hubspot",
+  "sentry",
+  "posthog",
+  "resend",
+  "semgrep",
+];
+
+export const POPULAR_PRESETS: McpPreset[] = POPULAR_PRESET_IDS.map((id) =>
+  MCP_PRESETS.find((preset) => preset.id === id),
+).filter((preset): preset is McpPreset => preset !== undefined);
+
 export const MCP_PRESET_CATEGORIES: string[] = [
   ...new Set(MCP_PRESETS.map((p) => p.category)),
 ];
