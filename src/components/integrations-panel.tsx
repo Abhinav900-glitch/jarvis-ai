@@ -21,6 +21,7 @@ import {
   Check,
   Code2,
   ExternalLink,
+  FileText,
   Image as ImageIcon,
   KeyRound,
   Languages,
@@ -48,6 +49,10 @@ import {
   type BuiltInIntegration,
   type IntegrationPanel,
 } from "@/lib/integrations";
+import {
+  pluginSkillEntries,
+  type PluginRow,
+} from "@/lib/plugin-mentions";
 import { api } from "@/convex/_generated/api";
 import type { McpServerRow } from "../convex/mcpServers";
 import { Button, Input } from "@/components/ui";
@@ -92,6 +97,7 @@ export function IntegrationsPanel({
   onOpenPanel,
 }: IntegrationsPanelProps) {
   const rows = useQuery(api.mcpServers.list, open ? {} : "skip");
+  const pluginRows = useQuery(api.plugins.list, open ? {} : "skip");
   const create = useMutation(api.mcpServers.create);
 
   const [query, setQuery] = useState("");
@@ -120,6 +126,34 @@ export function IntegrationsPanel({
 
   const connectedApps = MCP_PRESETS.filter(isConnected).length;
   const openNow = MCP_PRESETS.filter((p) => p.auth === "none").length;
+
+  /**
+   * Connected connectors, shown as skills in their own right: each one hands the
+   * assistant the tools it exposes, addressed by its `$prefix`. Only connectors
+   * that are actually connected appear — an unconnected preset adds nothing to
+   * a turn, and listing it here would imply it does.
+   */
+  const connectorSkills = useMemo(
+    () =>
+      MCP_PRESETS.filter(isConnected).map((preset) => {
+        const connection = connectionFor(preset);
+        return {
+          id: preset.id,
+          name: preset.name,
+          prefix: preset.prefix,
+          tools: connection?.toolCount ?? null,
+        };
+      }),
+    // connectionFor is derived from mapping, so the rows are the real input.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mapping],
+  );
+
+  /** Skill files inside the user's enabled plugin zips, addressed as `@plugin/skill`. */
+  const pluginSkills = useMemo(
+    () => pluginSkillEntries((pluginRows ?? []) as unknown as PluginRow[]),
+    [pluginRows],
+  );
 
   // Closing resets the inline key form, so reopening the panel never shows a
   // half-typed token for a service the user walked away from.
@@ -362,16 +396,25 @@ export function IntegrationsPanel({
                 </div>
               </div>
 
-              {/* ---- app directory ---- */}
+              {/* ---- connectors ---- */}
               <div className="px-4 py-3">
                 <div className="flex items-center gap-1.5">
                   <Blocks className="size-3.5 text-primary" />
                   <span className="hud-label" data-tone="cyan">
-                    Accounts
+                    Connectors
                   </span>
                   <span className="text-[10px] text-muted-foreground/60">
                     {connectedApps} of {MCP_PRESETS.length} connected
                   </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto h-6 px-2 text-[10px] text-muted-foreground"
+                    onClick={() => openPanel("mcp")}
+                  >
+                    MCP servers
+                    <ArrowUpRight className="ml-1 size-3" />
+                  </Button>
                 </div>
 
                 <div className="relative mt-2">
@@ -579,6 +622,116 @@ export function IntegrationsPanel({
                   run on your behalf. Services that only do OAuth are shown with
                   a docs link: this app runs no third-party sign-in flow.
                 </p>
+              </div>
+
+              {/* ---- skills ---- */}
+              <div className="px-4 py-3">
+                <div className="flex items-center gap-1.5">
+                  <Puzzle className="size-3.5 text-primary" />
+                  <span className="hud-label" data-tone="cyan">
+                    Skills
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/60">
+                    {connectorSkills.length + pluginSkills.length} available
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto h-6 px-2 text-[10px] text-muted-foreground"
+                    onClick={() => openPanel("plugins")}
+                  >
+                    Manage skills
+                    <ArrowUpRight className="ml-1 size-3" />
+                  </Button>
+                </div>
+
+                <p className="mt-1 text-[10px] leading-4 text-muted-foreground/60">
+                  A skill is anything the assistant can apply to a turn. A
+                  connector contributes the tools it exposes; a plugin contributes
+                  the Markdown skills inside its zip. Both are listed here.
+                </p>
+
+                {/* connector skills */}
+                <div className="mt-2.5">
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/50">
+                    <Blocks className="size-3" />
+                    From connectors
+                    <span className="text-muted-foreground/40">
+                      {connectorSkills.length}
+                    </span>
+                  </div>
+
+                  {connectorSkills.length === 0 ? (
+                    <p className="mt-1 rounded-lg border border-dashed border-border/60 px-2 py-2 text-[10px] leading-4 text-muted-foreground/60">
+                      No connector skills yet — connect an account above and its
+                      tools become callable from the next message you send.
+                    </p>
+                  ) : (
+                    <ul className="mt-1 grid gap-1 sm:grid-cols-2">
+                      {connectorSkills.map((skill) => (
+                        <li
+                          key={skill.id}
+                          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-2 py-1.5"
+                        >
+                          <Blocks className="size-3.5 shrink-0 text-primary/80" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs">
+                              {skill.name}
+                            </span>
+                            <span className="block truncate font-mono text-[10px] text-muted-foreground/60">
+                              ${skill.prefix}
+                              {skill.tools != null ? ` · ${skill.tools} tools` : ""}
+                            </span>
+                          </span>
+                          <span className="shrink-0 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-px text-[9px] leading-4 text-emerald-300">
+                            live
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {/* plugin skills */}
+                <div className="mt-2.5">
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/50">
+                    <FileText className="size-3" />
+                    From plugins
+                    <span className="text-muted-foreground/40">
+                      {pluginSkills.length}
+                    </span>
+                  </div>
+
+                  {pluginSkills.length === 0 ? (
+                    <p className="mt-1 rounded-lg border border-dashed border-border/60 px-2 py-2 text-[10px] leading-4 text-muted-foreground/60">
+                      No plugin skills yet — upload a plugin zip and each Markdown
+                      skill inside it becomes mentionable in the composer by typing
+                      @ followed by the plugin name.
+                    </p>
+                  ) : (
+                    <ul className="mt-1 grid gap-1 sm:grid-cols-2">
+                      {pluginSkills.map((skill) => (
+                        <li
+                          key={`${skill.pluginId}:${skill.skillName}`}
+                          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-2 py-1.5"
+                        >
+                          <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs">
+                              {skill.label}
+                            </span>
+                            <span className="block truncate font-mono text-[10px] text-muted-foreground/60">
+                              {skill.token}
+                            </span>
+                          </span>
+                          <span className="max-w-[45%] shrink-0 truncate text-[9px] uppercase tracking-wider text-muted-foreground/50">
+                            {skill.pluginName}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             </div>
           </motion.div>
