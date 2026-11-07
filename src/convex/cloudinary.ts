@@ -519,7 +519,11 @@ async function generateViaFal(
   });
   if (!res.ok) {
     const detail = (await res.text().catch(() => "")).slice(0, 180);
-    throw new Error(`flux/schnell → ${res.status}${detail ? ` ${detail}` : ""}`);
+    const message = `flux/schnell → ${res.status}${detail ? ` ${detail}` : ""}`;
+    if (res.status === 402 || res.status === 403) {
+      throw new AccountLockedError(message);
+    }
+    throw new Error(message);
   }
   const data = (await res.json()) as {
     images?: { url?: string; content_type?: string }[];
@@ -1495,6 +1499,15 @@ const providerBreakers = new Map<
   { failures: number; openUntil: number }
 >();
 
+/**
+ * The provider rejected the *account*, not the request: fal answers 403
+ * `User is locked. Reason: TOP_UP.` once credits hit the lock threshold, and
+ * every endpoint is refused before a model is even chosen — so a free or
+ * cheaper fal model cannot be swapped in to get around it. Retrying the next
+ * request cannot help either, which is why this skips the three-strike rule.
+ */
+class AccountLockedError extends Error {}
+
 function breakerAllows(name: string): boolean {
   const state = providerBreakers.get(name);
   if (!state) return true;
@@ -1503,6 +1516,14 @@ function breakerAllows(name: string): boolean {
     return true;
   }
   return false;
+}
+
+/** Take a provider out of the chain at once, without waiting for 3 strikes. */
+function breakerTrip(name: string): void {
+  providerBreakers.set(name, {
+    failures: 0,
+    openUntil: Date.now() + 10 * 60_000,
+  });
 }
 
 function breakerRecord(name: string, ok: boolean): void {
@@ -1652,7 +1673,14 @@ export const generateImage = action({
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[image-gen] ${attempt.name} failed: ${msg}`);
-        breakerRecord(attempt.name, false);
+        if (err instanceof AccountLockedError) {
+          // No credit / revoked key: skip it for the cool-down immediately and
+          // let the keyless legs (Pollinations is FLUX for free) serve the
+          // request, rather than paying a rejected round-trip every time.
+          breakerTrip(attempt.name);
+        } else {
+          breakerRecord(attempt.name, false);
+        }
         errors.push(`${attempt.name}: ${msg}`);
       }
     }
