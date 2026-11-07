@@ -493,6 +493,73 @@ function falApiKey(): string | null {
   );
 }
 
+async function generateViaCfWorkers(
+  ctx: ActionCtx,
+  key: string,
+  prompt: string,
+  aspectRatio?: string,
+): Promise<GeneratedImage> {
+  const { width, height } = sizeForAspect(aspectRatio);
+  if (width > 1024 || height > 1024) {
+    throw new Error("Cloudflare Workers AI free tier limits images to 1024×1024.");
+  }
+  // Workers AI is account-scoped, so the endpoint carries the account id:
+  // /accounts/{ACCOUNT_ID}/ai/v1/images/generations. The account id is
+  // configured separately; when it is missing the leg reports no key and
+  // falls through rather than failing loudly.
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  if (!accountId) {
+    throw new Error("CLOUDFLARE_ACCOUNT_ID not configured — can't reach Workers AI without your account id.");
+  }
+  const body = JSON.stringify({
+    // The free tier offers FLUX.1 [dev] under @cf/black-forest-labs/flux-1-dev.
+    // It is pay-per-token-equivalent in images rather than text, but the
+    // account's free daily image allowance covers it, which is why this leg
+    // leads the paid legs instead of sitting behind Pollinations.
+    model: "@cf/black-forest-labs/flux-1-dev",
+    prompt,
+    width,
+    height,
+    seed: Math.floor(Math.random() * 2_147_483_647),
+  });
+  const res = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/images/generations`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    },
+  );
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => "")).slice(0, 180);
+    const message = `workers-ai/flux-dev → ${res.status}${detail ? ` ${detail}` : ""}`;
+    if (res.status === 402 || res.status === 403) {
+      throw new AccountLockedError(message);
+    }
+    throw new Error(message);
+  }
+  const data = (await res.json()) as { result?: { image?: string } };
+  const url = data.result?.image ?? null;
+  if (!url) throw new Error("workers-ai/flux-dev returned no image");
+
+  const bytes = await pictureBytes(url);
+  const publicId = `jarvis-gen/cf-${Date.now()}`;
+  try {
+    const stored = await uploadBytesToCloudinary(ctx, bytes, publicId);
+    return { url: stored.url, publicId: stored.publicId, provider: "cloudflare-workers-ai" };
+  } catch {
+    const blob = new Blob([bytes], { type: "image/png" });
+    const storageId = await ctx.storage.store(blob);
+    const storedUrl = await ctx.storage.getUrl(storageId);
+    if (!storedUrl) throw new Error("cloudflare-workers-ai: could not store the generated image");
+    return { url: storedUrl, publicId: storageId, provider: "cloudflare-workers-ai" };
+  }
+}
+
 async function generateViaFal(
   ctx: ActionCtx,
   key: string,
@@ -1610,6 +1677,21 @@ export const generateImage = action({
       attempts.push({
         name: "meta",
         run: () => generateViaMeta(ctx, metaKey, prompt, args.aspectRatio),
+      });
+    }
+    // Cloudflare Workers AI joins directly behind Meta when both a Workers AI
+    // key and the account id are present: an official endpoint with a free
+    // daily image allowance beats the hosted chain below it.
+    const cfWorkersKey = (
+      process.env.CLOUDFARE_WORKERS_API_KEY?.trim() ||
+      process.env.CLOUDFLARE_WORKERS_API_TOKEN?.trim() ||
+      process.env.CLOUDFLARE_API_TOKEN?.trim() ||
+      null
+    );
+    if (cfWorkersKey && process.env.CLOUDFLARE_ACCOUNT_ID?.trim()) {
+      attempts.push({
+        name: "cloudflare-workers-ai",
+        run: () => generateViaCfWorkers(ctx, cfWorkersKey, prompt, args.aspectRatio),
       });
     }
     attempts.push(
