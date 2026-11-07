@@ -7009,6 +7009,8 @@ export default function Dashboard() {
                                     ? "Poll"
                                     : img.provider === "meta"
                                       ? "Meta"
+                                      : img.provider === "fal"
+                                        ? "Fal"
                                       : img.provider?.startsWith("hf/")
                                         ? "HF"
                                         : "Cld"}

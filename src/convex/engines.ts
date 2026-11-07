@@ -217,6 +217,33 @@ export const PROVIDERS: ProviderSpec[] = [
     timeoutMs: 90_000,
   },
   {
+    // NVIDIA NIM (build.nvidia.com): an OpenAI-compatible chat-completions
+    // endpoint with `Authorization: Bearer`, so it drops into the dispatch
+    // unchanged. One key covers the whole catalogue — the model id carries the
+    // owner (`meta/…`, `nvidia/…`, `deepseek-ai/…`), which is why the vision
+    // and reasoning engines below can share a single provider entry.
+    //
+    // Paid by credit rather than free, so it is declared after the free
+    // providers: the stable ladder only reaches it when nothing ahead answers.
+    id: "nvidia",
+    label: "NVIDIA NIM",
+    url: "https://integrate.api.nvidia.com/v1/chat/completions",
+    // NVIDIA's own docs use NVIDIA_API_KEY. The aliases cover the names the
+    // platform's Keys tab gives it, and NGC's older NGC_API_KEY.
+    keyEnv: ["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "NGC_API_KEY"],
+    missing: "NVIDIA_API_KEY not configured",
+    plugins: [],
+    // NIM accepts image_url parts, so vision turns reach the multimodal engine
+    // below instead of being dropped.
+    imageUrlAsString: false,
+    textOnly: false,
+    // Per-model on NIM rather than documented across the catalogue, and a bare
+    // `reasoning_effort` on a model that ignores it is noise in the request.
+    reasoningEffort: false,
+    maxTokens: 4096,
+    timeoutMs: 90_000,
+  },
+  {
     // Meta Model API (Muse) — the successor to the retired api.llama.com
     // endpoint. OpenAI-shaped chat completions with `Authorization: Bearer`,
     // so it drops into the existing dispatch unchanged. Declared last: it is
@@ -900,6 +927,66 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.92,
     context: 65_536,
     bestFor: "solid everyday tasks at no cost, once enabled",
+  },
+
+  // --- NVIDIA NIM ---------------------------------------------------------
+  // Model ids are NVIDIA's catalogue ids (`owner/model`), taken from the model
+  // cards on build.nvidia.com and from NIM's published model list. Unlike the
+  // blocks above, these have NOT been probed against this deployment's key:
+  // the ids are the documented ones, and the router already treats an engine
+  // that fails as a fallback to the next step, so a stale id costs one attempt
+  // rather than a broken turn. Probe before promoting any of them.
+  {
+    id: "nvidia/llama-3.3-70b",
+    provider: "nvidia",
+    modelId: "meta/llama-3.3-70b-instruct",
+    label: "Llama 3.3 70B (NIM)",
+    vision: false,
+    reasoning: false,
+    quality: 0.88,
+    speed: 0.82,
+    context: 131_072,
+    bestFor: "the dependable all-rounder on the NIM catalogue",
+  },
+  {
+    id: "nvidia/nemotron-70b",
+    provider: "nvidia",
+    modelId: "nvidia/llama-3.1-nemotron-70b-instruct",
+    label: "Nemotron 70B (NIM)",
+    vision: false,
+    reasoning: false,
+    quality: 0.84,
+    speed: 0.78,
+    context: 131_072,
+    bestFor: "tuned for helpfulness on everyday chat",
+  },
+  {
+    // The multimodal one: NIM's vision-capable Llama. Without it every image
+    // turn would skip this provider entirely (the router drops non-vision
+    // engines when a turn carries a picture).
+    id: "nvidia/llama-3.2-90b-vision",
+    provider: "nvidia",
+    modelId: "meta/llama-3.2-90b-vision-instruct",
+    label: "Llama 3.2 90B Vision (NIM)",
+    vision: true,
+    reasoning: false,
+    quality: 0.82,
+    speed: 0.66,
+    context: 131_072,
+    bestFor: "reading an image on the NIM catalogue",
+  },
+  {
+    // Open reasoning model, served thinking-first: quality over latency.
+    id: "nvidia/deepseek-r1",
+    provider: "nvidia",
+    modelId: "deepseek-ai/deepseek-r1",
+    label: "DeepSeek R1 (NIM)",
+    vision: false,
+    reasoning: true,
+    quality: 0.90,
+    speed: 0.42,
+    context: 131_072,
+    bestFor: "working a hard problem through step by step",
   },
 ];
 

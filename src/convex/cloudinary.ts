@@ -469,6 +469,78 @@ async function generateViaMeta(
 }
 
 /**
+ * Provider 0c — fal.ai (FLUX).
+ *
+ * The key every other leg wishes it had: `Authorization: Key …` rather than
+ * Bearer, a sync `fal.run` endpoint that returns CDN URLs, and sizes given as
+ * `{ width, height }` — so `aspectRatio` is honoured here instead of being
+ * dropped the way the keyless legs drop it. FLUX.1 [schnell] is the fast
+ * variant (a few inference steps, sub-second to a couple of seconds), which is
+ * what a chat reply can afford to wait for.
+ */
+function falApiKey(): string | null {
+  // fal's docs say FAL_KEY; the platform's Keys tab has named it FAL_API_KEY
+  // and FALAI_API_KEY in the wild, so all three are read. First one set wins.
+  return (
+    process.env.FAL_KEY?.trim() ||
+    process.env.FAL_API_KEY?.trim() ||
+    process.env.FALAI_API_KEY?.trim() ||
+    null
+  );
+}
+
+async function generateViaFal(
+  ctx: ActionCtx,
+  key: string,
+  prompt: string,
+  aspectRatio?: string,
+): Promise<GeneratedImage> {
+  const { width, height } = sizeForAspect(aspectRatio);
+  const res = await fetch("https://fal.run/fal-ai/flux/schnell", {
+    method: "POST",
+    headers: {
+      // fal's own scheme, not Bearer — sending Bearer returns 401.
+      authorization: `Key ${key}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+      image_size: { width, height },
+      num_images: 1,
+      num_inference_steps: 4,
+      output_format: "jpeg",
+      enable_safety_checker: true,
+    }),
+    signal: AbortSignal.timeout(90_000),
+  });
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => "")).slice(0, 180);
+    throw new Error(`flux/schnell → ${res.status}${detail ? ` ${detail}` : ""}`);
+  }
+  const data = (await res.json()) as {
+    images?: { url?: string; content_type?: string }[];
+  };
+  const picture = data.images?.[0]?.url ?? null;
+  if (!picture) throw new Error("flux/schnell returned no image");
+
+  // The URL is on fal's CDN and expires, so it is copied into the account's
+  // own storage. Same two-step as the Meta leg: Cloudinary when configured,
+  // Convex storage otherwise.
+  const bytes = await pictureBytes(picture);
+  const publicId = `jarvis-gen/fal-${Date.now()}`;
+  try {
+    const stored = await uploadBytesToCloudinary(ctx, bytes, publicId);
+    return { url: stored.url, publicId: stored.publicId, provider: "fal" };
+  } catch {
+    const blob = new Blob([bytes], { type: "image/jpeg" });
+    const storageId = await ctx.storage.store(blob);
+    const url = await ctx.storage.getUrl(storageId);
+    if (!url) throw new Error("fal: could not store the generated image");
+    return { url, publicId: storageId, provider: "fal" };
+  }
+}
+
+/**
  * Provider 1 — Cloudinary Image Generation add-on.
  * Returns a URL directly; the asset already lives on Cloudinary.
  * Uses OAuth Bearer auth when connected, else API key/secret Basic auth.
@@ -1403,6 +1475,7 @@ export const getSignedUploadUrl = action({
 
 /**
  * Text-to-image generation with automatic provider fallback:
+ *   0. The account's own image server, then fal.ai FLUX when FAL_KEY is set
  *   1. Perchance AI (free, no key — PRIMARY; fast-fails if bot-blocked)
  *   2. Pollinations AI (free, no key — verified fast & reliable fallback)
  *   3. Cloudinary Image Generation add-on (needs add-on)
@@ -1487,6 +1560,18 @@ export const generateImage = action({
       attempts.push({
         name: "own-server",
         run: () => generateViaOwnServer(ctx, ownServer, prompt, args.aspectRatio),
+      });
+    }
+    // fal sits directly behind the own-server leg: a keyed, synchronous FLUX
+    // endpoint that answers in about a second and honours the aspect ratio,
+    // which beats every hosted leg below it — including Meta's agentic one,
+    // which can spend tens of seconds searching before it renders. Without a
+    // key nothing changes here.
+    const falKey = falApiKey();
+    if (falKey) {
+      attempts.push({
+        name: "fal",
+        run: () => generateViaFal(ctx, falKey, prompt, args.aspectRatio),
       });
     }
     // Meta joins only when a key exists, directly behind the own-server leg:
