@@ -229,6 +229,9 @@ export function useLiveMode(
   // so they are synced in an effect below rather than assigned during render —
   // assigning a ref while rendering is unsafe under concurrent rendering.
   const activeRef = useRef(false);
+  // A start that is still waiting on a permission prompt. Distinct from
+  // `activeRef`, which only flips once the graph is built.
+  const startingRef = useRef(false);
   const speakingRef = useRef(false);
   const processingRef = useRef(false);
   const onTurnRef = useRef(onTurn);
@@ -325,9 +328,20 @@ export function useLiveMode(
    * element, which is what lets us start playback later without a gesture.
    */
   const unlockAudio = useCallback(async () => {
+    // Bounded, because this sits on the path to the mic and neither step is
+    // allowed to hold the session up. A context the autoplay policy keeps
+    // suspended never settles `resume()`: in an embed without
+    // `allow="autoplay"`, `await ctx.resume()` hung forever, so `start()` never
+    // reached `getUserMedia` — the button did nothing and reported nothing.
+    // Audio output is worth a fraction of a second, not an unbounded wait.
     try {
       const ctx = audioCtxRef.current;
-      if (ctx && ctx.state === "suspended") await ctx.resume();
+      if (ctx && ctx.state === "suspended") {
+        await Promise.race([
+          ctx.resume(),
+          new Promise<void>((resolve) => window.setTimeout(resolve, 400)),
+        ]);
+      }
     } catch {
       /* resume is best-effort */
     }
@@ -820,10 +834,38 @@ export function useLiveMode(
       return;
     }
 
+    // Starting twice — a double click, or the header button and a
+    // command-palette entry landing together — would open a second mic and a
+    // second audio graph. The second call is dropped rather than raced.
+    if (activeRef.current || startingRef.current) return;
+    startingRef.current = true;
+    // ...but released by a watchdog as well as by the paths below. A permission
+    // prompt the user ignores must not latch live mode shut for the rest of
+    // the page's life; after this long the next press asks again.
+    let latchTimer: number | null = window.setTimeout(() => {
+      startingRef.current = false;
+    }, 15_000);
+    const releaseLatch = () => {
+      startingRef.current = false;
+      if (latchTimer !== null) {
+        window.clearTimeout(latchTimer);
+        latchTimer = null;
+      }
+    };
+
     try {
       // Create and resume the AudioContext FIRST, while the user gesture that
       // started live mode is still live — iOS hands back a suspended context
       // otherwise, and the getUserMedia await below would break the chain.
+      //
+      // Any context left over from a previous attempt is closed first. Contexts
+      // are a capped hardware resource (Chrome allows six), and leaking one per
+      // attempt is how live mode becomes permanently unable to start while
+      // every attempt blames the microphone.
+      if (audioCtxRef.current) {
+        void audioCtxRef.current.close().catch(() => {});
+        audioCtxRef.current = null;
+      }
       const Ctx =
         window.AudioContext ??
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -915,11 +957,39 @@ export function useLiveMode(
       recordStreamRef.current = tapDest.stream;
 
       activeRef.current = true;
+      releaseLatch();
       setActive(true);
       startLevelMonitor();
       startRecording();
-    } catch {
-      setError("Microphone access denied. Allow mic access and retry.");
+    } catch (err) {
+      // Say what actually happened. One "access denied" line covered a missing
+      // device, a blocked iframe and a broken audio graph alike, so a start
+      // that failed for any other reason read as a permission the user had
+      // already granted — and looked like the button doing nothing.
+      const name = err instanceof Error ? err.name : "";
+      setError(
+        name === "NotAllowedError" || name === "SecurityError"
+          ? "Microphone access denied — allow the mic for this site and retry. In an embedded preview, open the app in its own tab: mic and camera are usually blocked inside one."
+          : name === "NotFoundError" || name === "OverconstrainedError"
+            ? "No microphone found on this device."
+            : err instanceof Error && err.message
+              ? `Live mode could not start: ${err.message}`
+              : "Live mode could not start.",
+      );
+      // A failed start must not leave the mic open behind a session that never
+      // began, nor claim to be active.
+      activeRef.current = false;
+      releaseLatch();
+      setActive(false);
+      recordStreamRef.current = null;
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setCameraStream(null);
+      // Release the half-built audio graph too, so a retry starts from a clean
+      // slate instead of adding to the hardware context count.
+      void audioCtxRef.current?.close().catch(() => {});
+      audioCtxRef.current = null;
+      analyserRef.current = null;
     }
   }, [startLevelMonitor, startRecording, unlockAudio]);
 

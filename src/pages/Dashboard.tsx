@@ -3371,6 +3371,22 @@ export default function Dashboard() {
     };
   });
 
+  // A live mode that refuses to start says so inside the composer, which is
+  // the wrong place to look when the button that started it is in the header.
+  // Raise it once per distinct message. Errors raised mid-session are skipped:
+  // those are already visible in the live strip, and a session that is running
+  // should not be interrupted by a toast about one bad clip.
+  const liveStartErrorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!live.error || live.active) {
+      liveStartErrorRef.current = null;
+      return;
+    }
+    if (liveStartErrorRef.current === live.error) return;
+    liveStartErrorRef.current = live.error;
+    toast.error(live.error);
+  }, [live.error, live.active]);
+
   // ---- Streaming replies ------------------------------------------------
   // The assistant message is created empty, then the action writes each token
   // batch into it. The live `useQuery(listMessages)` re-renders on every

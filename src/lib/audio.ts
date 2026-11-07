@@ -47,7 +47,15 @@ export async function unlockAudioElement(): Promise<void> {
   try {
     const el = new Audio(SILENT_WAV);
     el.volume = 0;
-    await el.play();
+    // Bounded: `play()` normally rejects when the autoplay policy is holding
+    // playback back, but it can also stay pending (a muted or unfocused tab,
+    // an embed without `allow="autoplay"`), and every caller awaits this on
+    // the way to something the user is waiting for. Unlocking audio must cost
+    // at most a moment, never the action itself.
+    await Promise.race([
+      el.play(),
+      new Promise<void>((resolve) => setTimeout(resolve, 400)),
+    ]);
     el.pause();
   } catch {
     // Still blocked by the autoplay policy — the browser will prompt, or the
