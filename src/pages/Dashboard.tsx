@@ -577,6 +577,182 @@ function RegionResultCard({ result, onClose }: { result: Record<string, unknown>
     );
   }
 
+  if (result.type === "movie") {
+    const poster = typeof result.poster === "string" ? result.poster : null;
+    const imdbId = typeof result.imdbId === "string" ? result.imdbId : null;
+    const facts = [result.year, result.rated, result.runtime]
+      .filter((part) => typeof part === "string" && part.length > 0)
+      .map(String);
+
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+            OMDb · {result.kind === "series" ? "series" : "film"}
+          </span>
+          {closeButton}
+        </div>
+        <div className="flex gap-3">
+          {poster ? (
+            <img
+              src={poster}
+              alt=""
+              loading="lazy"
+              className="h-28 w-20 shrink-0 rounded-md bg-muted object-cover"
+            />
+          ) : null}
+          <div className="min-w-0 space-y-1">
+            {imdbId ? (
+              <a
+                href={`https://www.imdb.com/title/${imdbId}/`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block truncate text-lg font-semibold hover:underline"
+              >
+                {String(result.title)}
+              </a>
+            ) : (
+              <p className="truncate text-lg font-semibold">{String(result.title)}</p>
+            )}
+            {facts.length > 0 ? (
+              <p className="text-xs text-muted-foreground">{facts.join(" · ")}</p>
+            ) : null}
+            <div className="flex flex-wrap gap-x-3 text-xs tabular-nums">
+              {result.imdbRating ? (
+                <span>
+                  ★ {String(result.imdbRating)}{" "}
+                  <span className="text-muted-foreground">IMDb</span>
+                </span>
+              ) : null}
+              {result.metascore ? (
+                <span>
+                  {String(result.metascore)}{" "}
+                  <span className="text-muted-foreground">Metascore</span>
+                </span>
+              ) : null}
+              {result.seasons ? (
+                <span>
+                  {String(result.seasons)}{" "}
+                  <span className="text-muted-foreground">seasons</span>
+                </span>
+              ) : null}
+            </div>
+            {result.genre ? (
+              <p className="text-[11px] text-muted-foreground">{String(result.genre)}</p>
+            ) : null}
+          </div>
+        </div>
+        {result.plot ? (
+          <p className="text-xs leading-5">{String(result.plot)}</p>
+        ) : null}
+        {result.director ? (
+          <p className="text-[11px] text-muted-foreground">Directed by {String(result.director)}</p>
+        ) : null}
+        {result.actors ? (
+          <p className="text-[11px] text-muted-foreground">Starring {String(result.actors)}</p>
+        ) : null}
+        {result.awards ? (
+          <p className="text-[11px] text-muted-foreground">{String(result.awards)}</p>
+        ) : null}
+        {result.imdbVotes ? (
+          <p className="text-[11px] text-muted-foreground">
+            {String(result.imdbVotes)} IMDb votes
+            {result.boxOffice ? ` · ${String(result.boxOffice)} box office` : ""}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (result.type === "space") {
+    const image = typeof result.url === "string" ? result.url : null;
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+            {result.source === "apod" ? "NASA · picture of the day" : "NASA · EPIC · Earth"}
+          </span>
+          {closeButton}
+        </div>
+        {image ? (
+          <a href={image} target="_blank" rel="noopener noreferrer" className="block">
+            <img
+              src={image}
+              alt={String(result.title)}
+              loading="lazy"
+              className="aspect-video w-full rounded-md bg-muted object-cover"
+            />
+          </a>
+        ) : null}
+        <div>
+          <p className="text-sm font-semibold">{String(result.title)}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {[result.date, result.credit].filter(Boolean).map(String).join(" · ")}
+          </p>
+        </div>
+        {result.explanation ? (
+          <p className="max-h-24 overflow-y-auto text-xs leading-5 text-muted-foreground">
+            {String(result.explanation)}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (result.type === "isro") {
+    const launches = Array.isArray(result.launches)
+      ? (result.launches as Record<string, unknown>[])
+      : [];
+    const when = (value: unknown) => {
+      if (typeof value !== "string") return null;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return null;
+      return date.toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      });
+    };
+
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+            ISRO · upcoming launches
+          </span>
+          {closeButton}
+        </div>
+        {launches.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No upcoming ISRO launches listed right now.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {launches.map((launch, index) => (
+              <li key={`${String(launch.name)}-${index}`} className="space-y-0.5">
+                <p className="text-xs font-medium">{String(launch.name)}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {[when(launch.net), launch.status, launch.pad]
+                    .filter((part) => typeof part === "string" && part.length > 0)
+                    .map(String)
+                    .join(" · ")}
+                </p>
+                {launch.description ? (
+                  <p className="max-h-16 overflow-y-auto text-[11px] leading-4 text-muted-foreground">
+                    {String(launch.description)}
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-[10px] text-muted-foreground">
+          Schedule via {String(result.source)} — ISRO publishes no public API.
+        </p>
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -829,6 +1005,9 @@ export default function Dashboard() {
   const generateTitleAction = useAction(api.ai.generateTitle);
   const searchWebImagesAction = useAction(api.ai.searchWebImages);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
+  const lookupMovieAction = useAction(api.spaceMedia.lookupMovie);
+  const spacePictureAction = useAction(api.spaceMedia.spacePicture);
+  const isroLaunchesAction = useAction(api.spaceMedia.isroLaunches);
   const renameSessionMutation = useRenameSession();
   const setWebImagesMutation = useMutation(api.chats.setWebImages);
   const savePromptMutation = useMutation(api.chats.savePrompt);
@@ -4277,6 +4456,22 @@ export default function Dashboard() {
           setRegionResult({ type: "country", ...result });
           break;
         }
+        case "movie": {
+          if (!arg) throw new Error("Usage: /movie <title>  — e.g. /movie Interstellar");
+          const result = await lookupMovieAction({ query: arg });
+          setRegionResult({ type: "movie", ...result });
+          break;
+        }
+        case "nasa": {
+          const result = await spacePictureAction({});
+          setRegionResult({ type: "space", ...result });
+          break;
+        }
+        case "isro": {
+          const result = await isroLaunchesAction({ limit: 3 });
+          setRegionResult({ type: "isro", ...result });
+          break;
+        }
         case "github": {
           if (!arg) throw new Error("Usage: /github <owner/repo>");
           const result = await repoCardAction({ repo: arg });
@@ -4670,6 +4865,9 @@ export default function Dashboard() {
       case "currency":
       case "country":
       case "github":
+      case "movie":
+      case "nasa":
+      case "isro":
         await handleRegionCommand(command.name, args);
         return;
       case "news": {
