@@ -479,11 +479,15 @@ async function generateViaMeta(
  * what a chat reply can afford to wait for.
  */
 function falApiKey(): string | null {
-  // fal's docs say FAL_KEY; the platform's Keys tab has named it FAL_API_KEY
-  // and FALAI_API_KEY in the wild, so all three are read. First one set wins.
+  // fal's docs say FAL_KEY; the platform's Keys tab has named it FAL_API_KEY,
+  // FALAI_API_KEY and FAL_AI_API in the wild, so all four are read. First one
+  // set wins. Missing a name is not a loud failure — the leg simply reports no
+  // key and every image falls through to a worse provider, which is how a
+  // correctly-entered FAL_AI_API went unused.
   return (
     process.env.FAL_KEY?.trim() ||
     process.env.FAL_API_KEY?.trim() ||
+    process.env.FAL_AI_API?.trim() ||
     process.env.FALAI_API_KEY?.trim() ||
     null
   );

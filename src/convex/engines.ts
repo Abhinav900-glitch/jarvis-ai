@@ -240,7 +240,10 @@ export const PROVIDERS: ProviderSpec[] = [
     // Per-model on NIM rather than documented across the catalogue, and a bare
     // `reasoning_effort` on a model that ignores it is noise in the request.
     reasoningEffort: false,
-    maxTokens: 4096,
+    // Raised from 4096 after watching the 3.5 VL model spend a whole budget
+    // thinking and return `content: null` with the answer in reasoning_content:
+    // on a reasoning catalogue a 4k cap truncates real answers, not just chatter.
+    maxTokens: 8192,
     timeoutMs: 90_000,
   },
   {
@@ -930,40 +933,50 @@ export const ENGINES: EngineSpec[] = [
   },
 
   // --- NVIDIA NIM ---------------------------------------------------------
-  // Model ids are NVIDIA's catalogue ids (`owner/model`), taken from the model
-  // cards on build.nvidia.com and from NIM's published model list. Unlike the
-  // blocks above, these have NOT been probed against this deployment's key:
-  // the ids are the documented ones, and the router already treats an engine
-  // that fails as a fallback to the next step, so a stale id costs one attempt
-  // rather than a broken turn. Probe before promoting any of them.
+  // Only ids this deployment's key can actually invoke. NIM's `/v1/models`
+  // lists all 84 catalogue models, which says nothing about permission: the
+  // account is scoped to a subset, so a documented id is not a working id.
+  // Probing each one with a real completion showed the previous block was
+  // wrong three ways — `meta/llama-3.3-70b-instruct` returned 410 (end of life
+  // on 2026-08-2x), and `nvidia/llama-3.1-nemotron-70b-instruct` and
+  // `deepseek-ai/deepseek-r1` returned 404 "Function … not found for account".
+  // Every id below answered 200 first. Re-probe before swapping any of them,
+  // and expect a new id to 404 until NVIDIA enables it for this account.
   {
-    id: "nvidia/llama-3.3-70b",
+    // A 30B mixture with 3B active, so it answers at small-model speed while
+    // still carrying a large-model window.
+    id: "nvidia/nemotron-3.5-lightning",
     provider: "nvidia",
-    modelId: "meta/llama-3.3-70b-instruct",
-    label: "Llama 3.3 70B (NIM)",
+    modelId: "nvidia/nemotron-3.5-lightning-30b-a3b",
+    label: "Nemotron 3.5 Lightning (NIM)",
     vision: false,
     reasoning: false,
-    quality: 0.88,
-    speed: 0.82,
-    context: 131_072,
-    bestFor: "the dependable all-rounder on the NIM catalogue",
+    quality: 0.80,
+    speed: 0.86,
+    context: 1_048_576,
+    bestFor: "a fast general answer on the NIM catalogue",
   },
   {
-    id: "nvidia/nemotron-70b",
+    // The multimodal one: NIM's vision-language Nemotron. Without it every
+    // image turn would skip this provider entirely (the router drops
+    // non-vision engines when a turn carries a picture).
+    id: "nvidia/nemotron-3.5-super-vl",
     provider: "nvidia",
-    modelId: "nvidia/llama-3.1-nemotron-70b-instruct",
-    label: "Nemotron 70B (NIM)",
-    vision: false,
-    reasoning: false,
-    quality: 0.84,
-    speed: 0.78,
-    context: 131_072,
-    bestFor: "tuned for helpfulness on everyday chat",
+    modelId: "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    label: "Nemotron 3.5 Super VL (NIM)",
+    vision: true,
+    // It streams `reasoning_content` before any `content` — verified against
+    // this key — so it is a thinking model, not a plain chat model.
+    reasoning: true,
+    quality: 0.86,
+    speed: 0.62,
+    context: 262_144,
+    bestFor: "reading an image, and the strongest chat on NIM",
   },
   {
-    // The multimodal one: NIM's vision-capable Llama. Without it every image
-    // turn would skip this provider entirely (the router drops non-vision
-    // engines when a turn carries a picture).
+    // The vision-capable Llama. Kept because NVIDIA still serves and grants
+    // it, and a second vision option is what stops one bad image turn from
+    // leaving the NIM leg with nothing to answer.
     id: "nvidia/llama-3.2-90b-vision",
     provider: "nvidia",
     modelId: "meta/llama-3.2-90b-vision-instruct",
@@ -974,19 +987,6 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.66,
     context: 131_072,
     bestFor: "reading an image on the NIM catalogue",
-  },
-  {
-    // Open reasoning model, served thinking-first: quality over latency.
-    id: "nvidia/deepseek-r1",
-    provider: "nvidia",
-    modelId: "deepseek-ai/deepseek-r1",
-    label: "DeepSeek R1 (NIM)",
-    vision: false,
-    reasoning: true,
-    quality: 0.90,
-    speed: 0.42,
-    context: 131_072,
-    bestFor: "working a hard problem through step by step",
   },
 ];
 

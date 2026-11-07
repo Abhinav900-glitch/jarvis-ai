@@ -585,15 +585,24 @@ async function streamProvider(
   let promptTokens: number | undefined;
   let completionTokens: number | undefined;
 
+  let thinking = "";
   const handleLine = async (line: string): Promise<void> => {
     if (cancelled) return;
     const frame = parseSseFrame(line);
     if (!frame) return;
-    const delta = frame.choices?.[0]?.delta?.content ?? "";
+    const frameDelta = frame.choices?.[0]?.delta;
+    const delta = frameDelta?.content ?? "";
     if (delta) {
       if (firstTokenMs === undefined) firstTokenMs = Date.now() - started;
       full += delta;
       if (await onDelta(delta)) cancelled = true;
+    } else {
+      // A reasoning model streams its thinking in a separate field and only
+      // emits `content` once it is done — or never, if the token budget runs
+      // out mid-thought. Held aside rather than shown: chain-of-thought is not
+      // the answer. It is used below only when nothing else ever arrived,
+      // because an empty reply after a 200 reads as a broken engine.
+      thinking += frameDelta?.reasoning_content ?? frameDelta?.reasoning ?? "";
     }
     if (frame.usage) {
       promptTokens = frame.usage.prompt_tokens ?? promptTokens;
@@ -629,7 +638,7 @@ async function streamProvider(
   }
 
   return {
-    text: full,
+    text: full.trim() ? full : thinking.trim(),
     cancelled,
     latencyMs: firstTokenMs ?? Date.now() - started,
     promptTokens,
@@ -1005,7 +1014,9 @@ const STREAM_FLUSH_MS = 90;
  * the delta would mean streamed answers reported no token counts at all.
  */
 function parseSseFrame(line: string): {
-  choices?: { delta?: { content?: string } }[];
+  choices?: {
+    delta?: { content?: string; reasoning?: string; reasoning_content?: string };
+  }[];
   usage?: WireUsage;
 } | null {
   if (!line.startsWith("data:")) return null;
@@ -1013,7 +1024,9 @@ function parseSseFrame(line: string): {
   if (!payload || payload === "[DONE]") return null;
   try {
     return JSON.parse(payload) as {
-      choices?: { delta?: { content?: string } }[];
+      choices?: {
+        delta?: { content?: string; reasoning?: string; reasoning_content?: string };
+      }[];
       usage?: WireUsage;
     };
   } catch {
