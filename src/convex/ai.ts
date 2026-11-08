@@ -12,6 +12,11 @@ import { action, internalAction, type ActionCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { memoryContextFor } from "./memory";
+import {
+  glinerEndpoint,
+  glinerLabels,
+  parseGlinerEntities,
+} from "../lib/gliner";
 import { api, internal } from "./_generated/api";
 import {
   inferTask,
@@ -2764,8 +2769,53 @@ async function serpstackSearch(key: string, query: string): Promise<unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// NLP — apilayer NLP API
+// NLP — GLiNER for entities, apilayer for language and similarity
 // ---------------------------------------------------------------------------
+//
+// GLiNER is a Python model with no JS port, so it is reached over its own HTTP
+// service (`python -m gliner.serve`, addressed by GLINER_API_URL). When that is
+// configured it owns entity extraction: zero-shot labels, multilingual, and it
+// runs on the operator's hardware instead of a metered API. When it is not, the
+// apilayer NLP endpoint answers as before, so the panel never depends on a
+// second deployment existing.
+
+async function glinerEntities(
+  url: string,
+  text: string,
+): Promise<{ entities: unknown } | null> {
+  const key = process.env.GLINER_API_KEY?.trim();
+  const threshold = Number.parseFloat(process.env.GLINER_THRESHOLD ?? "");
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      },
+      body: JSON.stringify({
+        text,
+        labels: glinerLabels(process.env.GLINER_LABELS),
+        ...(Number.isFinite(threshold) ? { threshold } : {}),
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      console.error("GLiNER error", res.status, (await res.text().catch(() => "")).slice(0, 200));
+      return null;
+    }
+    const entities = parseGlinerEntities(await res.json());
+    if (entities.length === 0) return null;
+    // Shaped like the apilayer payload it replaces, so the panel's formatter and
+    // the returned entity list keep one contract.
+    return { entities };
+  } catch (err) {
+    console.error(
+      "GLiNER request failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
 
 async function apilayerNlp(
   key: string,
@@ -2790,22 +2840,43 @@ export const analyzeText = action({
     if (userId === null) throw new Error("Sign in to use NLP analysis.");
 
     const key = process.env.APILAYER_NLP_KEY;
-    if (!key) throw new Error("APILAYER_NLP_KEY is not configured.");
+    const glinerUrl = glinerEndpoint(process.env.GLINER_API_URL);
+    if (!key && !glinerUrl) {
+      throw new Error(
+        "NLP needs GLINER_API_URL (entity extraction) or APILAYER_NLP_KEY.",
+      );
+    }
 
-    const [similarity, language, entities] = await Promise.all([
-      apilayerNlp(key, "similarity", {
-        text1: args.text,
-        text2: args.text,
-      }).catch(() => null),
-      apilayerNlp(key, "language_detection", { text: args.text }).catch(
-        () => null,
-      ),
-      apilayerNlp(key, "named_entity_recognition", { text: args.text }).catch(
-        () => null,
-      ),
-    ]);
+    // Both providers cap their input; the panel works on a single message, so a
+    // generous cut is only here to stop a pasted book.
+    const text = args.text.slice(0, 8_000);
 
-    return { similarity, language, entities };
+    // Entities come from GLiNER when it is configured, else apilayer. A GLiNER
+    // failure (service down, model cold) falls through rather than failing the
+    // whole analysis, which is why this is not in the Promise.all below.
+    const gliner = glinerUrl ? await glinerEntities(glinerUrl, text) : null;
+
+    const [similarity, language, apilayerEntities] = key
+      ? await Promise.all([
+          apilayerNlp(key, "similarity", { text1: text, text2: text }).catch(
+            () => null,
+          ),
+          apilayerNlp(key, "language_detection", { text }).catch(() => null),
+          gliner
+            ? Promise.resolve(null)
+            : apilayerNlp(key, "named_entity_recognition", { text }).catch(
+                () => null,
+              ),
+        ])
+      : [null, null, null];
+
+    return {
+      similarity,
+      language,
+      entities: gliner ?? apilayerEntities,
+      // Named so the panel can say which engine read the text.
+      engine: gliner ? "gliner" : key ? "apilayer" : "none",
+    };
   },
 });
 

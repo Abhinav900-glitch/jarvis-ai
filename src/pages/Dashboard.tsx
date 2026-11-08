@@ -366,6 +366,8 @@ interface NlpResult {
   language?: unknown;
   entities?: unknown;
   similarity?: unknown;
+  /** Which engine read the text: "gliner", "apilayer", or "none". */
+  engine?: string;
 }
 
 function formatNlp(result: NlpResult | null): string {
@@ -389,7 +391,9 @@ function formatNlp(result: NlpResult | null): string {
       .map(
         (e) => `${e.text ?? "?"}${e.label ? ` (${e.label})` : ""}`,
       );
-    lines.push(`Entities: ${uniq.join(", ")}`);
+    lines.push(
+      `Entities${result.engine ? ` via ${result.engine}` : ""}: ${uniq.join(", ")}`,
+    );
   }
   const sim = result.similarity as { similarity?: number } | null;
   if (typeof sim?.similarity === "number") {
