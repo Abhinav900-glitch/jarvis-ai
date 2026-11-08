@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { query } from "./_generated/server";
 import { ELEVENLABS_TTS_VOICES, GROQ_TTS_VOICES } from "./voice";
+import { imageProviderStatuses } from "./imageProviders";
 import {
   ENGINES,
   providerStatuses,
@@ -17,6 +18,29 @@ export const desmosApiKey = query({
   args: {},
   handler: async () => {
     return { apiKey: process.env.DESMOS_API_KEY ?? null };
+  },
+});
+
+/**
+ * Which keyed image providers are configured, so the client can start where
+ * the keys are.
+ *
+ * Generation used to always try Puter first — a browser-side provider that
+ * needs no key — which meant a configured Cloudflare or fal account was never
+ * reached: the result was real, but it silently came from somewhere other than
+ * the provider the user had paid for. The client reads `serverKeyed` and calls
+ * the server chain first when it is true, falling back to Puter only when the
+ * chain fails. Presence only, no key material, so no auth is required.
+ */
+export const imageProviders = query({
+  args: {},
+  handler: async () => {
+    const providers = imageProviderStatuses();
+    return {
+      providers,
+      /** True when at least one keyed provider in the chain can run. */
+      serverKeyed: providers.some((p) => p.available),
+    };
   },
 });
 

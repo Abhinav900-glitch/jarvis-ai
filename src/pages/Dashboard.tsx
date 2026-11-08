@@ -426,6 +426,33 @@ function NewsPanel({ items }: { items: NewsItem[] }) {
 }
 
 // Region result card component
+/**
+ * Short label for the provider that made an image.
+ *
+ * Every unknown used to fall through to "Cld", which read as Cloudinary even
+ * when the picture came from Cloudflare or a local server — the one label that
+ * should have been specific was the least specific one.
+ */
+const IMAGE_PROVIDER_BADGE: Record<string, string> = {
+  puter: "Puter",
+  replicate: "Rep",
+  perchance: "Per",
+  pollinations: "Poll",
+  meta: "Meta",
+  fal: "fal",
+  "cloudflare-workers-ai": "CF AI",
+  canva: "Canva",
+  aihorde: "Horde",
+  cloudinary: "Cld",
+  "own-server": "Own",
+  huggingface: "HF",
+};
+
+function imageProviderBadge(provider: string): string {
+  if (provider.startsWith("hf/")) return "HF";
+  return IMAGE_PROVIDER_BADGE[provider] ?? provider.slice(0, 6).toUpperCase();
+}
+
 function RegionResultCard({ result, onClose }: { result: Record<string, unknown>; onClose: () => void }) {
   // A plain render helper, not a component: declaring it as a component inside
   // the panel body remounted the button on every render.
@@ -990,6 +1017,9 @@ export default function Dashboard() {
   // A saved self-hosted endpoint outranks every hosted leg, including Puter:
   // the user pointed the app at their own model on purpose.
   const ownImageServer = useQuery(api.imageServer.get);
+  // Which keyed image providers the deployment has. Presence only — the key
+  // itself never leaves the server.
+  const imageProviderConfig = useQuery(api.config.imageProviders);
   const summarizeUrlAction = useAction(api.ai.summarizeUrl);
   const getWorldTimeAction = useAction(api.ai.getWorldTime);
   const getCurrencyRateAction = useAction(api.ai.getCurrencyRate);
@@ -1607,15 +1637,29 @@ export default function Dashboard() {
     // final failure hid the Puter error — the one that actually explains why
     // the primary provider was skipped.
     const failures: string[] = [];
+    const runServerChain = () => generateImageAction({ prompt });
     if (ownImageServer) {
       // Still one click, no popup: the own-server leg runs first inside the
       // action, so Puter's browser popup would only interrupt it.
       try {
-        return await generateImageAction({ prompt });
+        return await runServerChain();
       } catch (err) {
         throw new Error(
           `Own image server failed.\n${err instanceof Error ? err.message : String(err)}`,
         );
+      }
+    }
+    // Keys are configured (Cloudflare Workers AI, fal, Meta): the server chain
+    // is the provider the user actually set up, so it goes first. Puter used to
+    // run ahead of it and almost always succeeded, which is why a paid endpoint
+    // never appeared to be used — the picture was real, just from elsewhere.
+    if (imageProviderConfig?.serverKeyed) {
+      try {
+        return await runServerChain();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        failures.push(`Server chain: ${msg}`);
+        console.warn("[image-gen] keyed chain failed, falling back:", msg);
       }
     }
     try {
@@ -1632,18 +1676,22 @@ export default function Dashboard() {
     // perchance credentials to every signed-in client, and the server chain
     // below already runs Perchance (plus Pollinations and AI Horde) without
     // exposing a single key.
-    try {
-      return await generateImageAction({ prompt });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      failures.push(`Server chain: ${msg}`);
-      console.warn("[image-gen] server chain failed:", msg);
-      // Newline-separated and accompanied by the page's own Puter facts: the
-      // banner is the diagnostic, so it must not need DevTools to interpret.
-      throw new Error(
-        `Every image provider failed.\n${failures.join("\n")}\n${describePuterEnvironment()}`,
-      );
+    // Only when the keyed chain was not already tried above — retrying it
+    // would spend a second round trip on a provider that just failed.
+    if (!imageProviderConfig?.serverKeyed) {
+      try {
+        return await runServerChain();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        failures.push(`Server chain: ${msg}`);
+        console.warn("[image-gen] server chain failed:", msg);
+      }
     }
+    // Newline-separated and accompanied by the page's own Puter facts: the
+    // banner is the diagnostic, so it must not need DevTools to interpret.
+    throw new Error(
+      `Every image provider failed.\n${failures.join("\n")}\n${describePuterEnvironment()}`,
+    );
   };
 
   // Returns whether an image actually landed, so callers that auto-send can
@@ -7196,22 +7244,11 @@ export default function Dashboard() {
                           />
                         </button>
                         {img.provider ? (
-                          <span className="absolute bottom-1 left-1 rounded bg-black/60 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white">
-                            {img.provider === "puter"
-                              ? "Puter"
-                              : img.provider === "replicate"
-                                ? "Rep"
-                                : img.provider === "perchance"
-                                  ? "Per"
-                                  : img.provider === "pollinations"
-                                    ? "Poll"
-                                    : img.provider === "meta"
-                                      ? "Meta"
-                                      : img.provider === "fal"
-                                        ? "Fal"
-                                      : img.provider?.startsWith("hf/")
-                                        ? "HF"
-                                        : "Cld"}
+                          <span
+                            className="absolute bottom-1 left-1 rounded bg-black/60 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white"
+                            title={`Generated by ${img.provider}`}
+                          >
+                            {imageProviderBadge(img.provider)}
                           </span>
                         ) : null}
                         {img.messageId ? (

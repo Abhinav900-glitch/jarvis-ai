@@ -6,6 +6,13 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { v2 as cloudinary } from "cloudinary";
 import { internal as internalApi } from "./_generated/api";
 import { generateImageViaCanva } from "./canva";
+import {
+  CF_ACCOUNT_ENVS,
+  CF_KEY_ENVS,
+  FAL_KEY_ENVS,
+  META_KEY_ENVS,
+  readEnv,
+} from "./imageProviders";
 
 // ---------------------------------------------------------------------------
 // Cloudinary OAuth 2.0 (authorization code grant)
@@ -479,18 +486,10 @@ async function generateViaMeta(
  * what a chat reply can afford to wait for.
  */
 function falApiKey(): string | null {
-  // fal's docs say FAL_KEY; the platform's Keys tab has named it FAL_API_KEY,
-  // FALAI_API_KEY and FAL_AI_API in the wild, so all four are read. First one
-  // set wins. Missing a name is not a loud failure — the leg simply reports no
-  // key and every image falls through to a worse provider, which is how a
-  // correctly-entered FAL_AI_API went unused.
-  return (
-    process.env.FAL_KEY?.trim() ||
-    process.env.FAL_API_KEY?.trim() ||
-    process.env.FAL_AI_API?.trim() ||
-    process.env.FALAI_API_KEY?.trim() ||
-    null
-  );
+  // The accepted names live in `imageProviders.ts`, shared with the query that
+  // tells the client which providers are configured — two copies of this list
+  // is how a correctly-entered key gets ignored by one of them.
+  return readEnv(FAL_KEY_ENVS);
 }
 
 /**
@@ -521,7 +520,7 @@ async function generateViaCfWorkers(
   key: string,
   prompt: string,
 ): Promise<GeneratedImage> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const accountId = readEnv(CF_ACCOUNT_ENVS);
   if (!accountId) {
     throw new Error("CLOUDFLARE_ACCOUNT_ID not configured — Workers AI is account-scoped.");
   }
@@ -1663,6 +1662,7 @@ export const generateImage = action({
       { userId },
     );
 
+
     const attempts: { name: string; run: () => Promise<GeneratedImage> }[] = [];
     if (ownServer) {
       attempts.push({
@@ -1670,11 +1670,22 @@ export const generateImage = action({
         run: () => generateViaOwnServer(ctx, ownServer, prompt, args.aspectRatio),
       });
     }
-    // fal sits directly behind the own-server leg: a keyed, synchronous FLUX
-    // endpoint that answers in about a second and honours the aspect ratio,
-    // which beats every hosted leg below it — including Meta's agentic one,
-    // which can spend tens of seconds searching before it renders. Without a
-    // key nothing changes here.
+    // Cloudflare Workers AI leads the keyed legs: it is the free daily
+    // allowance, it answers in about 1.4s, and it is the account the user
+    // configured first. It does not take a size (see generateViaCfWorkers), so
+    // an explicit aspect ratio is the one thing the legs below it honour better
+    // — but a square picture from the configured provider beats a correct
+    // aspect ratio from one that was never asked for.
+    const cfWorkersKey = readEnv(CF_KEY_ENVS);
+    const cfAccountId = readEnv(CF_ACCOUNT_ENVS);
+    if (cfWorkersKey && cfAccountId) {
+      attempts.push({
+        name: "cloudflare-workers-ai",
+        run: () => generateViaCfWorkers(ctx, cfWorkersKey, prompt),
+      });
+    }
+    // fal follows: a keyed, synchronous FLUX endpoint that answers in about a
+    // second and honours the aspect ratio. Without a key nothing changes here.
     const falKey = falApiKey();
     if (falKey) {
       attempts.push({
@@ -1682,32 +1693,13 @@ export const generateImage = action({
         run: () => generateViaFal(ctx, falKey, prompt, args.aspectRatio),
       });
     }
-    // Meta joins only when a key exists, directly behind the own-server leg:
-    // an official endpoint that answers on the first try beats a hosted chain
-    // whose leading members fast-fail. Without a key nothing changes here.
-    const metaKey =
-      process.env.MODEL_API_KEY?.trim() ||
-      process.env.META_AI_API_KEY?.trim() ||
-      process.env.META_API_KEY?.trim();
+    // Meta joins only when a key exists: an official endpoint that answers on
+    // the first try beats a hosted chain whose leading members fast-fail.
+    const metaKey = readEnv(META_KEY_ENVS);
     if (metaKey) {
       attempts.push({
         name: "meta",
         run: () => generateViaMeta(ctx, metaKey, prompt, args.aspectRatio),
-      });
-    }
-    // Cloudflare Workers AI joins directly behind Meta when both a Workers AI
-    // key and the account id are present: an official endpoint with a free
-    // daily image allowance beats the hosted chain below it.
-    const cfWorkersKey = (
-      process.env.CLOUDFARE_WORKERS_API_KEY?.trim() ||
-      process.env.CLOUDFLARE_WORKERS_API_TOKEN?.trim() ||
-      process.env.CLOUDFLARE_API_TOKEN?.trim() ||
-      null
-    );
-    if (cfWorkersKey && process.env.CLOUDFLARE_ACCOUNT_ID?.trim()) {
-      attempts.push({
-        name: "cloudflare-workers-ai",
-        run: () => generateViaCfWorkers(ctx, cfWorkersKey, prompt),
       });
     }
     attempts.push(
