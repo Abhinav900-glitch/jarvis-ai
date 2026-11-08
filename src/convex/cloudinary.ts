@@ -493,75 +493,82 @@ function falApiKey(): string | null {
   );
 }
 
+/**
+ * Provider 0d — Cloudflare Workers AI (FLUX.1 [schnell]).
+ *
+ * Workers AI is account-scoped: the URL itself carries `CLOUDFLARE_ACCOUNT_ID`,
+ * so a key with no account id cannot reach the model at all. The leg therefore
+ * reports itself unavailable unless both are set.
+ *
+ * The shape here is the one measured against the live API, not the one the
+ * docs suggest. Two things are worth recording because both cost a round trip
+ * to learn:
+ *
+ *  - `@cf/black-forest-labs/flux-1-dev` is not a Workers AI model. Calling it
+ *    returns `{code: 7000, "No route for that URI"}` — a 400 that reads like a
+ *    bad request but is really a missing model. `flux-1-schnell` is the FLUX
+ *    model on the catalogue, and it answers 200.
+ *  - The input schema is strict: `prompt` and `steps` only. Sending `width`,
+ *    `height` or even `seed` is rejected with "Additional properties not
+ *    allowed", so `aspectRatio` cannot be honoured on this leg — it is dropped
+ *    rather than faked, exactly like the other keyless providers.
+ *
+ * The reply is `{result: {image: "<base64>"}}` with no data-URL prefix, and
+ * `pictureBytes` already accepts bare base64.
+ */
 async function generateViaCfWorkers(
   ctx: ActionCtx,
   key: string,
   prompt: string,
-  aspectRatio?: string,
 ): Promise<GeneratedImage> {
-  const { width, height } = sizeForAspect(aspectRatio);
-  if (width > 1024 || height > 1024) {
-    throw new Error("Cloudflare Workers AI free tier limits images to 1024×1024.");
-  }
-  // Workers AI is account-scoped, so the endpoint carries the account id:
-  // /accounts/{ACCOUNT_ID}/ai/v1/images/generations. The account id is
-  // configured separately; when it is missing the leg reports no key and
-  // falls through rather than failing loudly.
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   if (!accountId) {
-    throw new Error("CLOUDFLARE_ACCOUNT_ID not configured — can't reach Workers AI without your account id.");
+    throw new Error("CLOUDFLARE_ACCOUNT_ID not configured — Workers AI is account-scoped.");
   }
-  const body = JSON.stringify({
-    // The free tier offers FLUX.1 [dev] under @cf/black-forest-labs/flux-1-dev.
-    // It is pay-per-token-equivalent in images rather than text, but the
-    // account's free daily image allowance covers it, which is why this leg
-    // leads the paid legs instead of sitting behind Pollinations.
-    model: "@cf/black-forest-labs/flux-1-dev",
-    prompt,
-    width,
-    height,
-    seed: Math.floor(Math.random() * 2_147_483_647),
-  });
   const res = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/images/generations`,
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/black-forest-labs/flux-1-schnell`,
     {
       method: "POST",
       headers: {
         authorization: `Bearer ${key}`,
         "content-type": "application/json",
       },
-      body,
+      // Four steps is schnell's sweet spot: the model is distilled for it, and
+      // more steps mostly buy latency on a reply the user is waiting for.
+      body: JSON.stringify({ prompt, steps: 4 }),
       signal: AbortSignal.timeout(60_000),
     },
   );
   if (!res.ok) {
-    const detail = (await res.text().catch(() => "")).slice(0, 180);
-    const message = `workers-ai/flux-dev → ${res.status}${detail ? ` ${detail}` : ""}`;
+    // Workers AI reports its reasons in `errors[].message`; the bare status is
+    // usually "400", which says nothing on its own.
+    const raw = await res.text().catch(() => "");
+    let detail = raw.slice(0, 180);
+    try {
+      const parsed = JSON.parse(raw) as { errors?: { message?: string }[] };
+      const first = parsed.errors?.[0]?.message;
+      if (first) detail = first.slice(0, 220);
+    } catch {
+      /* keep the raw slice */
+    }
+    const message = `workers-ai/flux-schnell → ${res.status}${detail ? ` ${detail}` : ""}`;
     if (res.status === 402 || res.status === 403) {
       throw new AccountLockedError(message);
     }
     throw new Error(message);
   }
-  const data = (await res.json()) as {
-    success?: boolean;
-    result?: { image?: string };
-    images?: { url?: string }[];
-    image?: { url?: string };
-  };
-  const url =
-    data.result?.image ||
-    data.images?.[0]?.url ||
-    data.image?.url ||
-    null;
-  if (!url) throw new Error("workers-ai/flux-dev returned no image");
+  const data = (await res.json()) as { result?: { image?: string } };
+  const image = data.result?.image;
+  if (!image) throw new Error("workers-ai/flux-schnell returned no image");
 
-  const bytes = await pictureBytes(url);
+  const bytes = await pictureBytes(image);
   const publicId = `jarvis-gen/cf-${Date.now()}`;
   try {
     const stored = await uploadBytesToCloudinary(ctx, bytes, publicId);
     return { url: stored.url, publicId: stored.publicId, provider: "cloudflare-workers-ai" };
   } catch {
-    const blob = new Blob([bytes], { type: "image/png" });
+    // schnell answers with a JPEG, so the fallback store is labelled as one.
+    const blob = new Blob([bytes], { type: "image/jpeg" });
     const storageId = await ctx.storage.store(blob);
     const storedUrl = await ctx.storage.getUrl(storageId);
     if (!storedUrl) throw new Error("cloudflare-workers-ai: could not store the generated image");
@@ -1700,7 +1707,7 @@ export const generateImage = action({
     if (cfWorkersKey && process.env.CLOUDFLARE_ACCOUNT_ID?.trim()) {
       attempts.push({
         name: "cloudflare-workers-ai",
-        run: () => generateViaCfWorkers(ctx, cfWorkersKey, prompt, args.aspectRatio),
+        run: () => generateViaCfWorkers(ctx, cfWorkersKey, prompt),
       });
     }
     attempts.push(
