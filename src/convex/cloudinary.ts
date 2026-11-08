@@ -542,8 +542,17 @@ async function generateViaCfWorkers(
     }
     throw new Error(message);
   }
-  const data = (await res.json()) as { result?: { image?: string } };
-  const url = data.result?.image ?? null;
+  const data = (await res.json()) as {
+    success?: boolean;
+    result?: { image?: string };
+    images?: { url?: string }[];
+    image?: { url?: string };
+  };
+  const url =
+    data.result?.image ||
+    data.images?.[0]?.url ||
+    data.image?.url ||
+    null;
   if (!url) throw new Error("workers-ai/flux-dev returned no image");
 
   const bytes = await pictureBytes(url);
