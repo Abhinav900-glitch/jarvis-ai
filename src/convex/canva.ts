@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { action, type ActionCtx } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internal as internalApi } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 
 // ---------------------------------------------------------------------------
 // Canva image generation — OAuth 2.0 authorization code + PKCE
@@ -201,36 +202,104 @@ export const disconnectCanva = action({
   },
 });
 
-/**
- * A valid access token for the signed-in user, refreshing when expired.
- * Throws when the user has not connected Canva — callers must treat that as
- * "provider unavailable", never as a reason to fail the whole request.
- */
-export async function getFreshAccessToken(ctx: ActionCtx): Promise<string> {
-  const userId = await getAuthUserId(ctx);
-  if (userId === null) throw new Error("Sign in to generate images.");
+// ---------------------------------------------------------------------------
+// Workspace credentials — Canva without asking anyone to authorize it
+//
+// Canva has no client-credentials grant, so a plain server key cannot mint a
+// token by itself. What it can do is hold one Canva account's grant: the
+// workspace authorizes once, `CANVA_REFRESH_TOKEN` stores that grant, and every
+// user then gets Canva image generation without being sent through an OAuth
+// flow. A user who does connect their own Canva still wins — their account,
+// their assets — this is only the fallback underneath them.
+// ---------------------------------------------------------------------------
 
+const WORKSPACE_REFRESH_ENV = "CANVA_REFRESH_TOKEN";
+const WORKSPACE_ACCESS_ENV = "CANVA_ACCESS_TOKEN";
+
+/** Minted tokens live here between calls; actions are stateless per invocation. */
+let workspaceCache: { token: string; expiresAt: number } | null = null;
+
+/** Whether the assistant can use Canva without any user connecting it. */
+export function canvaWorkspaceConfigured(): boolean {
+  // `||` not `??`: an empty string in the Keys tab must fall through to the
+  // other name rather than count as a configured token.
+  return Boolean(
+    process.env[WORKSPACE_REFRESH_ENV]?.trim() ||
+      process.env[WORKSPACE_ACCESS_ENV]?.trim(),
+  );
+}
+
+/** Drop a cached workspace token so the next call re-mints it. */
+export function forgetWorkspaceCanvaToken(): void {
+  workspaceCache = null;
+}
+
+async function workspaceAccessToken(): Promise<string | null> {
+  if (
+    workspaceCache &&
+    workspaceCache.expiresAt - TOKEN_EXPIRY_SAFETY_MS > Date.now()
+  ) {
+    return workspaceCache.token;
+  }
+
+  const refreshToken = process.env[WORKSPACE_REFRESH_ENV]?.trim();
+  const staticToken = process.env[WORKSPACE_ACCESS_ENV]?.trim();
+
+  if (refreshToken) {
+    const cfg = canvaConfig();
+    const res = await fetch(CANVA_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: cfg.clientId,
+        client_secret: cfg.clientSecret,
+      }),
+    });
+    const data = (await res.json()) as CanvaTokenResponse;
+    if (res.ok && data.access_token) {
+      workspaceCache = {
+        token: data.access_token,
+        expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
+      };
+      return data.access_token;
+    }
+    // A rejected grant is worth reporting rather than silently falling through
+    // to "not connected" — someone pasted a token that no longer works.
+    console.error(
+      "[canva] workspace refresh failed:",
+      data.error_description ?? data.error ?? res.status,
+    );
+  }
+
+  if (staticToken) {
+    // No expiry is published with a hand-pasted token, so it is trusted for a
+    // short window and re-read afterwards. A 401 clears the cache immediately.
+    workspaceCache = { token: staticToken, expiresAt: Date.now() + 5 * 60_000 };
+    return staticToken;
+  }
+
+  return null;
+}
+
+/** The signed-in user's own connection, or null when there is none to use. */
+async function userAccessToken(
+  ctx: ActionCtx,
+  userId: Id<"users">,
+): Promise<string | null> {
   const row = await ctx.runQuery(internalApi.canvaOAuth.getStoredAuth, {
     userId,
   });
-  if (!row?.accessToken) {
-    throw new Error(
-      "Canva isn't connected for this account. Connect Canva from the menu to use it for image generation.",
-    );
-  }
+  if (!row?.accessToken) return null;
 
   // Canva's access tokens are short-lived, so refresh 60s before expiry.
   if (row.expiresAt && row.expiresAt - TOKEN_EXPIRY_SAFETY_MS > Date.now()) {
     return row.accessToken;
   }
-
   if (!row.refreshToken) {
-    // No refresh token and the access token is stale — force a reconnect
-    // rather than sending a token that is about to be rejected.
     await ctx.runMutation(internalApi.canvaOAuth.clearTokens, { userId });
-    throw new Error(
-      "The Canva connection expired. Disconnect and connect Canva again.",
-    );
+    return null;
   }
 
   const cfg = canvaConfig();
@@ -257,8 +326,28 @@ export async function getFreshAccessToken(ctx: ActionCtx): Promise<string> {
 
   // Canva reuses refresh tokens, so a failure here means the grant is gone.
   await ctx.runMutation(internalApi.canvaOAuth.clearTokens, { userId });
+  return null;
+}
+
+/**
+ * A valid access token: the signed-in user's own connection first, then the
+ * workspace's. Throws only when neither exists — callers treat that as
+ * "provider unavailable", never as a reason to fail the whole request.
+ */
+export async function getFreshAccessToken(ctx: ActionCtx): Promise<string> {
+  const userId = await getAuthUserId(ctx);
+  if (userId) {
+    const own = await userAccessToken(ctx, userId);
+    if (own) return own;
+  }
+
+  const workspace = await workspaceAccessToken();
+  if (workspace) return workspace;
+
   throw new Error(
-    `Could not refresh the Canva connection (${data.error_description ?? data.error ?? res.status}). Connect Canva again.`,
+    canvaWorkspaceConfigured()
+      ? "The workspace Canva connection could not be refreshed. Check CANVA_REFRESH_TOKEN in the Keys tab, or connect your own Canva from the menu."
+      : "Canva isn't connected for this account. Connect Canva from the menu, or add CANVA_REFRESH_TOKEN so the assistant can use Canva without a connection.",
   );
 }
 
@@ -333,6 +422,10 @@ function canvaHttpError(status: number, text: string, what: string): Error {
     );
   }
   if (status === 401) {
+    // A rejected token is a dead token — drop it so the next attempt mints a
+    // fresh one instead of replaying the same failure for the rest of its
+    // cached lifetime.
+    forgetWorkspaceCanvaToken();
     return new Error(
       `Canva ${what} was unauthenticated (${detail}). Reconnect Canva.`,
     );
