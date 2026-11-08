@@ -46,6 +46,10 @@ import {
 } from "../lib/chat-digest";
 import { buildPageContext, hasReadableText } from "../lib/pdf-pages";
 import {
+  cleanEnhancedPrompt,
+  enhancePromptRequest,
+} from "../lib/enhance-prompt";
+import {
   PARALLEL_SEARCH_URL,
   parallelRequestBody,
   parallelResults,
@@ -2733,6 +2737,75 @@ export const pickWebImage = action({
     }
 
     return await chooseBestImage(ctx, userId, args.query, candidates);
+  },
+});
+
+const ENHANCE_SYSTEM_PROMPT =
+  "You rewrite short image descriptions into prompts an image model can act on. " +
+  "Keep the user's subject exactly; add concrete visual detail — subject, setting, " +
+  "light, composition, lens or medium, colour and mood. Do not invent named people, " +
+  "brands, text or licensed characters. Never add anything the user excluded. " +
+  "Reply with ONLY the rewritten prompt as one line of plain text: no preamble, no " +
+  "quotes, no markdown, no list, under 90 words.";
+
+/**
+ * Rewrite a rough image description into a detailed generation prompt.
+ *
+ * The models behind the studio are literal: "a lighthouse" gets a lighthouse on
+ * white with no sky, and the fix people reach for is a longer paragraph. This
+ * is that paragraph, written by the same provider chain every other reply uses,
+ * so a key the user already added is enough — no separate service.
+ *
+ * Never throws for a provider failure: the studio's button would then fail
+ * over a *nicety* while the prompt itself is perfectly usable. The original
+ * comes back with `changed: false` and the UI says so, which is honest about
+ * what happened.
+ */
+export const enhanceImagePrompt = action({
+  args: {
+    prompt: v.string(),
+    style: v.optional(v.string()),
+    instructions: v.optional(v.string()),
+    avoid: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ prompt: string; model: string | null; changed: boolean }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to rewrite prompts.");
+
+    const base = args.prompt.trim().slice(0, 600);
+    if (!base) throw new Error("Nothing to rewrite.");
+
+    const message = enhancePromptRequest({
+      prompt: base,
+      style: args.style,
+      instructions: args.instructions,
+      avoid: args.avoid,
+    });
+
+    try {
+      const plan = await routingFor(ctx, userId, {
+        task: "chat",
+        hasImages: false,
+        prompt: message,
+      });
+      const result = await runProviderChain(
+        [{ role: "user", content: message }],
+        ENHANCE_SYSTEM_PROMPT,
+        "No engine was available to rewrite the prompt.",
+        plan,
+      );
+      const prompt = cleanEnhancedPrompt(result.text, base);
+      return { prompt, model: result.model, changed: prompt !== base };
+    } catch (err) {
+      console.error(
+        "Prompt rewrite failed:",
+        err instanceof Error ? err.message : err,
+      );
+      return { prompt: base, model: null, changed: false };
+    }
   },
 });
 

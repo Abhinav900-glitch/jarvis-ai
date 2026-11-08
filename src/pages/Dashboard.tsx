@@ -1083,6 +1083,7 @@ export default function Dashboard() {
   const disconnectCanvaAction = useAction(api.canva.disconnectCanva);
   const generateTitleAction = useAction(api.ai.generateTitle);
   const searchWebImagesAction = useAction(api.ai.searchWebImages);
+  const enhanceImagePromptAction = useAction(api.ai.enhanceImagePrompt);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
   const lookupMovieAction = useAction(api.spaceMedia.lookupMovie);
   const spacePictureAction = useAction(api.spaceMedia.spacePicture);
@@ -7310,6 +7311,14 @@ export default function Dashboard() {
                 reason: found.reason,
               };
             }}
+            enhance={async ({ prompt: p, style, instructions: extra, avoid }) =>
+              await enhanceImagePromptAction({
+                prompt: p,
+                style,
+                instructions: extra,
+                avoid,
+              })
+            }
             onUseInChat={studioUseInChat}
           />
 

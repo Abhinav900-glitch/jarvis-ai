@@ -48,6 +48,7 @@ import {
   Send,
   Sparkles,
   Trash2,
+  Undo2,
   Wand2,
   X,
 } from "lucide-react";
@@ -128,6 +129,17 @@ export interface ImageStudioProps {
     query: string;
     decide: boolean;
   }) => Promise<StudioSearchResult>;
+  /**
+   * Rewrites a rough description into a detailed prompt. `changed: false`
+   * means the rewrite failed or came back identical, so the UI can say so
+   * instead of pretending the button did something.
+   */
+  enhance: (input: {
+    prompt: string;
+    style?: string;
+    instructions?: string;
+    avoid?: string;
+  }) => Promise<{ prompt: string; model: string | null; changed: boolean }>;
   /** Hands the picture to the composer as a pending attachment. */
   onUseInChat: (image: StudioResult, prompt: string) => void;
 }
@@ -242,6 +254,7 @@ export function ImageStudio({
   onOpenChange,
   generate,
   search,
+  enhance,
   onUseInChat,
 }: ImageStudioProps) {
   const [prompt, setPrompt] = useState("");
@@ -257,6 +270,11 @@ export function ImageStudio({
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [copied, setCopied] = useState(false);
   const [preview, setPreview] = useState<{ urls: string[]; index: number } | null>(null);
+  const [polishing, setPolishing] = useState(false);
+  // The wording the rewrite replaced, so "Undo" is one click rather than
+  // retyping what the user had already written.
+  const [sharpenedFrom, setSharpenedFrom] = useState<string | null>(null);
+  const [sharpenNote, setSharpenNote] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // History is browser-local, so it is read on open rather than at mount:
@@ -418,6 +436,52 @@ export function ImageStudio({
     ],
   );
 
+  /**
+   * "a lighthouse" gets a lighthouse on white with no sky; the models are
+   * literal. This is the paragraph people end up writing by hand, and the
+   * previous wording is kept so undo costs one click.
+   */
+  const sharpen = useCallback(async () => {
+    const base = prompt.trim();
+    if (!base || polishing || busy) return;
+    setPolishing(true);
+    setSharpenNote(null);
+    try {
+      const result = await enhance({
+        prompt: base,
+        style: style.suffix || undefined,
+        instructions: note(instructions) || undefined,
+        avoid: note(avoid) || undefined,
+      });
+      if (!result.changed) {
+        setSharpenNote(
+          "Couldn't improve that one — a few more words gives the model something to work with.",
+        );
+        return;
+      }
+      setSharpenedFrom(prompt);
+      setPrompt(result.prompt);
+      setSharpenNote(
+        result.model
+          ? `Rewritten by ${result.model}. Undo keeps your wording.`
+          : "Rewritten. Undo keeps your wording.",
+      );
+    } catch (err) {
+      setSharpenNote(
+        err instanceof Error ? err.message : "Couldn't rewrite that prompt.",
+      );
+    } finally {
+      setPolishing(false);
+    }
+  }, [avoid, busy, enhance, instructions, polishing, prompt, style.suffix]);
+
+  const unsharpen = useCallback(() => {
+    if (sharpenedFrom === null) return;
+    setPrompt(sharpenedFrom);
+    setSharpenedFrom(null);
+    setSharpenNote(null);
+  }, [sharpenedFrom]);
+
   const copyLink = useCallback(async () => {
     if (!current) return;
     try {
@@ -568,10 +632,49 @@ export function ImageStudio({
 
           {/* ---- Prompt ---- */}
           <div>
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                Prompt
+              </span>
+              {resolved === "ai" && (
+                <div className="flex items-center gap-1.5">
+                  {sharpenedFrom !== null && (
+                    <button
+                      type="button"
+                      onClick={unsharpen}
+                      className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+                    >
+                      <Undo2 className="size-3" />
+                      Undo
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void sharpen()}
+                    disabled={polishing || busy || !prompt.trim()}
+                    title="Rewrite this into a more detailed prompt (uses the AI chain)"
+                    className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {polishing ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Sparkles className="size-3" />
+                    )}
+                    {polishing ? "Sharpening…" : "Sharpen"}
+                  </button>
+                </div>
+              )}
+            </div>
             <textarea
               ref={textareaRef}
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => {
+                setPrompt(e.target.value);
+                // An edited prompt is no longer the rewrite: keeping "Undo"
+                // would silently throw the edit away.
+                setSharpenedFrom(null);
+                setSharpenNote(null);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
@@ -588,6 +691,12 @@ export function ImageStudio({
               // in on focus and never zoom back out.
               className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-base outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 sm:text-sm"
             />
+
+            {sharpenNote && (
+              <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground">
+                {sharpenNote}
+              </p>
+            )}
 
             {/* ---- Style presets (AI only: a style suffix means nothing to a
                 web search, which returns what already exists) ---- */}
