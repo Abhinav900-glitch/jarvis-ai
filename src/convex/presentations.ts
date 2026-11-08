@@ -8,7 +8,10 @@ import {
   deckPrompt,
   parseGammaStatus,
   parsePresentationsDeck,
+  parsePresentonTask,
+  presentonEndpoints,
   type DeckJob,
+  type DeckProvider,
 } from "../lib/presentations";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +41,11 @@ const paiKey = () =>
     process.env.PRESENTATIONSAI_API_KEY ??
     process.env.PRESENTATIONS_AI_API_KEY
   )?.trim() || "";
+
+// Presenton is self-hostable, so the base URL is part of the configuration; the
+// cloud service is the default and the only host that speaks v3.
+const presentonBase = () => process.env.PRESENTON_BASE_URL?.trim() || "";
+const presentonKey = () => process.env.PRESENTON_API_KEY?.trim() || "";
 
 const empty = (error: string | null): DeckJob => ({
   provider: "none",
@@ -181,6 +189,74 @@ async function createWithPresentationsAI(
   }
 }
 
+async function createWithPresenton(
+  key: string,
+  text: string,
+  numCards: number,
+): Promise<DeckJob> {
+  const endpoints = presentonEndpoints(presentonBase());
+  try {
+    // Async, not sync: a deck takes one to two minutes, which is longer than an
+    // action should hold a connection open — and the panel polls anyway.
+    const res = await fetch(endpoints.generate, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        content: deckPrompt(text),
+        n_slides: numCards,
+        language: "English",
+        [endpoints.templateKey]: "general",
+        export_as: "pptx",
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      const message = typeof body.detail === "string" ? body.detail : typeof body.message === "string" ? body.message : "";
+      return {
+        ...empty(
+          message
+            ? `Presenton: ${message}`
+            : res.status === 401 || res.status === 403
+              ? "The Presenton key was rejected."
+              : `Presenton generation failed (${res.status}).`,
+        ),
+        provider: "presenton",
+      };
+    }
+
+    const parsed = parsePresentonTask(body, endpoints.origin);
+    if (!parsed.generationId) {
+      return {
+        ...empty("Presenton accepted the request without returning a task id."),
+        provider: "presenton",
+      };
+    }
+
+    return {
+      provider: "presenton",
+      generationId: parsed.generationId,
+      // The task id is immediate; the deck follows by poll. A deployment that
+      // answered synchronously already has the urls, so honour them.
+      status: parsed.status === "completed" ? "completed" : "pending",
+      url: parsed.url ?? null,
+      exportUrl: parsed.exportUrl ?? null,
+      statusUrl: null,
+      error: null,
+    };
+  } catch (err) {
+    console.error(
+      "Presenton create failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return { ...empty("Could not reach Presenton."), provider: "presenton" };
+  }
+}
+
 export const create = action({
   args: {
     text: v.string(),
@@ -196,21 +272,64 @@ export const create = action({
     // Gamma caps a free plan at 10 cards; 12 is a safe default for both.
     const numCards = Math.min(Math.max(Math.round(args.numCards ?? 10), 3), 30);
 
+    // A real chain, not "first key wins": a configured provider can still fail
+    // on credits, quota or an outage, and the next one costs nothing to try.
+    const attempts: { provider: DeckProvider; run: () => Promise<DeckJob> }[] = [];
     const gamma = gammaKey();
-    if (gamma) return await createWithGamma(gamma, text, numCards);
-
+    if (gamma) {
+      attempts.push({
+        provider: "gamma",
+        run: () => createWithGamma(gamma, text, numCards),
+      });
+    }
     const pai = paiKey();
-    if (pai) return await createWithPresentationsAI(pai, text, numCards);
+    if (pai) {
+      attempts.push({
+        provider: "presentations",
+        run: () => createWithPresentationsAI(pai, text, numCards),
+      });
+    }
+    const presenton = presentonKey();
+    if (presenton) {
+      attempts.push({
+        provider: "presenton",
+        run: () => createWithPresenton(presenton, text, numCards),
+      });
+    }
 
-    return empty(
-      "Slides need GAMMA_API_KEY or PRESENTATIONS_AI_API to be configured.",
-    );
+    if (attempts.length === 0) {
+      return empty(
+        "Slides need GAMMA_API_KEY, PRESENTATIONS_AI_API or PRESENTON_API_KEY to be configured.",
+      );
+    }
+
+    // PRESENTATION_PROVIDER pins one, for when a workspace has a house style or
+    // is testing a provider that is not first in the chain.
+    const prefer = (process.env.PRESENTATION_PROVIDER ?? "").trim().toLowerCase();
+    const ordered = prefer
+      ? [...attempts].sort((a, b) =>
+          a.provider === prefer ? -1 : b.provider === prefer ? 1 : 0,
+        )
+      : attempts;
+
+    let last: DeckJob | null = null;
+    for (const attempt of ordered) {
+      const job = await attempt.run();
+      if (job.status !== "failed") return job;
+      last = job;
+    }
+
+    return last ?? empty("No presentation provider could be reached.");
   },
 });
 
 export const status = action({
   args: {
-    provider: v.union(v.literal("gamma"), v.literal("presentations")),
+    provider: v.union(
+      v.literal("gamma"),
+      v.literal("presentations"),
+      v.literal("presenton"),
+    ),
     generationId: v.string(),
     /** Poll target handed back by the provider, when it gave one. */
     statusUrl: v.optional(v.string()),
@@ -229,12 +348,20 @@ export const status = action({
       error: null,
     };
 
+    const presenton = presentonEndpoints(presentonBase());
     const url =
       args.provider === "gamma"
         ? `${GAMMA_BASE}/generations/${encodeURIComponent(args.generationId)}`
-        : (args.statusUrl ?? `${PAI_BASE}/requests/${encodeURIComponent(args.generationId)}`);
+        : args.provider === "presentations"
+          ? (args.statusUrl ?? `${PAI_BASE}/requests/${encodeURIComponent(args.generationId)}`)
+          : presenton.status(args.generationId);
 
-    const key = args.provider === "gamma" ? gammaKey() : paiKey();
+    const key =
+      args.provider === "gamma"
+        ? gammaKey()
+        : args.provider === "presentations"
+          ? paiKey()
+          : presentonKey();
     if (!key) {
       return {
         ...base,
@@ -245,7 +372,12 @@ export const status = action({
 
     // Only poll hosts we would have called ourselves: statusUrl is a client
     // value, and the key must never travel to an arbitrary origin.
-    const allowed = args.provider === "gamma" ? GAMMA_BASE : PAI_BASE;
+    const allowed =
+      args.provider === "gamma"
+        ? GAMMA_BASE
+        : args.provider === "presentations"
+          ? PAI_BASE
+          : presenton.origin;
     if (!url.startsWith(allowed)) {
       return {
         ...base,
@@ -278,7 +410,9 @@ export const status = action({
       const parsed =
         args.provider === "gamma"
           ? parseGammaStatus(body)
-          : parsePresentationsDeck(body);
+          : args.provider === "presentations"
+            ? parsePresentationsDeck(body)
+            : parsePresentonTask(body, presenton.origin);
 
       return {
         ...base,

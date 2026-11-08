@@ -3,10 +3,13 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  absolutizeUrl,
   deckPrompt,
   normalizeDeckStatus,
   parseGammaStatus,
   parsePresentationsDeck,
+  parsePresentonTask,
+  presentonEndpoints,
 } from "../presentations";
 
 describe("normalizeDeckStatus", () => {
@@ -88,6 +91,94 @@ describe("parsePresentationsDeck", () => {
       exportUrl: null,
       statusUrl: null,
     });
+  });
+});
+
+describe("presentonEndpoints", () => {
+  test("the cloud service is the default and speaks v3", () => {
+    const endpoints = presentonEndpoints();
+    expect(endpoints.generate).toBe(
+      "https://api.presenton.ai/api/v3/presentation/generate/async",
+    );
+    expect(endpoints.status("task-1")).toBe(
+      "https://api.presenton.ai/api/v3/async-task/status/task-1",
+    );
+    expect(endpoints.templateKey).toBe("standard_template");
+  });
+
+  test("a self-hosted base speaks v1 under /ppt", () => {
+    const endpoints = presentonEndpoints("http://localhost:5001/");
+    expect(endpoints.generate).toBe(
+      "http://localhost:5001/api/v1/ppt/presentation/generate/async",
+    );
+    expect(endpoints.status("task-9")).toBe(
+      "http://localhost:5001/api/v1/ppt/presentation/status/task-9",
+    );
+    // Self-hosted calls the field `template`; cloud renames it.
+    expect(endpoints.templateKey).toBe("template");
+    expect(endpoints.origin).toBe("http://localhost:5001");
+  });
+});
+
+describe("absolutizeUrl", () => {
+  test("relative paths belong to the instance that generated them", () => {
+    expect(
+      absolutizeUrl("static/user_data/abc/deck.pptx", "https://api.presenton.ai"),
+    ).toBe("https://api.presenton.ai/static/user_data/abc/deck.pptx");
+    expect(absolutizeUrl("/static/x.pptx", "http://host:5001")).toBe(
+      "http://host:5001/static/x.pptx",
+    );
+  });
+
+  test("absolute urls pass through and nothing is invented", () => {
+    expect(absolutizeUrl("https://cdn/deck.pptx", "https://base")).toBe(
+      "https://cdn/deck.pptx",
+    );
+    expect(absolutizeUrl(null, "https://base")).toBeNull();
+    expect(absolutizeUrl("  ", "https://base")).toBeNull();
+  });
+});
+
+describe("parsePresentonTask", () => {
+  test("the task id is enough to start polling", () => {
+    expect(
+      parsePresentonTask(
+        { id: "task-9a827c13f4", status: "pending", message: "created" },
+        "https://api.presenton.ai",
+      ),
+    ).toEqual({
+      generationId: "task-9a827c13f4",
+      status: "pending",
+      url: null,
+      exportUrl: null,
+      statusUrl: null,
+    });
+  });
+
+  test("the completed status carries the deck under data", () => {
+    const out = parsePresentonTask(
+      {
+        id: "task-9a827c13f4",
+        status: "COMPLETED",
+        data: {
+          presentation_id: "d3000f96",
+          path: "static/user_data/d3000f96/deck.pptx",
+          edit_path: "/presentation?id=d3000f96",
+        },
+      },
+      "http://localhost:5001",
+    );
+    expect(out.status).toBe("completed");
+    expect(out.url).toBe("http://localhost:5001/presentation?id=d3000f96");
+    expect(out.exportUrl).toBe(
+      "http://localhost:5001/static/user_data/d3000f96/deck.pptx",
+    );
+  });
+
+  test("a failed task is reported, not treated as pending", () => {
+    expect(
+      parsePresentonTask({ id: "t", status: "FAILED" }, "https://x").status,
+    ).toBe("failed");
   });
 });
 

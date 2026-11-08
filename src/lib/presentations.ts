@@ -19,7 +19,7 @@
 // without either provider's key.
 // ---------------------------------------------------------------------------
 
-export type DeckProvider = "gamma" | "presentations" | "none";
+export type DeckProvider = "gamma" | "presentations" | "presenton" | "none";
 export type DeckStatus = "pending" | "completed" | "failed" | "none";
 
 export interface DeckJob {
@@ -99,6 +99,93 @@ export function parsePresentationsDeck(payload: unknown): Partial<DeckJob> {
     url: str(body.deck_url) || str(body.deckUrl) || str(body.url) || null,
     exportUrl,
     statusUrl: str(body.status_url) || str(body.statusUrl) || null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Presenton — open-source decks, self-hosted or cloud.
+//
+// Presenton ships two API generations that differ in exactly the places that
+// break a naive client: the cloud service speaks `/api/v3/presentation/…` and
+// calls the template field `standard_template`, while a self-hosted instance
+// speaks `/api/v1/ppt/presentation/…` and calls it `template`. The base URL is
+// therefore the switch, and both endpoints are derived rather than configured
+// separately so a mismatch is impossible.
+//
+// Generation is used in its async form: a deck takes one to two minutes, which
+// is longer than an action should hold a connection open, and the panel is
+// already polling.
+// ---------------------------------------------------------------------------
+
+export interface PresentonEndpoints {
+  /** POST target that starts the deck. */
+  generate: string;
+  /** GET target that reports on it, by task id. */
+  status: (id: string) => string;
+  /** Which template key this API generation expects. */
+  templateKey: "template" | "standard_template";
+  /** Origin the returned paths belong to, for making them absolute. */
+  origin: string;
+}
+
+export const PRESENTON_CLOUD = "https://api.presenton.ai";
+
+export function presentonEndpoints(
+  baseUrl?: string | null,
+): PresentonEndpoints {
+  const base = (baseUrl ?? "").trim().replace(/\/+$/, "") || PRESENTON_CLOUD;
+  const cloud = /(^|\/\/)api\.presenton\.ai$/i.test(base);
+  return {
+    generate: cloud
+      ? `${base}/api/v3/presentation/generate/async`
+      : `${base}/api/v1/ppt/presentation/generate/async`,
+    status: (id: string) =>
+      cloud
+        ? `${base}/api/v3/async-task/status/${encodeURIComponent(id)}`
+        : `${base}/api/v1/ppt/presentation/status/${encodeURIComponent(id)}`,
+    templateKey: cloud ? "standard_template" : "template",
+    origin: cloud ? PRESENTON_CLOUD : base,
+  };
+}
+
+/** Presenton returns paths relative to the instance that made the deck. */
+export function absolutizeUrl(
+  url: unknown,
+  base: string,
+): string | null {
+  const raw = typeof url === "string" ? url.trim() : "";
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  try {
+    return new URL(raw, base.endsWith("/") ? base : `${base}/`).toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Presenton's task body — the same shape for the create (202) response and for
+ * the status endpoint, where the deck itself arrives under `data`.
+ */
+export function parsePresentonTask(
+  payload: unknown,
+  base: string,
+): Partial<DeckJob> {
+  const body = record(payload);
+  const data = record(body.data ?? body.result ?? body.presentation);
+  const downloadUrl = absolutizeUrl(data.path, base);
+  const editUrl = absolutizeUrl(data.edit_path, base);
+  return {
+    generationId:
+      str(body.id) ||
+      str(body.task_id) ||
+      str(data.presentation_id) ||
+      null,
+    status: normalizeDeckStatus(body.status),
+    // The editor is the viewable artefact; the file is the download.
+    url: editUrl ?? downloadUrl,
+    exportUrl: downloadUrl,
+    statusUrl: null,
   };
 }
 
