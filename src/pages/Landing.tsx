@@ -7,8 +7,9 @@
 // page.
 // ---------------------------------------------------------------------------
 
-import { motion, useScroll, useSpring } from "framer-motion";
+import { AnimatePresence, motion, useScroll, useSpring } from "framer-motion";
 import { Link } from "react-router";
+import { useState } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -22,6 +23,9 @@ import {
   BookOpen,
   Server,
   Code2,
+  Moon,
+  Plus,
+  Sun,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { JarvisLogo } from "@/components/jarvis-logo";
@@ -87,12 +91,69 @@ const ENGINE_LABELS = [
   "Cloudflare Workers AI",
 ] as const;
 
+// Real turns a visitor can start with. Each one is a link, not decoration: the
+// prompt lands in the composer already typed, so the landing page can hand off
+// a worked example instead of a screenshot of one.
+const STARTERS = [
+  {
+    label: "Plot it",
+    prompt: "Plot y = sin(x) / x and explain what happens at x = 0",
+    hint: "The graph is drawn under the reply",
+  },
+  {
+    label: "Deep research",
+    prompt: "Research the latest JWST results and cite your sources",
+    hint: "Live web, numbered citations",
+  },
+  {
+    label: "Make an image",
+    prompt: "Generate an image of a neon city skyline at dusk",
+    hint: "Cloudflare · fal · Meta · Cloudinary",
+  },
+  {
+    label: "Test memory",
+    prompt: "Remember that I deploy on Fridays, then tell me what you know about me",
+    hint: "Stored now, retrieved in later turns",
+  },
+] as const;
+
+const FAQS = [
+  {
+    q: "Do I have to bring my own API keys?",
+    a: "No. Jarvis ships with keyed providers, so the assistant answers the moment you sign in or continue as a guest. Keys, MCP servers and extra integrations are opt-in — add them when you want a specific engine or tool.",
+  },
+  {
+    q: "Which model is actually answering?",
+    a: "Whichever engine the router scores highest for that turn. Every reply carries a provider badge and the reason it was chosen, and you can pin an engine when you want a specific one.",
+  },
+  {
+    q: "Where do my conversations live?",
+    a: "Signed in, they are stored under your account so you can revisit them. As a guest they live in the browser session and are not guaranteed to survive a device change. Either way, your prompts are not used to train the models that answer you.",
+  },
+  {
+    q: "Can it use my own tools?",
+    a: "Yes — add MCP servers with whatever auth they need, drop in plugin zips, or insert a skill into a turn. The assistant calls what you expose to it and nothing else.",
+  },
+  {
+    q: "What does it cost to start?",
+    a: "Nothing, and no card is asked for. Guests get the full assistant; integrations you connect run on your own accounts, so their limits are yours to manage.",
+  },
+] as const;
+
 const stats = [
   { value: "25+", label: "Routable engines" },
   { value: "∞", label: "Stored conversations" },
-  { value: "8", label: "Provider surface" },
+  { value: "10", label: "Provider surface" },
   { value: "∞", label: "Your MCP surface" },
 ] as const;
+
+/** Lands on the console with the prompt already typed. Signed-out visitors go
+ *  through /auth first, and `returnTo` carries the whole path — Auth only
+ *  accepts a same-origin path, which this is. */
+function promptHref(prompt: string, isAuthenticated: boolean) {
+  const target = `/dashboard?prompt=${encodeURIComponent(prompt)}`;
+  return isAuthenticated ? target : `/auth?returnTo=${encodeURIComponent(target)}`;
+}
 
 function Wordmark({ className = "" }: { className?: string }) {
   return <JarvisLogo className={className} />;
@@ -101,6 +162,24 @@ function Wordmark({ className = "" }: { className?: string }) {
 export default function Landing() {
   const { isAuthenticated, isLoading } = useAuth();
   const { palette, setPalette } = usePalette();
+  const [openFaq, setOpenFaq] = useState<number | null>(0);
+
+  // The marketing pages are the one place a theme switch has to exist without
+  // the console's menu. It writes the same `jarvis-theme` key the Dashboard
+  // seeds from, so the choice carries into the app.
+  const [dark, setDark] = useState(() =>
+    document.documentElement.classList.contains("dark"),
+  );
+  const toggleTheme = () => {
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle("dark", next);
+    try {
+      localStorage.setItem("jarvis-theme", next ? "dark" : "light");
+    } catch {
+      // storage can be blocked; the in-memory choice still applies
+    }
+  };
 
   // Reading progress. A spring, not the raw value: scroll events arrive in
   // bursts, and the bar should glide rather than step.
@@ -141,6 +220,15 @@ export default function Landing() {
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
         <Wordmark />
         <nav className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={toggleTheme}
+            aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+            title={dark ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </Button>
           {isLoading ? null : isAuthenticated ? (
             <Button asChild variant="ghost" size="sm">
               <Link to="/dashboard">
@@ -406,6 +494,57 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* starter prompts — real links into the console */}
+      <section className="mx-auto w-full max-w-6xl px-6 pb-24">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: "-80px" }}
+          transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+          className="max-w-2xl"
+        >
+          <p className="hud-label hud-label-cyan">Try one</p>
+          <h2 className="mt-4 text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
+            Start with a real question.
+          </h2>
+          <p className="mt-4 text-base leading-7 text-muted-foreground">
+            Each of these opens the console with the prompt already typed —
+            pick one and press Enter to see how the assistant handles it.
+          </p>
+        </motion.div>
+
+        <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {STARTERS.map((s, i) => (
+            <motion.div
+              key={s.label}
+              initial={{ opacity: 0, y: 16 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-80px" }}
+              transition={{ duration: 0.5, delay: i * 0.06, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <Link
+                to={promptHref(s.prompt, isAuthenticated)}
+                className="hud-panel fx-lift group flex h-full flex-col justify-between gap-6 p-5"
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="hud-label hud-label-cyan">{s.label}</span>
+                    <ArrowUpRight
+                      className="size-3.5 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-foreground"
+                      strokeWidth={1.5}
+                    />
+                  </div>
+                  <p className="text-sm leading-6 text-foreground/90">
+                    “{s.prompt}”
+                  </p>
+                </div>
+                <p className="text-[11px] text-muted-foreground">{s.hint}</p>
+              </Link>
+            </motion.div>
+          ))}
+        </div>
+      </section>
+
       {/* how it works */}
       <section className="mx-auto w-full max-w-6xl px-6 pb-24">
         <motion.div
@@ -448,6 +587,65 @@ export default function Landing() {
               <p className="mt-2 text-xs leading-6 text-muted-foreground">{s.body}</p>
             </motion.div>
           ))}
+        </div>
+      </section>
+
+      {/* questions */}
+      <section className="mx-auto w-full max-w-3xl px-6 pb-24">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: "-80px" }}
+          transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+          className="text-center"
+        >
+          <p className="hud-label hud-label-cyan">Questions</p>
+          <h2 className="mt-4 text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
+            Answered plainly.
+          </h2>
+        </motion.div>
+
+        <div className="mt-10 border-y border-border/70">
+          {FAQS.map((item, i) => {
+            const open = openFaq === i;
+            return (
+              <div key={item.q} className="border-b border-border/70 last:border-b-0">
+                <button
+                  type="button"
+                  onClick={() => setOpenFaq(open ? null : i)}
+                  aria-expanded={open}
+                  className="flex w-full items-center justify-between gap-6 py-5 text-left"
+                >
+                  <span className="text-sm font-medium tracking-tight">
+                    {item.q}
+                  </span>
+                  <motion.span
+                    animate={{ rotate: open ? 45 : 0 }}
+                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                    className="shrink-0 text-muted-foreground"
+                  >
+                    <Plus className="size-4" strokeWidth={1.5} />
+                  </motion.span>
+                </button>
+                <AnimatePresence initial={false}>
+                  {open ? (
+                    <motion.div
+                      key="answer"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+                      className="overflow-hidden"
+                    >
+                      <p className="pb-5 pr-10 text-sm leading-6 text-muted-foreground">
+                        {item.a}
+                      </p>
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
+              </div>
+            );
+          })}
         </div>
       </section>
 

@@ -68,7 +68,7 @@ import {
   ThumbsDown,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { JarvisLogo, JarvisMark } from "@/components/jarvis-logo";
 import { JarvisHud, type HudPhase, type LiveTurn } from "@/components/jarvis-hud";
 import { ShortcutsDialog } from "@/components/shortcuts-dialog";
@@ -2413,6 +2413,29 @@ export default function Dashboard() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastMsg = messages?.[messages.length - 1];
+
+  // ---- Prompt hand-off from the landing page -----------------------------
+  //
+  // A starter card on / links to /dashboard?prompt=… so a visitor arrives with
+  // the exact question they clicked already typed. The prompt is adopted during
+  // render (same reasoning as the draft restore above — an effect would paint an
+  // empty composer first), and the parameter is dropped from the URL afterwards
+  // so a refresh starts clean. The draft autosave owns the composer from here.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const handedOffPrompt = searchParams.get("prompt");
+  const [handoffTaken, setHandoffTaken] = useState(false);
+  if (handedOffPrompt !== null && !handoffTaken) {
+    setHandoffTaken(true);
+    setInput(handedOffPrompt.slice(0, 4000));
+  }
+
+  useEffect(() => {
+    if (handedOffPrompt === null) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("prompt");
+    setSearchParams(next, { replace: true });
+    inputRef.current?.focus();
+  }, [handedOffPrompt, searchParams, setSearchParams]);
 
   /**
    * The graphs the replies should have carried but did not.
