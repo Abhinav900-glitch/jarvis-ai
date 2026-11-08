@@ -7,7 +7,7 @@
 // page.
 // ---------------------------------------------------------------------------
 
-import { motion } from "framer-motion";
+import { motion, useScroll, useSpring } from "framer-motion";
 import { Link } from "react-router";
 import {
   ArrowRight,
@@ -26,6 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { JarvisLogo } from "@/components/jarvis-logo";
 import { useAuth } from "@/hooks/use-auth";
+import { PALETTES, usePalette } from "@/hooks/use-palette";
 import { AUTHOR } from "@/lib/languages";
 
 const pillars = [
@@ -71,6 +72,21 @@ const pillars = [
   },
 ] as const;
 
+// The providers the router actually has legs into. Rendered as a marquee so the
+// page states the breadth of the thing without a wall of logo cards.
+const ENGINE_LABELS = [
+  "Mistral",
+  "Groq",
+  "Eden AI",
+  "Hugging Face",
+  "OpenRouter",
+  "Ollama",
+  "Gemini",
+  "NVIDIA NIM",
+  "Meta (Muse)",
+  "Cloudflare Workers AI",
+] as const;
+
 const stats = [
   { value: "25+", label: "Routable engines" },
   { value: "∞", label: "Stored conversations" },
@@ -84,6 +100,16 @@ function Wordmark({ className = "" }: { className?: string }) {
 
 export default function Landing() {
   const { isAuthenticated, isLoading } = useAuth();
+  const { palette, setPalette } = usePalette();
+
+  // Reading progress. A spring, not the raw value: scroll events arrive in
+  // bursts, and the bar should glide rather than step.
+  const { scrollYProgress } = useScroll();
+  const progress = useSpring(scrollYProgress, {
+    stiffness: 140,
+    damping: 26,
+    restDelta: 0.001,
+  });
 
   return (
     <motion.div
@@ -92,6 +118,16 @@ export default function Landing() {
       transition={{ duration: 0.4 }}
       className="flex min-h-screen flex-col bg-background text-foreground"
     >
+      <motion.div
+        aria-hidden
+        style={{
+          scaleX: progress,
+          transformOrigin: "0% 50%",
+          backgroundImage:
+            "linear-gradient(90deg, var(--signal-violet), var(--signal-cyan), var(--signal-blue))",
+        }}
+        className="fixed inset-x-0 top-0 z-50 h-0.5"
+      />
       <div
         aria-hidden
         className="h-px w-full"
@@ -126,7 +162,19 @@ export default function Landing() {
       </header>
 
       {/* hero */}
-      <section className="mx-auto w-full max-w-6xl px-6 pb-24 pt-16 sm:pb-28 sm:pt-28">            <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-14 lg:grid-cols-[1.05fr_0.95fr]">
+      <section className="relative isolate mx-auto w-full max-w-6xl px-6 pb-24 pt-16 sm:pb-28 sm:pt-28">
+        {/* Ambient layer: a slow aurora and a floor grid that converges on the
+            horizon. Decorative only, and behind the copy because `isolate` keeps
+            the -z-10 child inside this section's own stacking context. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
+        >
+          <div className="fx-aurora" />
+          <div className="fx-grid" />
+        </div>
+
+        <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-14 lg:grid-cols-[1.05fr_0.95fr]">
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -162,7 +210,7 @@ export default function Landing() {
               transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
               className="max-w-2xl text-4xl font-semibold tracking-[-0.03em] text-balance sm:text-5xl"
             >
-              Your own Jarvis.
+              Your own <span className="fx-gradient-text">Jarvis</span>.
               <br />
               One assistant that thinks, searches, and remembers.
             </motion.h1>
@@ -234,6 +282,43 @@ export default function Landing() {
                 </span>
               </div>
             </motion.div>
+
+            {/* Skins are chosen in the console's menu too, but showing them here
+                lets a visitor see the palette system without signing in. */}
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-80px" }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+              className="space-y-2.5"
+            >
+              <p className="hud-label">Console skin</p>
+              <div className="flex flex-wrap gap-2">
+                {PALETTES.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setPalette(option.id)}
+                    aria-pressed={palette === option.id}
+                    title={option.tagline}
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] transition-colors ${
+                      palette === option.id
+                        ? "border-primary/60 bg-primary/10 text-foreground"
+                        : "border-border/70 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                    }`}
+                  >
+                    <span
+                      aria-hidden
+                      className="size-3.5 rounded-full border border-border"
+                      style={{
+                        background: `linear-gradient(135deg, ${option.swatch[0]} 0 50%, ${option.swatch[1]} 50% 100%)`,
+                      }}
+                    />
+                    {option.name}
+                  </button>
+                ))}
+              </div>
+            </motion.div>
           </motion.div>
 
           {/* feature strip on the right, tool-grid style */}            <motion.div
@@ -247,8 +332,10 @@ export default function Landing() {
                 <p className="hud-label hud-label-cyan mb-4">What it does</p>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {pillars.map((p) => (
-                    <div
+                    <motion.div
                       key={p.title}
+                      whileHover={{ x: 3 }}
+                      transition={{ type: "spring", stiffness: 340, damping: 26 }}
                       className="group flex items-start gap-3 rounded-lg bg-background/40 p-3 transition-colors hover:bg-accent/50"
                     >
                       <p.icon className="size-4 text-muted-foreground shrink-0 mt-0.5 transition-colors group-hover:text-foreground" strokeWidth={1.5} />
@@ -256,7 +343,7 @@ export default function Landing() {
                         <p className="text-sm font-semibold leading-snug">{p.title}</p>
                         <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{p.body}</p>
                       </div>
-                    </div>
+                    </motion.div>
                   ))}
                 </div>
               </div>
@@ -264,11 +351,52 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* engine marquee */}
+      <section
+        aria-label="Engines Jarvis routes across"
+        className="border-y border-border/50 bg-card/30"
+      >
+        <div className="mx-auto w-full max-w-6xl px-6 py-6">
+          <p className="hud-label mb-4 text-center">
+            Routed across the engines you already run
+          </p>
+          <div className="fx-marquee">
+            <div className="fx-marquee-track">
+              {/* Rendered twice: the track slides exactly -50%, so the second
+                  copy is what the first one scrolls into. Only one copy is
+                  exposed to assistive tech. */}
+              {[0, 1].map((copy) => (
+                <div
+                  key={copy}
+                  aria-hidden={copy === 1}
+                  className="flex shrink-0 items-center"
+                >
+                  {ENGINE_LABELS.map((name) => (
+                    <span
+                      key={`${copy}-${name}`}
+                      className="flex items-center gap-8 px-8"
+                    >
+                      <span className="hud-label whitespace-nowrap text-foreground/75">
+                        {name}
+                      </span>
+                      <span className="size-1 rounded-full bg-primary/60" />
+                    </span>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* stat readout */}
-      <section className="mx-auto w-full max-w-6xl px-6 pb-6">
+      <section className="mx-auto w-full max-w-6xl px-6 pb-6 pt-12">
         <div className="hud-panel grid grid-cols-2 gap-px overflow-hidden md:grid-cols-4">
           {stats.map((s) => (
-            <div key={s.label} className="bg-card/60 px-6 py-6 text-center">
+            <div
+              key={s.label}
+              className="bg-card/60 px-6 py-6 text-center transition-colors hover:bg-accent/40"
+            >
               <p className="hud-glow-text text-3xl font-semibold tracking-tight">
                 {s.value}
               </p>
@@ -303,14 +431,14 @@ export default function Landing() {
             { icon: BookOpen, title: "Memory", body: "Facts Jarvis has learned, surfaced when they matter. You can browse what it knows and forget anything." },
             { icon: Layers, title: "Plugins & MCP", body: "Your plugin zips and your own MCP servers live here. Add a server, give it a name and auth, and test it before you use it." },
             { icon: Cpu, title: "Engines", body: "See which engines are available, pin one you like, and understand why a particular answer came from a particular model." },
-          ].map((s) => (
+          ].map((s, i) => (
             <motion.div
               key={s.title}
               initial={{ opacity: 0, y: 16 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true, margin: "-80px" }}
-              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-              className="hud-panel p-6 group"
+              transition={{ duration: 0.5, delay: i * 0.07, ease: [0.22, 1, 0.36, 1] }}
+              className="hud-panel fx-lift group p-6"
             >
               <div className="flex items-center justify-between">
                 <s.icon className="size-5 text-muted-foreground group-hover:text-foreground transition-colors" strokeWidth={1.5} />
@@ -335,7 +463,10 @@ export default function Landing() {
             background:
               "radial-gradient(ellipse 60% 100% at 50% 0%, color-mix(in oklab, var(--signal-blue) 22%, transparent), transparent 70%)",
           }}
-        >              <div className="relative">
+        >
+          <div aria-hidden className="fx-beam opacity-40" />
+          <div aria-hidden className="fx-sweep" />
+          <div className="relative">
                 <Zap className="mx-auto size-5 text-primary" strokeWidth={1.5} />
                 <h2 className="mt-5 text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
                   Bring Jarvis online in under a minute.

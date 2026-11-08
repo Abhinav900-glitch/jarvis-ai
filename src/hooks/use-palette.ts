@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
-/** The two skins the console ships with. Both keep the same layout and density;
- *  only the colour system changes, which is why the switch is one attribute on
- *  <html> rather than a class per surface. */
-export type PaletteId = "ember" | "reactor";
+/** The skins the console ships with. All of them keep the same layout and
+ *  density; only the colour system changes, which is why the switch is one
+ *  attribute on <html> rather than a class per surface. */
+export type PaletteId = "ember" | "reactor" | "futuristic";
 
 export type Palette = {
   id: PaletteId;
@@ -26,6 +26,12 @@ export const PALETTES: Palette[] = [
     tagline: "Ink navy · cyan signal",
     swatch: ["oklch(0.192 0.026 256)", "oklch(0.76 0.13 205)"],
   },
+  {
+    id: "futuristic",
+    name: "Futuristic",
+    tagline: "Deep space violet · neon aqua",
+    swatch: ["oklch(0.184 0.045 290)", "oklch(0.78 0.19 302)"],
+  },
 ];
 
 export const DEFAULT_PALETTE: PaletteId = "ember";
@@ -33,7 +39,9 @@ export const DEFAULT_PALETTE: PaletteId = "ember";
 const STORAGE_KEY = "jarvis-palette";
 
 function isPaletteId(value: unknown): value is PaletteId {
-  return value === "ember" || value === "reactor";
+  return (
+    value === "ember" || value === "reactor" || value === "futuristic"
+  );
 }
 
 export function applyPalette(id: PaletteId) {
