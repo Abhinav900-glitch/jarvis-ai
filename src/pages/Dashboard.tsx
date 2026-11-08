@@ -86,6 +86,8 @@ import {
 import type { GestureAction } from "@/lib/gesture-actions";
 import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage } from "@/components/markdown-message";
+import { DesmosCalculator } from "@/components/desmos-calculator";
+import { autoGraphFor, type AutoGraph } from "@/lib/auto-graph";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
 import { CodePanel } from "@/components/code-panel";
 import { AeroTransformGenPanel } from "@/components/aerotransformgen-panel";
@@ -2411,6 +2413,38 @@ export default function Dashboard() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastMsg = messages?.[messages.length - 1];
+
+  /**
+   * The graphs the replies should have carried but did not.
+   *
+   * The model is asked for a ```desmos block on every plotting request and
+   * usually complies — but "usually" leaves the user reading prose about a
+   * curve they cannot see. This is that guarantee, computed without a model:
+   * the function is recovered from the question (or from the answer's own
+   * `y = …` lines) and plotted with the same normaliser the model's blocks go
+   * through. A reply that already plotted is left alone.
+   *
+   * Inline like `sessionPdf` — one walk over messages already in memory — and
+   * keyed by message id so rendering stays a lookup.
+   */
+  const autoGraphs = (() => {
+    const out = new Map<string, AutoGraph>();
+    if (!messages) return out;
+    let question = "";
+    for (const m of messages) {
+      if (m.role === "user") {
+        question = m.content ?? "";
+        continue;
+      }
+      if (m.role !== "assistant") continue;
+      // A half-written reply has no settled expression yet; graphing it while
+      // it streams would tear the calculator down on every token.
+      if (streaming && m === lastMsg) continue;
+      const graph = autoGraphFor(question, m.content ?? "");
+      if (graph) out.set(m._id, graph);
+    }
+    return out;
+  })();
 
   // Smart auto-scroll: stick to the bottom while the reply streams, but never
   // yank the page away if the user scrolled up to read — a jump-to-latest
@@ -6583,6 +6617,19 @@ export default function Dashboard() {
                             pdfUrl={sessionPdf?.url}
                             pdfName={sessionPdf?.name}
                           />
+                          {/* Jarvis's own guarantee: if the answer was about a
+                              function and arrived without a graph, it is
+                              plotted here rather than left to prose. */}
+                          {autoGraphs.get(m._id) ? (
+                            <div className="mt-3">
+                              <p className="mb-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                                {autoGraphs.get(m._id)?.note}
+                              </p>
+                              <DesmosCalculator
+                                source={autoGraphs.get(m._id)?.source ?? ""}
+                              />
+                            </div>
+                          ) : null}
                           {/* Blinking caret on the row currently being
                               written, so an in-flight reply reads as live
                               rather than as a finished short answer. */}
