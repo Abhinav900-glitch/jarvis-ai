@@ -17,6 +17,7 @@ import {
   glinerLabels,
   parseGlinerEntities,
 } from "../lib/gliner";
+import { parseSpacyAnalysis, spacyEndpoint } from "../lib/spacy";
 import { api, internal } from "./_generated/api";
 import {
   inferTask,
@@ -2817,6 +2818,44 @@ async function glinerEntities(
   }
 }
 
+/**
+ * spaCy over HTTP, for the parser half: sentence and token counts plus a POS
+ * histogram. Entities come from the same doc, so they are a bonus rather than
+ * the point — GLiNER's zero-shot labels are better when both are available.
+ */
+async function spacyAnalysis(
+  url: string,
+  text: string,
+): Promise<ReturnType<typeof parseSpacyAnalysis> | null> {
+  try {
+    const key = process.env.SPACY_API_KEY?.trim();
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      console.error(
+        "spaCy error",
+        res.status,
+        (await res.text().catch(() => "")).slice(0, 200),
+      );
+      return null;
+    }
+    return parseSpacyAnalysis(await res.json());
+  } catch (err) {
+    console.error(
+      "spaCy request failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
 async function apilayerNlp(
   key: string,
   path: string,
@@ -2841,9 +2880,10 @@ export const analyzeText = action({
 
     const key = process.env.APILAYER_NLP_KEY;
     const glinerUrl = glinerEndpoint(process.env.GLINER_API_URL);
-    if (!key && !glinerUrl) {
+    const spacyUrl = spacyEndpoint(process.env.SPACY_API_URL);
+    if (!key && !glinerUrl && !spacyUrl) {
       throw new Error(
-        "NLP needs GLINER_API_URL (entity extraction) or APILAYER_NLP_KEY.",
+        "NLP needs SPACY_API_URL, GLINER_API_URL or APILAYER_NLP_KEY.",
       );
     }
 
@@ -2854,7 +2894,15 @@ export const analyzeText = action({
     // Entities come from GLiNER when it is configured, else apilayer. A GLiNER
     // failure (service down, model cold) falls through rather than failing the
     // whole analysis, which is why this is not in the Promise.all below.
-    const gliner = glinerUrl ? await glinerEntities(glinerUrl, text) : null;
+    // Both engines are independent, so they go out together; spaCy is the only
+    // source of syntax and a second opinion on entities when GLiNER is absent.
+    const [gliner, spacy] = await Promise.all([
+      glinerUrl ? glinerEntities(glinerUrl, text) : Promise.resolve(null),
+      spacyUrl ? spacyAnalysis(spacyUrl, text) : Promise.resolve(null),
+    ]);
+    const spacyEntities = spacy?.entities.length
+      ? { entities: spacy.entities }
+      : null;
 
     const [similarity, language, apilayerEntities] = key
       ? await Promise.all([
@@ -2862,7 +2910,7 @@ export const analyzeText = action({
             () => null,
           ),
           apilayerNlp(key, "language_detection", { text }).catch(() => null),
-          gliner
+          gliner || spacyEntities
             ? Promise.resolve(null)
             : apilayerNlp(key, "named_entity_recognition", { text }).catch(
                 () => null,
@@ -2870,12 +2918,20 @@ export const analyzeText = action({
         ])
       : [null, null, null];
 
+    const entities = gliner ?? spacyEntities ?? apilayerEntities;
     return {
       similarity,
-      language,
-      entities: gliner ?? apilayerEntities,
+      language: language ?? (spacy?.lang ? { language_code: spacy.lang } : null),
+      entities,
+      syntax: spacy?.syntax ?? null,
       // Named so the panel can say which engine read the text.
-      engine: gliner ? "gliner" : key ? "apilayer" : "none",
+      engine: gliner
+        ? "gliner"
+        : spacyEntities
+          ? "spacy"
+          : key
+            ? "apilayer"
+            : "none",
     };
   },
 });

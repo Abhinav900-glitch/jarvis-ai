@@ -31,6 +31,7 @@ import {
   Pencil,
   Paperclip,
   Plus,
+  Presentation,
   RotateCcw,
   CornerDownRight,
   Keyboard,
@@ -190,6 +191,7 @@ import { TasksPanel } from "@/components/tasks-panel";
 import { ProjectSidebar } from "@/components/project-sidebar";
 import { BranchBar, BranchMenu } from "@/components/branch-bar";
 import { cn } from "@/lib/utils";
+import type { DeckJob } from "@/lib/presentations";
 import { AnswerInspector } from "@/components/answer-inspector";
 import { PinnedPanel } from "@/components/pinned-panel";
 import { SlashMenu } from "@/components/slash-menu";
@@ -368,6 +370,12 @@ interface NlpResult {
   similarity?: unknown;
   /** Which engine read the text: "gliner", "apilayer", or "none". */
   engine?: string;
+  /** spaCy's parser, when a spaCy service is configured. */
+  syntax?: {
+    sentences?: number | null;
+    tokens?: number | null;
+    pos?: { tag: string; count: number }[];
+  } | null;
 }
 
 function formatNlp(result: NlpResult | null): string {
@@ -398,6 +406,21 @@ function formatNlp(result: NlpResult | null): string {
   const sim = result.similarity as { similarity?: number } | null;
   if (typeof sim?.similarity === "number") {
     lines.push(`Similarity score: ${(sim.similarity * 100).toFixed(1)}%`);
+  }
+  const syntax = result.syntax ?? null;
+  if (syntax) {
+    const shape: string[] = [];
+    if (typeof syntax.sentences === "number") {
+      shape.push(`${syntax.sentences} sentence${syntax.sentences === 1 ? "" : "s"}`);
+    }
+    if (typeof syntax.tokens === "number") {
+      shape.push(`${syntax.tokens} tokens`);
+    }
+    if (shape.length > 0) lines.push(`Syntax via spacy: ${shape.join(" · ")}`);
+    const pos = (syntax.pos ?? []).slice(0, 6);
+    if (pos.length > 0) {
+      lines.push(`POS: ${pos.map((p) => `${p.tag} ${p.count}`).join(", ")}`);
+    }
   }
   return lines.join("\n");
 }
@@ -1012,6 +1035,8 @@ export default function Dashboard() {
   const askStreamAction = useAction(api.ai.askStream);
   const deepResearchAction = useAction(api.ai.deepResearch);
   const analyzeAction = useAction(api.ai.analyzeText);
+  const createPresentationAction = useAction(api.presentations.create);
+  const presentationStatusAction = useAction(api.presentations.status);
   const newsAction = useAction(api.ai.searchNews);
   const repoCardAction = useAction(api.github.repoCard);
   const transcribeAction = useAction(api.voice.transcribe);
@@ -1216,6 +1241,11 @@ export default function Dashboard() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [assistantError, setAssistantError] = useState<string | null>(null);
   const [panelNlp, setPanelNlp] = useState<NlpResult | null>(null);
+  /** The deck being generated from the composer text, if any. */
+  const [panelSlides, setPanelSlides] = useState<DeckJob | null>(null);
+  const [slidesBusy, setSlidesBusy] = useState(false);
+  // Bumped on every new deck so an older poll loop stops writing results.
+  const slidesPollRef = useRef(0);
   const [panelNews, setPanelNews] = useState<NewsItem[] | null>(null);
   const [panelBusy, setPanelBusy] = useState<"nlp" | "news" | null>(null);
   const [panelVoice, setPanelVoice] = useState<VoiceNoteResult | null>(null);
@@ -3949,6 +3979,65 @@ export default function Dashboard() {
     history: { role: string; content: string }[],
   ) => {
     return await deepResearchAction({ query, history });
+  };
+
+  /**
+   * Follow a deck to completion.
+   *
+   * ~3 minutes at 6s: a 10-card deck takes 1-3 minutes at both providers, and a
+   * loop that outlives the user's interest is worse than one that gives up. The
+   * token guards against a second deck being started mid-flight — the older
+   * loop exits instead of overwriting the newer deck's state.
+   */
+  const pollSlides = async (job: DeckJob, token: number) => {
+    if (job.provider === "none" || !job.generationId) return;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 6000));
+      if (slidesPollRef.current !== token) return;
+      try {
+        const next = await presentationStatusAction({
+          provider: job.provider,
+          generationId: job.generationId,
+          ...(job.statusUrl ? { statusUrl: job.statusUrl } : {}),
+        });
+        if (slidesPollRef.current !== token) return;
+        setPanelSlides(next);
+        if (next.status === "completed" || next.status === "failed") return;
+      } catch {
+        // A transient status error is not a failed deck — keep polling.
+      }
+    }
+  };
+
+  /**
+   * Turn the composer text into a deck.
+   *
+   * Deliberately not a chat turn: the deck is a side artifact, so it lands in
+   * the panel above the composer and the conversation is left alone. Gamma
+   * answers with an id in about a second and takes minutes to build, so the
+   * panel starts as "generating"; Presentations.AI usually comes back finished
+   * because of `Prefer: wait`.
+   */
+  const handleMakeSlides = async () => {
+    const text = input.trim();
+    if (!text || slidesBusy) return;
+    const token = slidesPollRef.current + 1;
+    slidesPollRef.current = token;
+    setSlidesBusy(true);
+    setAssistantError(null);
+    try {
+      const job = await createPresentationAction({ text, numCards: 10 });
+      setPanelSlides(job);
+      if (job.status !== "completed" && job.status !== "failed") {
+        void pollSlides(job, token);
+      }
+    } catch (err) {
+      setAssistantError(
+        err instanceof Error ? err.message : "Slide generation failed.",
+      );
+    } finally {
+      setSlidesBusy(false);
+    }
   };
 
   const handleAnalyze = async () => {
@@ -7195,7 +7284,7 @@ export default function Dashboard() {
 
           {/* ---- Panel (NLP / news / voice / errors) ---- */}
           <AnimatePresence>
-            {(panelNlp || panelNews || panelVoice || assistantError) && (
+            {(panelNlp || panelNews || panelVoice || panelSlides || assistantError) && (
               <motion.div
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -7216,6 +7305,61 @@ export default function Dashboard() {
                     <pre className="whitespace-pre-wrap text-xs leading-5 text-muted-foreground">
                       {formatNlp(panelNlp)}
                     </pre>
+                  )}
+                  {panelSlides && (
+                    <div className="flex items-start gap-2 text-xs leading-5 text-muted-foreground">
+                      <Presentation
+                        className="mt-0.5 size-3.5 shrink-0 text-primary"
+                        strokeWidth={1.5}
+                      />
+                      <span className="whitespace-pre-line">
+                        {panelSlides.status === "completed" && panelSlides.url ? (
+                          <>
+                            Slides ready ({panelSlides.provider}):{" "}
+                            <a
+                              href={panelSlides.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="underline underline-offset-2 hover:text-foreground"
+                            >
+                              open deck
+                            </a>
+                            {panelSlides.exportUrl ? (
+                              <>
+                                {" · "}
+                                <a
+                                  href={panelSlides.exportUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="underline underline-offset-2 hover:text-foreground"
+                                >
+                                  download
+                                </a>
+                              </>
+                            ) : null}
+                          </>
+                        ) : panelSlides.status === "failed" || panelSlides.error ? (
+                          <>
+                            {panelSlides.provider === "none"
+                              ? ""
+                              : `${panelSlides.provider}: `}
+                            {panelSlides.error ?? "Slide generation failed."}
+                          </>
+                        ) : (
+                          <>
+                            {panelSlides.provider} is building the deck — this line
+                            updates on its own, no need to resend.
+                          </>
+                        )}
+                      </span>
+                      <button
+                        onClick={() => setPanelSlides(null)}
+                        aria-label="Dismiss slides status"
+                        className="ml-auto rounded p-0.5 transition-colors hover:text-foreground"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </div>
                   )}
                   {panelNews && panelNews.length > 0 && (
                     <NewsPanel items={panelNews} />
@@ -7526,6 +7670,16 @@ export default function Dashboard() {
                           <span className="flex flex-col">
                             <span>Generate image</span>
                             <span className="text-[10px] text-muted-foreground">from your message</span>
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => void handleMakeSlides()}
+                          disabled={slidesBusy || !input.trim()}
+                        >
+                          <Presentation className="size-3.5" />
+                          <span className="flex flex-col">
+                            <span>{slidesBusy ? "Building slides…" : "Make slides"}</span>
+                            <span className="text-[10px] text-muted-foreground">Gamma · Presentations.AI</span>
                           </span>
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setSummarizeInput("https://")}>
