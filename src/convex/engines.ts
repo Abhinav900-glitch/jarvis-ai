@@ -276,6 +276,60 @@ export interface EngineSpec {
  *    on 2026-10-27 rather than read off the roster.
  */
 export const ENGINES: EngineSpec[] = [
+  // --- Cloudflare Workers AI ----------------------------------------------
+  // Registered from a live probe on 2026-11-08, not from the catalogue: this
+  // account has its own per-model allowlist. `llama-3.1-8b` answered 410
+  // (deprecated) and `gemma-3-12b` answered 403 (not allowed on this account),
+  // so neither is registered. A provider in PROVIDERS with no engines is
+  // unreachable — the ladder can never pick it and the fallback test fails.
+  {
+    id: "cloudflare/gpt-oss-120b",
+    provider: "cloudflare",
+    modelId: "@cf/openai/gpt-oss-120b",
+    label: "GPT-OSS 120B",
+    vision: false,
+    reasoning: true,
+    quality: 0.9,
+    speed: 0.78,
+    context: 128_000,
+    bestFor: "strong reasoning on the free daily allowance",
+  },
+  {
+    id: "cloudflare/llama-3.3-70b",
+    provider: "cloudflare",
+    modelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    label: "Llama 3.3 70B",
+    vision: false,
+    reasoning: false,
+    quality: 0.84,
+    speed: 0.9,
+    context: 24_000,
+    bestFor: "fast, dependable answers at no cost",
+  },
+  {
+    id: "cloudflare/qwq-32b",
+    provider: "cloudflare",
+    modelId: "@cf/qwen/qwq-32b",
+    label: "QwQ 32B",
+    vision: false,
+    reasoning: true,
+    quality: 0.82,
+    speed: 0.72,
+    context: 24_000,
+    bestFor: "step-by-step maths and logic",
+  },
+  {
+    id: "cloudflare/gpt-oss-20b",
+    provider: "cloudflare",
+    modelId: "@cf/openai/gpt-oss-20b",
+    label: "GPT-OSS 20B",
+    vision: false,
+    reasoning: false,
+    quality: 0.74,
+    speed: 0.95,
+    context: 128_000,
+    bestFor: "quick replies that cost nothing",
+  },
   // --- Groq ---------------------------------------------------------------
   {
     id: "groq/gpt-oss-120b",

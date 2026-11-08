@@ -294,6 +294,16 @@ html[data-palette="ember"]:not(.dark) {
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* In-page anchors (the terms index, citation links) should land below the
+     top edge rather than flush against it. Motion is opt-in: a reader who
+     asked for reduced motion gets an instant jump. */
+  scroll-padding-top: 1.5rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
 }
 
 body {

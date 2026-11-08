@@ -440,6 +440,29 @@ interface WireUsage {
   completion_tokens?: number;
 }
 
+/**
+ * The endpoint to actually call.
+ *
+ * An account-scoped provider carries its account id in the path rather than in
+ * the headers, so the registry stores `{ACCOUNT_ID}` as a placeholder and this
+ * fills it in. Fetching the raw template would POST to `accounts/%7BACCOUNT_ID%7D`
+ * and 404 on every engine.
+ *
+ * Thrown as fatal rather than plain: a missing id will not appear on retry, so
+ * the ladder should skip the rest of this provider instead of spending an
+ * attempt per model to learn the same thing.
+ */
+export function providerUrl(provider: ProviderSpec): string {
+  if (!provider.url.includes("{ACCOUNT_ID}")) return provider.url;
+  const account = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  if (!account) {
+    throw new ProviderFatalError(
+      `${provider.label} needs CLOUDFLARE_ACCOUNT_ID alongside its key.`,
+    );
+  }
+  return provider.url.replace("{ACCOUNT_ID}", account);
+}
+
 /** One non-streaming completion from one engine. */
 async function callProvider(
   provider: ProviderSpec,
@@ -450,7 +473,7 @@ async function callProvider(
   options: CompletionOptions = {},
 ): Promise<LlmResult> {
   const started = Date.now();
-  const res = await fetch(provider.url, {
+  const res = await fetch(providerUrl(provider), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -567,7 +590,7 @@ async function streamProvider(
   onDelta: (delta: string) => Promise<boolean>,
 ): Promise<StreamOutcome> {
   const started = Date.now();
-  const res = await fetch(provider.url, {
+  const res = await fetch(providerUrl(provider), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
