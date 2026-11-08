@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -8,6 +8,11 @@ interface LightboxProps {
   startIndex?: number;
   alt?: string;
   onClose: () => void;
+  /**
+   * Saves the picture on screen. Omitted where there is nothing to save (the
+   * chat's own attachments), in which case no download button is drawn.
+   */
+  onDownload?: (url: string) => void;
 }
 
 /**
@@ -20,6 +25,7 @@ export function Lightbox({
   startIndex = 0,
   alt,
   onClose,
+  onDownload,
 }: LightboxProps) {
   const images = imagesProp ?? (src ? [src] : []);
   const open = images.length > 0;
@@ -102,9 +108,29 @@ export function Lightbox({
             <X className="size-4" />
           </button>
 
+          {/* Download — top-left so it sits with the close button rather than
+              competing with the arrows for the same edge. */}
+          {onDownload ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (images[index]) onDownload(images[index]);
+              }}
+              className="absolute top-4 left-4 z-10 flex h-9 items-center gap-1.5 rounded-full bg-white/10 px-3 text-xs font-medium text-white transition-colors hover:bg-white/20"
+              title="Download this image"
+            >
+              <Download className="size-4" />
+              Download
+            </button>
+          ) : null}
+
           {/* Counter */}
           {total > 1 ? (
-            <div className="absolute top-5 left-5 z-10 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white tabular-nums">
+            <div
+              className={`absolute z-10 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white tabular-nums ${
+                onDownload ? "top-5 left-1/2 -translate-x-1/2" : "top-5 left-5"
+              }`}
+            >
               {index + 1} / {total}
             </div>
           ) : null}

@@ -52,6 +52,12 @@ import {
   type ParallelPayload,
 } from "../lib/parallel-search";
 import { getFreshAccessToken } from "./canva";
+import {
+  imagePickPrompt,
+  largestImageIndex,
+  parseImagePick,
+  type ImageCandidate,
+} from "../lib/image-compare";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -2500,6 +2506,9 @@ export type WebImage = {
   pageUrl: string;
   source: string;
   title?: string;
+  /** Reported by the search engine; only used to compare candidates. */
+  width?: number;
+  height?: number;
 };
 
 /**
@@ -2522,19 +2531,96 @@ async function serpApiImageSearch(key: string, query: string): Promise<WebImage[
       link?: string;
       source?: string;
       title?: string;
+      original_width?: number;
+      original_height?: number;
     }[];
   };
   if (data.error) throw new Error(`serpapi: ${data.error}`);
 
+  // More candidates than the transcript shows: comparing nine pictures from
+  // nine sites is the whole point of the AI pick, and the extra three cost
+  // nothing but a few bytes of JSON.
   return (data.images_results ?? [])
     .filter((r) => typeof r.original === "string" && r.original.startsWith("http"))
-    .slice(0, 6)
+    .slice(0, 9)
     .map((r) => ({
       url: r.original as string,
       pageUrl: r.link ?? "",
       source: r.source ?? "",
       title: r.title,
+      width: typeof r.original_width === "number" ? r.original_width : undefined,
+      height: typeof r.original_height === "number" ? r.original_height : undefined,
     }));
+}
+
+const IMAGE_PICK_SYSTEM_PROMPT =
+  "You compare search results for an image request and pick the one picture a " +
+  "careful person would choose. You answer with a single JSON object and nothing else.";
+
+/**
+ * Let the AI choose among images found on different sites.
+ *
+ * Position in the result list is Google's ranking, not a judgement about the
+ * picture: the first hit for a person is routinely a watermarked stock preview
+ * of someone else. The candidates — site, dimensions, title, URL — go to the
+ * model, and its answer is parsed defensively, because it is prose. When the
+ * model is unavailable or answers nonsense, the largest image wins, which for
+ * photographs is almost always the real one rather than a thumbnail.
+ */
+async function chooseBestImage(
+  ctx: Parameters<typeof routingFor>[0],
+  userId: Id<"users">,
+  query: string,
+  candidates: ImageCandidate[],
+): Promise<{ index: number; reason: string; model: string | null }> {
+  if (candidates.length <= 1) {
+    return {
+      index: 0,
+      reason:
+        candidates.length === 1
+          ? "Only one image came back, so there was nothing to compare."
+          : "No images to compare.",
+      model: null,
+    };
+  }
+
+  const prompt = imagePickPrompt(query, candidates);
+  try {
+    const plan = await routingFor(ctx, userId, {
+      task: "reason",
+      hasImages: false,
+      prompt,
+    });
+    const result = await runProviderChain(
+      [{ role: "user", content: prompt }],
+      IMAGE_PICK_SYSTEM_PROMPT,
+      "No engine was available to compare the images.",
+      plan,
+    );
+    const parsed = parseImagePick(result.text, candidates.length);
+    if (!parsed) {
+      return {
+        index: largestImageIndex(candidates),
+        reason: "The comparison answer was unusable, so the largest image was chosen.",
+        model: result.model,
+      };
+    }
+    return {
+      index: parsed.index,
+      reason: parsed.reason || "Chosen as the closest match.",
+      model: result.model,
+    };
+  } catch (err) {
+    console.error(
+      "Image comparison failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return {
+      index: largestImageIndex(candidates),
+      reason: "AI comparison was unavailable, so the largest image was chosen.",
+      model: null,
+    };
+  }
 }
 
 /**
@@ -2544,23 +2630,35 @@ async function serpApiImageSearch(key: string, query: string): Promise<WebImage[
  * has already succeeded, and a missing key or a rate limit must not turn into
  * a failed turn. The reason comes back instead so the UI can say why the strip
  * is empty rather than looking broken.
+ *
+ * `decide` asks the AI to compare the candidates and put its pick first. It is
+ * opt-in because it is a second network call: the chat strip can live without
+ * it, while the studio — where the picture is the entire answer — should not.
  */
 export const searchWebImages = action({
-  args: { query: v.string() },
+  args: { query: v.string(), decide: v.optional(v.boolean()) },
   handler: async (
     ctx,
     args,
-  ): Promise<{ images: WebImage[]; reason: string | null }> => {
+  ): Promise<{
+    images: WebImage[];
+    reason: string | null;
+    pick: { url: string; reason: string; model: string | null } | null;
+  }> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to search the web.");
 
     const keys = readSerpApiKeys();
     if (keys.length === 0) {
-      return { images: [], reason: "SERPAPI_API_KEY is not configured." };
+      return {
+        images: [],
+        reason: "SERPAPI_API_KEY is not configured.",
+        pick: null,
+      };
     }
 
     const query = args.query.trim().slice(0, 300);
-    if (!query) return { images: [], reason: "Nothing to search for." };
+    if (!query) return { images: [], reason: "Nothing to search for.", pick: null };
 
     // Try the primary key first, then the backup. A key is only abandoned on
     // an error — an empty result set means the key worked, so fall through to
@@ -2569,15 +2667,72 @@ export const searchWebImages = action({
     for (const key of keys) {
       try {
         const images = await serpApiImageSearch(key, query);
+        if (images.length === 0) {
+          return { images, reason: "No matching images on the web.", pick: null };
+        }
+        if (!args.decide) return { images, reason: null, pick: null };
+
+        const choice = await chooseBestImage(ctx, userId, query, images);
+        const best = images[choice.index] ?? images[0];
+        // The pick leads so the first thing anyone sees is the chosen picture,
+        // and the sender can credit one source rather than a grid.
+        const ordered = [best, ...images.filter((img) => img !== best)];
         return {
-          images,
-          reason: images.length === 0 ? "No matching images on the web." : null,
+          images: ordered,
+          reason: null,
+          pick: { url: best.url, reason: choice.reason, model: choice.model },
         };
       } catch (err) {
         failure = err instanceof Error ? err.message : "Image search failed.";
       }
     }
-    return { images: [], reason: failure };
+    return { images: [], reason: failure, pick: null };
+  },
+});
+
+/**
+ * The AI's choice among candidates the client already holds.
+ *
+ * Split from the search so the studio can show the grid immediately and fill
+ * in the pick a second later, and so a failed comparison never costs the
+ * images themselves. The candidate URLs are treated as untrusted input and
+ * capped, since the caller supplies them.
+ */
+export const pickWebImage = action({
+  args: {
+    query: v.string(),
+    candidates: v.array(
+      v.object({
+        url: v.string(),
+        source: v.optional(v.string()),
+        title: v.optional(v.string()),
+        width: v.optional(v.number()),
+        height: v.optional(v.number()),
+      }),
+    ),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ index: number; reason: string; model: string | null }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to compare images.");
+
+    const candidates = args.candidates
+      .filter((c) => /^https?:\/\//i.test(c.url))
+      .slice(0, 12)
+      .map((c) => ({
+        url: c.url,
+        source: c.source ?? "",
+        title: c.title,
+        width: c.width,
+        height: c.height,
+      }));
+    if (candidates.length === 0) {
+      return { index: 0, reason: "No images to compare.", model: null };
+    }
+
+    return await chooseBestImage(ctx, userId, args.query, candidates);
   },
 });
 

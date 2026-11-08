@@ -123,6 +123,7 @@ import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
 import { findYouTubeLinks, MAX_VIDEOS_PER_TURN } from "@/lib/youtube";
 import { findWebImageQuery } from "@/lib/web-images";
+import { downloadImage, imageFileName } from "@/lib/download-image";
 import { stripWakeWord } from "@/lib/wake-word";
 import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
@@ -332,6 +333,23 @@ function GeneratedImage({
       />
     </button>
   );
+}
+
+/**
+ * The persisted shape of a web image: the schema stores the credit, not the
+ * dimensions the comparison used. Passing the raw action result to the
+ * mutation fails Convex's strict object validator, which is a runtime failure
+ * rather than a type error — the extra fields have to be stripped here.
+ */
+function storedWebImages(
+  images: { url: string; pageUrl?: string; source?: string; title?: string }[],
+) {
+  return images.slice(0, 6).map((w) => ({
+    url: w.url,
+    pageUrl: w.pageUrl || w.url,
+    source: w.source ?? "",
+    title: w.title,
+  }));
 }
 
 function SourceList({ sources }: { sources: Source[] }) {
@@ -2980,7 +2998,10 @@ export default function Dashboard() {
         }));
       }
 
-      const { images } = await searchWebImagesAction({ query });
+      // `decide` lets the AI compare the candidates across sites and rank its
+      // pick first: search position is Google's ranking, not a judgement about
+      // which photograph is actually right.
+      const { images, pick } = await searchWebImagesAction({ query, decide: true });
 
       if (images.length > 0) {
         // Fetched before the reply is written, because here the images ARE
@@ -2989,10 +3010,16 @@ export default function Dashboard() {
         const replyId = await appendMessage({
           sessionId,
           role: "assistant",
-          content: `Photos of **${query}** — real images found on the web. Each one opens the page it came from.`,
+          content:
+            `Real photos of **${query}** found across the web` +
+            `${pick ? `, compared by ${pick.model ?? "AI"}` : ""}. ` +
+            `Tap any picture to preview it, or use its download button to keep a copy.`,
           model: "web-images",
         });
-        await setWebImagesMutation({ messageId: replyId, images });
+        await setWebImagesMutation({
+          messageId: replyId,
+          images: storedWebImages(images),
+        });
         return;
       }
 
@@ -3086,7 +3113,10 @@ export default function Dashboard() {
         void searchWebImagesAction({ query: prompt })
           .then(({ images }) =>
             images.length > 0
-              ? setWebImagesMutation({ messageId: generatedMessageId, images })
+              ? setWebImagesMutation({
+                  messageId: generatedMessageId,
+                  images: storedWebImages(images),
+                })
               : null,
           );
       }
@@ -6688,42 +6718,65 @@ export default function Dashboard() {
                             );
                           })()}
                           {/* Real images found on the web, credited to the
-                              page they came from. Each tile is a link, so the
-                              credit is one click away rather than a footnote
-                              nobody reads. */}
+                              site they came from. The credit is a label, not
+                              a link: the picture is what was asked for, and
+                              leaving the chat to reach it was never the point. */}
                           {(m.webImages ?? []).length > 0 ? (
                             <div className="mb-3">
                               <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
                                 <Globe className="size-3" />
-                                From the web
+                                Real photos from the web
                               </p>
-                              <div className="grid max-w-md grid-cols-3 gap-1.5">
-                                {(m.webImages ?? []).map((w) => (
-                                  <a
-                                    key={w.url}
-                                    href={w.pageUrl || w.url}
-                                    target="_blank"
-                                    rel="noreferrer noopener"
-                                    className="group block overflow-hidden rounded-lg border transition-colors hover:border-primary"
-                                    title={
-                                      w.source
-                                        ? `Open on ${w.source}`
-                                        : "Open the source page"
-                                    }
-                                  >
-                                    <img
-                                      src={w.url}
-                                      alt={w.title ?? "Image from the web"}
-                                      loading="lazy"
-                                      className="h-24 w-full object-cover transition-opacity group-hover:opacity-90"
-                                    />
-                                    {w.source ? (
-                                      <span className="block truncate px-1.5 py-0.5 text-[10px] text-muted-foreground group-hover:text-foreground">
-                                        {w.source}
-                                      </span>
-                                    ) : null}
-                                  </a>
-                                ))}
+                              {/* Tiles preview and download. They are not
+                                  links: a click used to leave the chat for a
+                                  news site, which is the opposite of what the
+                                  picture was asked for. */}
+                              <div className="grid max-w-md grid-cols-2 gap-1.5 sm:grid-cols-3">
+                                {(m.webImages ?? []).map((w, wi) => {
+                                  const gallery = (m.webImages ?? []).map(
+                                    (x) => x.url,
+                                  );
+                                  return (
+                                    <div
+                                      key={w.url}
+                                      className="group relative overflow-hidden rounded-lg border transition-colors hover:border-primary"
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setLightbox({ images: gallery, index: wi })
+                                        }
+                                        className="block w-full cursor-zoom-in"
+                                        title={w.title ?? "Preview full size"}
+                                      >
+                                        <img
+                                          src={w.url}
+                                          alt={w.title ?? "Image from the web"}
+                                          loading="lazy"
+                                          className="h-24 w-full object-cover transition-opacity group-hover:opacity-90"
+                                        />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void downloadImage(
+                                            w.url,
+                                            imageFileName(w.url, w.title ?? w.source),
+                                          )
+                                        }
+                                        title="Download this image"
+                                        className="absolute right-1 top-1 flex size-6 items-center justify-center rounded bg-black/60 text-white transition-colors hover:bg-black/85"
+                                      >
+                                        <Download className="size-3" />
+                                      </button>
+                                      {w.source ? (
+                                        <span className="block truncate px-1.5 py-0.5 text-[10px] text-muted-foreground group-hover:text-foreground">
+                                          {w.source}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
                           ) : null}
@@ -7242,6 +7295,21 @@ export default function Dashboard() {
             generate={async ({ prompt: p, model: m, aspectRatio }) =>
               await generateImageAction({ prompt: p, model: m, aspectRatio })
             }
+            search={async ({ query: q, decide }) => {
+              const found = await searchWebImagesAction({ query: q, decide });
+              return {
+                images: found.images.map((img) => ({
+                  url: img.url,
+                  source: img.source,
+                  title: img.title,
+                  pageUrl: img.pageUrl,
+                  width: img.width,
+                  height: img.height,
+                })),
+                pick: found.pick,
+                reason: found.reason,
+              };
+            }}
             onUseInChat={studioUseInChat}
           />
 
@@ -8540,6 +8608,7 @@ export default function Dashboard() {
         images={lightbox?.images ?? []}
         startIndex={lightbox?.index ?? 0}
         alt="Chat image"
+        onDownload={(url) => void downloadImage(url, imageFileName(url, "jarvis-image"))}
         onClose={() => setLightbox(null)}
       />
       {/* Full-screen JARVIS live-mode HUD */}

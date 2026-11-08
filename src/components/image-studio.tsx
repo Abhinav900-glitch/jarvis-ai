@@ -1,19 +1,27 @@
 // ---------------------------------------------------------------------------
-// Image Studio — the dedicated place to make pictures.
+// Image Studio — the dedicated place to make pictures, or to find real ones.
 //
-// The chat already generates images (the /image command and the composer's
-// Add menu), but it treats generation as a one-shot attachment: prompt in,
-// picture in the transcript, nothing to steer and nothing kept. The studio is
-// the workbench version of the same capability — style, model preference and
-// shape are chosen before the request, and every result lands in a local
-// history so a good render can be re-opened, downloaded or sent to the chat.
+// Two modes exist because they are two different requests that look alike:
 //
-// It deliberately reuses the existing server chain through a callback rather
-// than calling providers itself: `cloudinary.generateImage` is the one place
-// that knows the provider order, the key handling and the rate-limit logic,
-// and it is also the only leg that honours `model` and `aspectRatio`.
+//   • Web    — "photos of the northern lights" asks for pictures that already
+//              exist. Nothing is generated; the search engine returns real
+//              images from real sites, and the AI's only job is to compare the
+//              candidates and say which one is the right picture.
+//   • AI     — "generate a poster for a jazz night" asks for something that
+//              does not exist yet, so the prompt goes to the provider chain
+//              with a style, a shape and any extra instructions.
+//
+// Auto picks between them with the same rule the chat uses: a creation verb
+// means AI, everything shaped like "photos of X" means the web. A special
+// prompt ("draw", "render", "create an image") is therefore always AI.
+//
+// Whatever the mode, a result is never a link out. Web pictures open in the
+// in-app viewer on click and are saved with the download button on the
+// picture — never by navigating to the page that hosts them, which is the
+// behaviour `<a href={pageUrl}>` gives and nobody asked for.
 // ---------------------------------------------------------------------------
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Dialog,
   DialogContent,
@@ -21,17 +29,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Lightbox } from "@/components/lightbox";
 import { Button } from "@/components/ui/button";
 import { OwnImageServer } from "@/components/own-image-server";
 import { cn } from "@/lib/utils";
+import { findWebImageQuery } from "@/lib/web-images";
+import { downloadImage, imageFileName } from "@/lib/download-image";
 import {
+  Brain,
   Check,
   Copy,
   Download,
+  Globe,
   ImagePlus,
   Loader2,
   RotateCcw,
+  Search,
   Send,
+  Sparkles,
   Trash2,
   Wand2,
   X,
@@ -57,11 +72,43 @@ export interface StudioResult {
   provider?: string;
 }
 
-interface HistoryEntry extends StudioResult {
+/** One real picture found on a real site. */
+export interface StudioCandidate {
+  url: string;
+  source: string;
+  title?: string;
+  pageUrl?: string;
+  width?: number;
+  height?: number;
+}
+
+export interface StudioSearchResult {
+  images: StudioCandidate[];
+  pick: { url: string; reason: string; model: string | null } | null;
+  reason: string | null;
+}
+
+/** `auto` decides from the prompt; the other two are the user overriding it. */
+type StudioMode = "auto" | "web" | "ai";
+
+interface HistoryEntry {
+  kind: "ai" | "web";
+  url: string;
   prompt: string;
-  model: StudioModel;
-  aspect: StudioAspect;
   at: number;
+  publicId?: string;
+  provider?: string;
+  /** Web entries: the site the picture came from, and its page. */
+  source?: string;
+  title?: string;
+  pageUrl?: string;
+  candidates?: StudioCandidate[];
+  pickReason?: string;
+  pickModel?: string | null;
+  model?: StudioModel;
+  aspect?: StudioAspect;
+  instructions?: string;
+  avoid?: string;
 }
 
 export interface ImageStudioProps {
@@ -76,6 +123,11 @@ export interface ImageStudioProps {
     model: StudioModel;
     aspectRatio: StudioAspect;
   }) => Promise<StudioResult>;
+  /** Real images from the web, with the AI's pick if it was asked for one. */
+  search: (input: {
+    query: string;
+    decide: boolean;
+  }) => Promise<StudioSearchResult>;
   /** Hands the picture to the composer as a pending attachment. */
   onUseInChat: (image: StudioResult, prompt: string) => void;
 }
@@ -148,8 +200,16 @@ const STYLES: { id: string; label: string; suffix: string }[] = [
   },
 ];
 
-const HISTORY_KEY = "jarvis-image-studio-v1";
+const MODES: { id: StudioMode; label: string; hint: string; icon: typeof Globe }[] = [
+  { id: "auto", label: "Auto", hint: "Read the prompt", icon: Sparkles },
+  { id: "web", label: "Web", hint: "Real photos, no AI", icon: Globe },
+  { id: "ai", label: "AI art", hint: "Generate a new image", icon: Wand2 },
+];
+
+const HISTORY_KEY = "jarvis-image-studio-v2";
 const HISTORY_LIMIT = 12;
+/** Long enough for a direction, short enough not to become a second prompt. */
+const NOTE_LIMIT = 220;
 
 function loadHistory(): HistoryEntry[] {
   try {
@@ -161,6 +221,7 @@ function loadHistory(): HistoryEntry[] {
       (e): e is HistoryEntry =>
         !!e &&
         typeof e === "object" &&
+        ((e as HistoryEntry).kind === "ai" || (e as HistoryEntry).kind === "web") &&
         typeof (e as HistoryEntry).url === "string" &&
         typeof (e as HistoryEntry).prompt === "string",
     );
@@ -169,21 +230,33 @@ function loadHistory(): HistoryEntry[] {
   }
 }
 
+/** Trim and cap a free-text instruction without splitting a word in half. */
+function note(value: string): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (text.length <= NOTE_LIMIT) return text;
+  return `${text.slice(0, NOTE_LIMIT).replace(/\s+\S*$/, "")}…`;
+}
+
 export function ImageStudio({
   open,
   onOpenChange,
   generate,
+  search,
   onUseInChat,
 }: ImageStudioProps) {
   const [prompt, setPrompt] = useState("");
+  const [mode, setMode] = useState<StudioMode>("auto");
   const [styleId, setStyleId] = useState("none");
   const [model, setModel] = useState<StudioModel>("default");
   const [aspect, setAspect] = useState<StudioAspect>("1:1");
+  const [instructions, setInstructions] = useState("");
+  const [avoid, setAvoid] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [current, setCurrent] = useState<HistoryEntry | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [copied, setCopied] = useState(false);
+  const [preview, setPreview] = useState<{ urls: string[]; index: number } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // History is browser-local, so it is read on open rather than at mount:
@@ -195,6 +268,8 @@ export function ImageStudio({
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) setHistory(loadHistory());
+    // The viewer is portaled outside the dialog, so it would outlive it.
+    else setPreview(null);
   }
 
   // Focus the prompt when the studio opens — it is the only reason it was
@@ -204,6 +279,21 @@ export function ImageStudio({
     const t = window.setTimeout(() => textareaRef.current?.focus(), 80);
     return () => window.clearTimeout(t);
   }, [open]);
+
+  // Escape closes the preview, not the whole studio underneath it. Caught in
+  // the capture phase so the dialog's own Escape handler never sees the key:
+  // without this, one press would dismiss the viewer and the panel together
+  // and lose the reason the user opened it.
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setPreview(null);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [preview]);
 
   const persist = useCallback((entries: HistoryEntry[]) => {
     setHistory(entries);
@@ -215,33 +305,93 @@ export function ImageStudio({
     }
   }, []);
 
-  const effectivePrompt = (() => {
+  const style = STYLES.find((s) => s.id === styleId) ?? STYLES[0];
+
+  // The chat's own rule, reused verbatim so the two surfaces cannot disagree
+  // about what "photos of X" means. Null means the sentence is a creation
+  // request — the special prompts ("draw", "render", "make an image") land
+  // here, and they belong to the generator.
+  const webQuery = findWebImageQuery(prompt);
+  const resolved: "web" | "ai" =
+    mode === "auto" ? (webQuery ? "web" : "ai") : mode;
+
+  /**
+   * The prompt the generator receives: the description, the style, then the
+   * user's own instructions and exclusions. Built once per render so the note
+   * under the textarea can show exactly what will be sent.
+   */
+  const aiPrompt = (() => {
     const base = prompt.trim();
-    const style = STYLES.find((s) => s.id === styleId);
-    if (!base || !style?.suffix) return base;
-    return `${base}, ${style.suffix}`;
+    if (!base) return "";
+    const parts = [base];
+    if (style.suffix) parts.push(style.suffix);
+    const extra = note(instructions);
+    if (extra) parts.push(extra);
+    const banned = note(avoid);
+    if (banned) parts.push(`avoid: ${banned}`);
+    return parts.join(", ");
   })();
 
   const run = useCallback(
     async (override?: { prompt: string; model: StudioModel; aspect: StudioAspect }) => {
-      const requestPrompt = (override?.prompt ?? effectivePrompt).trim();
-      if (!requestPrompt || busy) return;
+      const basePrompt = (override?.prompt ?? prompt).trim();
+      if (!basePrompt || busy) return;
+      const requestModel = override?.model ?? model;
+      const requestAspect = override?.aspect ?? aspect;
       setBusy(true);
       setError(null);
+
+      // Same decision as render-time, recomputed because this closure may run
+      // long after the state it was created with.
+      const query =
+        override?.prompt !== undefined ? findWebImageQuery(basePrompt) : webQuery;
+      const target: "web" | "ai" =
+        mode === "auto" ? (query ? "web" : "ai") : mode;
+
       try {
+        if (target === "web") {
+          const term = query ?? basePrompt;
+          const found = await search({ query: term, decide: true });
+          if (found.images.length === 0) {
+            throw new Error(found.reason ?? "No images found on the web.");
+          }
+          // The action puts the AI's pick first, so index 0 is the choice.
+          const best = found.images[0];
+          const entry: HistoryEntry = {
+            kind: "web",
+            url: best.url,
+            prompt: term,
+            at: Date.now(),
+            source: best.source,
+            title: best.title,
+            pageUrl: best.pageUrl,
+            candidates: found.images,
+            pickReason: found.pick?.reason,
+            pickModel: found.pick?.model ?? null,
+          };
+          setCurrent(entry);
+          setPreview(null);
+          persist([entry, ...history.filter((h) => h.url !== entry.url)]);
+          return;
+        }
+
         const result = await generate({
-          prompt: requestPrompt,
-          model: override?.model ?? model,
-          aspectRatio: override?.aspect ?? aspect,
+          prompt: aiPrompt || basePrompt,
+          model: requestModel,
+          aspectRatio: requestAspect,
         });
         const entry: HistoryEntry = {
+          kind: "ai",
           ...result,
-          prompt: requestPrompt,
-          model: override?.model ?? model,
-          aspect: override?.aspect ?? aspect,
+          prompt: basePrompt,
+          model: requestModel,
+          aspect: requestAspect,
+          instructions: note(instructions) || undefined,
+          avoid: note(avoid) || undefined,
           at: Date.now(),
         };
         setCurrent(entry);
+        setPreview(null);
         persist([entry, ...history.filter((h) => h.url !== entry.url)]);
       } catch (err) {
         // The chain throws every stage's reason joined by newlines; keeping
@@ -251,7 +401,21 @@ export function ImageStudio({
         setBusy(false);
       }
     },
-    [aspect, busy, effectivePrompt, generate, history, model, persist],
+    [
+      aiPrompt,
+      aspect,
+      avoid,
+      busy,
+      generate,
+      history,
+      instructions,
+      mode,
+      model,
+      persist,
+      prompt,
+      search,
+      webQuery,
+    ],
   );
 
   const copyLink = useCallback(async () => {
@@ -261,10 +425,47 @@ export function ImageStudio({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
-      // Clipboard can be denied; the link stays visible in the address bar of
-      // the opened image, so there is nothing useful to replace it with.
+      // Clipboard can be denied; the link stays visible in the viewer's own
+      // address bar, so there is nothing useful to replace it with.
     }
   }, [current]);
+
+  const save = useCallback(
+    (url: string, hint?: string) => {
+      void downloadImage(url, imageFileName(url, hint ?? current?.prompt));
+    },
+    [current],
+  );
+
+  const alsoCompare = useCallback(async () => {
+    if (!current || current.kind !== "web" || busy) return;
+    setBusy(true);
+    try {
+      const found = await search({ query: current.prompt, decide: true });
+      if (found.images.length === 0) {
+        setError(found.reason ?? "No other images turned up.");
+        return;
+      }
+      const best = found.images[0];
+      const entry: HistoryEntry = {
+        ...current,
+        url: best.url,
+        source: best.source,
+        title: best.title,
+        pageUrl: best.pageUrl,
+        candidates: found.images,
+        pickReason: found.pick?.reason,
+        pickModel: found.pick?.model ?? null,
+        at: Date.now(),
+      };
+      setCurrent(entry);
+      persist([entry, ...history.filter((h) => h.url !== entry.url)]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not compare again.");
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, current, history, persist, search]);
 
   const removeEntry = useCallback(
     (url: string) => {
@@ -275,24 +476,96 @@ export function ImageStudio({
     [current, history, persist],
   );
 
-  const style = STYLES.find((s) => s.id === styleId) ?? STYLES[0];
+  const previewUrls = current
+    ? current.kind === "web" && current.candidates?.length
+      ? current.candidates.map((c) => c.url)
+      : [current.url]
+    : [];
+
+  // A web entry always has at least its own picture to show, even when the
+  // stored candidate list is older than the shape that added it.
+  const webCandidates: StudioCandidate[] =
+    current?.kind === "web"
+      ? (current.candidates?.length
+          ? current.candidates
+          : [{ url: current.url, source: current.source ?? "", title: current.title }])
+      : [];
+
+  const triggerLabel =
+    resolved === "web" ? "Search photos" : mode === "auto" ? "Generate" : "Render";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl">
+      <DialogContent
+        className="max-h-[92vh] gap-3 overflow-y-auto p-4 sm:max-w-3xl sm:gap-4 sm:p-6"
+        // The preview is portaled outside this dialog, so Radix sees every
+        // click in it as an outside interaction and would dismiss the studio
+        // — and the result being looked at — on the first arrow press.
+        onInteractOutside={(e) => {
+          if (preview) e.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ImagePlus className="size-4" />
             Image Studio
           </DialogTitle>
-          <DialogDescription>
-            Style, model and shape before you render. Everything runs through the
-            same free provider chain the chat uses, and results are kept in this
-            browser.
+          <DialogDescription className="pr-6 text-xs sm:text-sm">
+            Real photos found on the web, or a picture made from scratch. Results
+            open in the viewer here — the download button saves the file itself.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-3 sm:space-y-4">
+          {/* ---- Mode ---- */}
+          <div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {MODES.map((m) => {
+                const Icon = m.icon;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setMode(m.id)}
+                    className={cn(
+                      "flex flex-col items-center gap-0.5 rounded-lg border px-2 py-2 text-center transition-colors",
+                      mode === m.id
+                        ? "border-foreground/40 bg-accent text-foreground"
+                        : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                    )}
+                    aria-pressed={mode === m.id}
+                  >
+                    <span className="flex items-center gap-1.5 text-xs font-medium">
+                      <Icon className="size-3.5" />
+                      {m.label}
+                    </span>
+                    <span className="text-[10px] leading-3 opacity-70">{m.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground">
+              {mode === "auto" ? (
+                webQuery ? (
+                  <>
+                    Auto reads this as <span className="text-foreground">a request for
+                    real photos</span> of “{webQuery}” — no image is generated.
+                  </>
+                ) : (
+                  <>
+                    Auto reads this as <span className="text-foreground">a request to
+                    make a picture</span>. Phrases like “photos of X” switch to the
+                    web instead.
+                  </>
+                )
+              ) : resolved === "web" ? (
+                <>Searching real images from across the web. Nothing is generated.</>
+              ) : (
+                <>Rendering a new image with the provider chain.</>
+              )}
+            </p>
+          </div>
+
           {/* ---- Prompt ---- */}
           <div>
             <textarea
@@ -306,89 +579,137 @@ export function ImageStudio({
                 }
               }}
               rows={3}
-              placeholder="Describe the picture — a lighthouse in a storm, glass architecture, a fox in morning fog…"
-              className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              placeholder={
+                resolved === "web"
+                  ? "photos of the northern lights over Tromsø, photos of a red panda…"
+                  : "Describe the picture — a lighthouse in a storm, glass architecture, a fox in morning fog…"
+              }
+              // 16px on phones: anything smaller makes iOS zoom the whole sheet
+              // in on focus and never zoom back out.
+              className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-base outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 sm:text-sm"
             />
 
-            {/* ---- Style presets ---- */}
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {STYLES.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => setStyleId(s.id)}
-                  className={cn(
-                    "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition-colors",
-                    styleId === s.id
-                      ? "border-foreground/40 bg-accent text-foreground"
-                      : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
-                  )}
-                >
-                  {s.id !== "none" && <Wand2 className="size-3" />}
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* ---- Model + shape ---- */}
-          <div className="flex flex-wrap items-end gap-4">
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                Model preference
-              </span>
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value as StudioModel)}
-                className="h-8 max-w-[15rem] cursor-pointer rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {MODELS.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label} — {m.note}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                Shape
-              </span>
-              <div className="flex gap-1">
-                {ASPECTS.map((a) => (
+            {/* ---- Style presets (AI only: a style suffix means nothing to a
+                web search, which returns what already exists) ---- */}
+            {resolved === "ai" && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {STYLES.map((s) => (
                   <button
-                    key={a.id}
+                    key={s.id}
                     type="button"
-                    onClick={() => setAspect(a.id)}
+                    onClick={() => setStyleId(s.id)}
                     className={cn(
-                      "h-8 rounded-md border px-3 text-xs transition-colors",
-                      aspect === a.id
+                      "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition-colors",
+                      styleId === s.id
                         ? "border-foreground/40 bg-accent text-foreground"
                         : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
                     )}
-                    title={`${a.label} (${a.hint})`}
                   >
-                    {a.label}
-                    <span className="ml-1.5 opacity-60">{a.hint}</span>
+                    {s.id !== "none" && <Wand2 className="size-3" />}
+                    {s.label}
                   </button>
                 ))}
               </div>
+            )}
+          </div>
+
+          {/* ---- Instructions (AI only) ---- */}
+          {resolved === "ai" && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Extra instructions
+                </span>
+                <input
+                  value={instructions}
+                  onChange={(e) => setInstructions(e.target.value)}
+                  placeholder="from above, golden hour, wide shot"
+                  maxLength={NOTE_LIMIT}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-base outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring sm:text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Leave out
+                </span>
+                <input
+                  value={avoid}
+                  onChange={(e) => setAvoid(e.target.value)}
+                  placeholder="text, watermarks, extra people"
+                  maxLength={NOTE_LIMIT}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-base outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring sm:text-sm"
+                />
+              </label>
             </div>
+          )}
+
+          {/* ---- Model + shape + run ---- */}
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+            {resolved === "ai" && (
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Model preference
+                </span>
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value as StudioModel)}
+                  className="h-8 w-full cursor-pointer rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring sm:max-w-[15rem]"
+                >
+                  {MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label} — {m.note}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {resolved === "ai" && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Shape
+                </span>
+                <div className="flex gap-1">
+                  {ASPECTS.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => setAspect(a.id)}
+                      className={cn(
+                        "h-8 flex-1 rounded-md border px-3 text-xs transition-colors sm:flex-none",
+                        aspect === a.id
+                          ? "border-foreground/40 bg-accent text-foreground"
+                          : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                      )}
+                      title={`${a.label} (${a.hint})`}
+                    >
+                      {a.label}
+                      <span className="ml-1.5 opacity-60">{a.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <Button
               onClick={() => void run()}
               disabled={busy || !prompt.trim()}
-              className="ml-auto h-8"
+              className="h-9 w-full sm:ml-auto sm:h-8 sm:w-auto"
             >
               {busy ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Rendering…
+                  {resolved === "web" ? "Searching…" : "Rendering…"}
+                </>
+              ) : resolved === "web" ? (
+                <>
+                  <Search className="size-4" />
+                  {triggerLabel}
                 </>
               ) : (
                 <>
                   <ImagePlus className="size-4" />
-                  Generate
+                  {triggerLabel}
                 </>
               )}
             </Button>
@@ -397,10 +718,9 @@ export function ImageStudio({
           {/* ---- Self-hosted endpoint (optional, collapsed) ---- */}
           <OwnImageServer />
 
-          {style.suffix && (
+          {resolved === "ai" && (style.suffix || instructions.trim() || avoid.trim()) && (
             <p className="text-[11px] leading-4 text-muted-foreground">
-              <span className="text-foreground">{style.label}</span> is appended
-              as: <span className="italic">“{style.suffix}”</span>
+              Sending: <span className="text-foreground/80">{aiPrompt}</span>
             </p>
           )}
 
@@ -411,18 +731,44 @@ export function ImageStudio({
             </div>
           )}
 
-          {/* ---- Result ---- */}
-          {current && (
+          {/* ---- Result: AI render ---- */}
+          {current && current.kind === "ai" && (
             <div className="overflow-hidden rounded-lg border border-border/70">
-              <div className="relative bg-muted/40">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => setPreview({ urls: [current.url], index: 0 })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setPreview({ urls: [current.url], index: 0 });
+                  }
+                }}
+                className="relative flex cursor-zoom-in items-center justify-center bg-muted/40"
+                title="Preview full size"
+              >
                 <img
                   src={current.url}
                   alt={current.prompt}
-                  className="max-h-[46vh] w-full object-contain"
+                  className="max-h-[min(46vh,26rem)] w-full object-contain"
                 />
                 <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white">
                   {current.provider ?? "image"}
                 </span>
+                {/* Download lives on the picture, upper region, always visible:
+                    on a phone there is no hover to reveal it. */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    save(current.url);
+                  }}
+                  title="Download this image"
+                  className="absolute right-2 top-2 flex items-center gap-1 rounded-md bg-black/65 px-2 py-1 text-[11px] font-medium text-white transition-colors hover:bg-black/85"
+                >
+                  <Download className="size-3.5" />
+                  Download
+                </button>
               </div>
               <div className="flex flex-wrap items-center gap-2 border-t border-border/70 bg-background px-3 py-2">
                 <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
@@ -438,15 +784,9 @@ export function ImageStudio({
                   <RotateCcw className="size-3.5" />
                   Again
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  asChild
-                >
-                  <a href={current.url} download={`jarvis-image-${current.at}.png`} target="_blank" rel="noreferrer">
-                    <Download className="size-3.5" />
-                    Save
-                  </a>
+                <Button variant="outline" size="sm" onClick={() => save(current.url)}>
+                  <Download className="size-3.5" />
+                  Save
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => void copyLink()}>
                   {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
@@ -455,7 +795,14 @@ export function ImageStudio({
                 <Button
                   size="sm"
                   onClick={() => {
-                    onUseInChat(current, prompt.trim() || current.prompt);
+                    onUseInChat(
+                      {
+                        url: current.url,
+                        publicId: current.publicId ?? "",
+                        provider: current.provider,
+                      },
+                      prompt.trim() || current.prompt,
+                    );
                     onOpenChange(false);
                   }}
                 >
@@ -466,12 +813,113 @@ export function ImageStudio({
             </div>
           )}
 
+          {/* ---- Result: web photo comparison ---- */}
+          {current && current.kind === "web" && (
+            <div className="overflow-hidden rounded-lg border border-border/70">
+              <div className="flex items-center gap-1.5 border-b border-border/70 bg-muted/40 px-3 py-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                <Globe className="size-3" />
+                {current.candidates?.length ?? 1} real images from the web
+                {current.pickModel ? (
+                  <span className="ml-auto normal-case tracking-normal text-muted-foreground/80">
+                    compared by {current.pickModel}
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 p-2 sm:grid-cols-3">
+                {webCandidates.map((c, i) => {
+                  const isPick = c.url === current.url;
+                  return (
+                    <div
+                      key={c.url + i}
+                      className={cn(
+                        "group relative overflow-hidden rounded-md border bg-muted/30",
+                        isPick ? "border-primary/70" : "border-border/70",
+                      )}
+                    >
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setPreview({ urls: previewUrls, index: i })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setPreview({ urls: previewUrls, index: i });
+                          }
+                        }}
+                        className="block w-full cursor-zoom-in"
+                        title={c.title ?? "Preview this image"}
+                      >
+                        <img
+                          src={c.url}
+                          alt={c.title ?? current.prompt}
+                          loading="lazy"
+                          className="aspect-[4/3] w-full object-cover"
+                        />
+                      </div>
+
+                      {isPick && (
+                        <span className="pointer-events-none absolute left-1.5 top-1.5 flex items-center gap-1 rounded bg-primary px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-primary-foreground">
+                          <Brain className="size-2.5" />
+                          AI pick
+                        </span>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => save(c.url)}
+                        title="Download this image"
+                        className="absolute right-1.5 top-1.5 z-10 flex size-7 items-center justify-center rounded-md bg-black/65 text-white transition-colors hover:bg-black/85"
+                      >
+                        <Download className="size-3.5" />
+                      </button>
+
+                      <p className="truncate bg-background/80 px-1.5 py-1 text-[10px] text-muted-foreground">
+                        {c.source || "web"}
+                        {c.width && c.height ? (
+                          <span className="ml-1 opacity-60">
+                            {c.width}×{c.height}
+                          </span>
+                        ) : null}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {current.pickReason && (
+                <p className="border-t border-border/70 px-3 py-2 text-[11px] leading-4 text-muted-foreground">
+                  <span className="text-foreground">Why this one:</span>{" "}
+                  {current.pickReason}
+                </p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 border-t border-border/70 bg-background px-3 py-2">
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                  {current.prompt}
+                </span>
+                <Button variant="outline" size="sm" onClick={() => void alsoCompare()} disabled={busy}>
+                  {busy ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <RotateCcw className="size-3.5" />
+                  )}
+                  Compare again
+                </Button>
+                <Button size="sm" onClick={() => save(current.url)}>
+                  <Download className="size-3.5" />
+                  Download
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* ---- History (this browser) ---- */}
           {history.length > 0 && (
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                  Recent renders — {history.length}
+                  Recent — {history.length}
                 </span>
                 <button
                   type="button"
@@ -505,6 +953,9 @@ export function ImageStudio({
                         className="aspect-square w-full object-cover"
                       />
                     </button>
+                    <span className="pointer-events-none absolute bottom-1 left-1 rounded bg-black/60 px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white">
+                      {h.kind === "web" ? "web" : "ai"}
+                    </span>
                     <button
                       type="button"
                       onClick={() => removeEntry(h.url)}
@@ -523,13 +974,32 @@ export function ImageStudio({
             <div className="rounded-lg border border-dashed border-border/70 px-4 py-8 text-center">
               <X className="mx-auto size-4 text-muted-foreground/60" />
               <p className="mt-2 text-sm text-muted-foreground">
-                Nothing rendered yet — describe something above and press
-                Generate (⌘↵).
+                Nothing yet — describe a picture, or ask for photos of something
+                real, and press {resolved === "web" ? "Search" : "Generate"} (⌘↵).
               </p>
             </div>
           )}
         </div>
       </DialogContent>
+
+      {/* The viewer is portaled to <body>: a modal dialog sets
+          `pointer-events: none` on the body and re-enables it only inside its
+          own content, so a preview rendered within the dialog would be visible
+          and unclickable. `pointer-events-auto` puts it back in the chain. */}
+      {preview && preview.urls.length > 0
+        ? createPortal(
+            <div className="pointer-events-auto">
+              <Lightbox
+                images={preview.urls}
+                startIndex={preview.index}
+                alt={current?.title ?? current?.prompt ?? "Image"}
+                onDownload={(url) => save(url, current?.prompt)}
+                onClose={() => setPreview(null)}
+              />
+            </div>,
+            document.body,
+          )
+        : null}
     </Dialog>
   );
 }
