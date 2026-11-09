@@ -571,13 +571,15 @@ export const ENGINES: EngineSpec[] = [
     id: "openrouter/nemotron-nano",
     provider: "openrouter",
     modelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    label: "Nemotron 3 Nano",
-    vision: false,
+    label: "Nemotron 3 Nano Omni",
+    // "Omni" is the capability: this one takes image, audio and video parts,
+    // which is why it is the free model a screenshot can be sent to.
+    vision: true,
     reasoning: true,
     quality: 0.72,
     speed: 0.85,
     context: 262_144,
-    bestFor: "free reasoning in about a second",
+    bestFor: "free reasoning in about a second, images included",
   },
   {
     id: "openrouter/qwen-3-8",
@@ -651,6 +653,42 @@ export const ENGINES: EngineSpec[] = [
     context: 65_536,
     bestFor: "the cheapest step that still has to run",
   },
+  {
+    id: "openrouter/lfm-3-1-7b",
+    provider: "openrouter",
+    modelId: "liquid/lfm-3-1.7b:free",
+    label: "LFM3 1.7B",
+    vision: false,
+    // The free route always thinks before it answers, so it is flagged as a
+    // reasoning model; its 1.7B size is what keeps it out of the hard slots.
+    reasoning: true,
+    quality: 0.50,
+    speed: 0.94,
+    context: 262_144,
+    // A 1.7B model earns its place on speed alone: short classification and
+    // one-line rewrites, where a large model's extra seconds buy nothing.
+    // Liquid advises against agentic coding on the LFM line, so code stays off
+    // the list even though this one is fast enough for it.
+    bestFor: "the shortest steps — one line in, one line out",
+  },
+  {
+    id: "openrouter/flint",
+    provider: "openrouter",
+    modelId: "recursive/flint-v1.0:free",
+    label: "Flint",
+    vision: false,
+    reasoning: true,
+    quality: 0.78,
+    speed: 0.80,
+    context: 262_144,
+    bestFor: "reading code and tests on a free slot",
+  },
+
+  // `parallel/decisions-fast:free` is deliberately not in this list. It is a
+  // Decisions endpoint, not a chat model: it accepts a `state` plus typed
+  // questions and answers with probabilities and citations, and OpenRouter's
+  // docs say chat-completions clients cannot call it. Registered here it would
+  // post to /chat/completions and fail on every request.
 
   // --- Ollama (hosted) -----------------------------------------------------
   {

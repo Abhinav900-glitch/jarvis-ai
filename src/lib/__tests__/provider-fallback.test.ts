@@ -168,6 +168,10 @@ describe("openrouter registry freshness", () => {
     "thinkingmachines/inkling:free",
     "thinkingmachines/inkling-small:free",
     "dots-studio/dots-3-note-preview:free",
+    // Added after checking each against the live roster on 2026-11-09, so the
+    // list keeps meaning "verified present", not "was present once".
+    "recursive/flint-v1.0:free",
+    "liquid/lfm-3-1.7b:free",
   ]);
 
   test("no registered engine points at a model already known to be gone", () => {
