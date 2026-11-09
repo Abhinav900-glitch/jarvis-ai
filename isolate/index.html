@@ -4,8 +4,22 @@
 <head>
   <meta charset="UTF-8" />
   <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <!-- iOS ignores the manifest and SVG icons, so the home-screen icon is a
+       PNG generated from the same logo by `bun run icons`. -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-title" content="Jarvis" />
+  <meta name="application-name" content="Jarvis" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- viewport-fit=cover: without it the Android/iOS WebView letterboxes the
+       app away from the notch and env(safe-area-inset-*) reports 0, which is
+       what made the packaged build sit under the status bar.
+       interactive-widget: the keyboard resizes the layout instead of sliding
+       over the composer. -->
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+  />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="referrer" content="strict-origin-when-cross-origin" />
   <meta name="theme-color" content="#0a0a0a" />
   <meta
@@ -13,11 +27,11 @@
     content="Jarvis — AI assistant with web research, vision, voice, math rendering, and image generation."
   />
   <title>JARVIS-AI</title>
-  <script type="module" crossorigin src="/assets/index-C1kTzaBi.js"></script>
+  <script type="module" crossorigin src="/assets/index-C3kti3Hh.js"></script>
   <link rel="modulepreload" crossorigin href="/assets/react-vendor-Cke4GP8x.js">
-  <link rel="modulepreload" crossorigin href="/assets/framer-motion-CL9no1QB.js">
-  <link rel="modulepreload" crossorigin href="/assets/radix-ui-CY1S9GB0.js">
-  <link rel="stylesheet" crossorigin href="/assets/index-DkrcdV5h.css">
+  <link rel="modulepreload" crossorigin href="/assets/framer-motion-DY6MYYYw.js">
+  <link rel="modulepreload" crossorigin href="/assets/radix-ui-D2awOjj_.js">
+  <link rel="stylesheet" crossorigin href="/assets/index-CIK9lrB_.css">
 <script defer src="/_vercel/insights/script.js"></script>
 </head>
 
