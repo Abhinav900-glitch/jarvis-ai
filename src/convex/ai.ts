@@ -65,6 +65,13 @@ import {
   browseAiText,
 } from "../lib/browse-ai";
 import {
+  PAGE_BRIEF_SYSTEM_PROMPT,
+  cleanPageBrief,
+  hostLabel,
+  pageBriefPrompt,
+  pageTitle,
+} from "../lib/page-brief";
+import {
   PARALLEL_SEARCH_URL,
   parallelRequestBody,
   parallelResults,
@@ -2859,7 +2866,10 @@ const LOOK_SYSTEM_PROMPT =
 const BROWSE_AI_POLL_MS = 2_500;
 const BROWSE_AI_MAX_POLLS = 8;
 
-async function browseAiRead(url: string): Promise<string | null> {
+async function browseAiRead(
+  url: string,
+  maxPolls = BROWSE_AI_MAX_POLLS,
+): Promise<string | null> {
   const config = browseAiConfig((name) => process.env[name]);
   if (!config) return null;
 
@@ -2885,7 +2895,7 @@ async function browseAiRead(url: string): Promise<string | null> {
       return null;
     }
 
-    for (let attempt = 0; attempt < BROWSE_AI_MAX_POLLS; attempt++) {
+    for (let attempt = 0; attempt < maxPolls; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, BROWSE_AI_POLL_MS));
       const res = await fetch(browseAiTaskStatusUrl(config.robotId, taskId), {
         headers,
@@ -2946,12 +2956,11 @@ async function researchCharacter(
     );
   }
 
-  // A search snippet is often one line. When the results are thin, a robot
-  // opens the best page itself so the brief is built on what the page says
-  // rather than on a headline — and only one page, because the second read
+  // A search snippet is often one line. When the results are thin — few, or
+  // their text is a headline, which is what a keyword provider returns and
+  // what an Exa/Parallel extract does not — a robot opens the best page so the
+  // brief is built on what the page says. One page only: the second read
   // rarely changes the description.
-  // "Thin" is either few results or results whose text is one line, which is
-  // what a keyword provider returns and what an Exa/Parallel extract does not.
   let pageText = "";
   const snippetChars = hits.reduce((n, hit) => n + (hit.snippet?.length ?? 0), 0);
   if (hits.length > 0 && (hits.length < 3 || snippetChars < 700)) {
@@ -3574,6 +3583,70 @@ async function tinyFishFetch(key: string, url: string): Promise<string | null> {
   }
 }
 
+/** A markdown page's own heading, when the reader returned markdown. */
+function markdownTitle(text: string): string {
+  const match = /^#{1,2}\s+(.+)$/m.exec(text);
+  return match ? match[1].replace(/[#*_`]/g, "").trim().slice(0, 160) : "";
+}
+
+/**
+ * The text of a page, whichever reader can get it.
+ *
+ * One order for everyone: TinyFish (rendered, already markdown), then Browse AI
+ * (a robot that renders), then a plain fetch. Each step is an upgrade over the
+ * next, and each one either returns usable text or hands over — so a missing
+ * key, a rate limit or a JavaScript-built page costs the next attempt, never
+ * the whole read.
+ *
+ * The robot gets a shorter budget than it does for character research: this
+ * path is somebody waiting on a reply, not a picture already in progress.
+ */
+async function readPageText(
+  url: string,
+): Promise<{ text: string; source: "tinyfish" | "browse-ai" | "fetch"; title: string }> {
+  const tinyFishKey = process.env.TINYFISH_API_KEY?.trim();
+  const rendered = tinyFishKey ? await tinyFishFetch(tinyFishKey, url) : null;
+  if (rendered) {
+    return {
+      text: rendered,
+      source: "tinyfish",
+      title: markdownTitle(rendered) || hostLabel(url),
+    };
+  }
+
+  const robot = await browseAiRead(url, 5);
+  if (robot) {
+    return {
+      text: robot,
+      source: "browse-ai",
+      title: markdownTitle(robot) || hostLabel(url),
+    };
+  }
+
+  let html: string;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; JarvisBot/1.0)",
+        Accept: "text/html,application/xhtml+xml",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    html = await res.text();
+  } catch (err) {
+    throw new Error(
+      `Failed to fetch URL: ${err instanceof Error ? err.message : "network error"}`,
+    );
+  }
+
+  return {
+    text: extractReadableText(html),
+    source: "fetch",
+    title: pageTitle(html) || hostLabel(url),
+  };
+}
+
 export const summarizeUrl = action({
   args: {
     url: v.string(),
@@ -3587,41 +3660,9 @@ export const summarizeUrl = action({
 
     const url = assertSafePublicUrl(args.url.trim());
 
-    // TinyFish renders the page and returns clean markdown — better than
-    // stripping tags ourselves, and it works on pages that build their
-    // content in JavaScript. It returns null rather than throwing, so a
-    // missing key or a rate limit falls through to the plain fetch below
-    // instead of failing the summary.
-    const tinyFishKey = process.env.TINYFISH_API_KEY?.trim();
-    const rendered = tinyFishKey ? await tinyFishFetch(tinyFishKey, url) : null;
-
-    // Browse AI next: a robot that renders the page is the same upgrade as
-    // TinyFish, so it is worth trying before falling back to raw HTML — which
-    // is what a site that builds its content in JavaScript returns empty for.
-    let text = rendered ?? (await browseAiRead(url));
-    if (text === null) {
-      // Fetch the webpage content
-      let html: string;
-      try {
-        const res = await fetch(url, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (compatible; JarvisBot/1.0)",
-            Accept: "text/html,application/xhtml+xml",
-          },
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        html = await res.text();
-      } catch (err) {
-        throw new Error(
-          `Failed to fetch URL: ${err instanceof Error ? err.message : "network error"}`,
-        );
-      }
-
-      // Extract readable text from HTML
-      text = extractReadableText(html);
-    }
-    if (text.length < 50) {
+    const page = await readPageText(url);
+    const text = page.text;
+    if (text.trim().length < 50) {
       throw new Error(
         "The page didn't contain enough readable text to summarize.",
       );
@@ -3650,6 +3691,71 @@ ${truncated}`;
       // assistant message, so it should read in the same voice.
       await systemPromptFor(_ctx, userId),
     );
+  },
+});
+
+/**
+ * Read a page as a visual reference for an image.
+ *
+ * The image studio's counterpart to the character lookup, for when the design
+ * is on a page rather than in the model's memory: a wiki entry, a shop listing,
+ * a reference sheet. The page goes through the same readers a summary does,
+ * then one model call turns it into a clause that can be appended to a prompt.
+ *
+ * Throws with a plain sentence when there is nothing usable, because the
+ * studio shows the reason next to the box the user just typed in.
+ */
+export const pageBrief = action({
+  args: { url: v.string() },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    url: string;
+    title: string;
+    brief: string;
+    source: "tinyfish" | "browse-ai" | "fetch";
+    chars: number;
+  }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to read a page.");
+
+    const url = assertSafePublicUrl(args.url.trim());
+    const page = await readPageText(url);
+    const text = page.text.trim();
+    if (text.length < 50) {
+      throw new Error("That page didn't have enough readable text to describe.");
+    }
+
+    const plan = await routingFor(ctx, userId, {
+      task: "summarize",
+      hasImages: false,
+      prompt: url,
+    });
+    const result = await runProviderChain(
+      [
+        {
+          role: "user",
+          content: pageBriefPrompt({ url, title: page.title, text }),
+        },
+      ],
+      PAGE_BRIEF_SYSTEM_PROMPT,
+      "No engine was available to read that page.",
+      plan,
+    );
+
+    const brief = cleanPageBrief(result.text);
+    if (!brief) {
+      throw new Error("That page doesn't describe how anything looks.");
+    }
+
+    return {
+      url,
+      title: page.title || hostLabel(url),
+      brief,
+      source: page.source,
+      chars: text.length,
+    };
   },
 });
 

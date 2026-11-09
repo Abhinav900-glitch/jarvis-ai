@@ -1071,6 +1071,7 @@ export default function Dashboard() {
   // itself never leaves the server.
   const imageProviderConfig = useQuery(api.config.imageProviders);
   const summarizeUrlAction = useAction(api.ai.summarizeUrl);
+  const pageBriefAction = useAction(api.ai.pageBrief);
   const getWorldTimeAction = useAction(api.ai.getWorldTime);
   const getCurrencyRateAction = useAction(api.ai.getCurrencyRate);
   const getWeatherAction = useAction(api.ai.getWeather);
@@ -7341,6 +7342,7 @@ export default function Dashboard() {
             lookup={async ({ prompt: p, refresh }) =>
               await characterLookAction({ prompt: p, refresh })
             }
+            readPage={async ({ url }) => await pageBriefAction({ url })}
             onUseInChat={studioUseInChat}
           />
 

@@ -35,12 +35,14 @@ import { OwnImageServer } from "@/components/own-image-server";
 import { cn } from "@/lib/utils";
 import { findWebImageQuery } from "@/lib/web-images";
 import { composeGroundedPrompt } from "@/lib/character-look";
+import { isPageUrl } from "@/lib/page-brief";
 import { downloadImage, imageFileName } from "@/lib/download-image";
 import {
   Brain,
   Check,
   Copy,
   Download,
+  FileText,
   Globe,
   ImagePlus,
   Loader2,
@@ -49,6 +51,7 @@ import {
   RefreshCw,
   Send,
   Sparkles,
+  Star,
   Trash2,
   Undo2,
   UserRound,
@@ -115,6 +118,18 @@ interface HistoryEntry {
   avoid?: string;
   /** The character reference the prompt was grounded with, for transparency. */
   reference?: string;
+  /** The page whose description grounded the prompt, if any. */
+  page?: StudioPage;
+  /** Pinned pictures survive the 12-entry cap. */
+  pinned?: boolean;
+}
+
+/** A page read as a visual reference: what it is, and how it looks. */
+export interface StudioPage {
+  url: string;
+  title: string;
+  brief: string;
+  source: string;
 }
 
 export interface ImageStudioProps {
@@ -157,6 +172,12 @@ export interface ImageStudioProps {
     model: string | null;
     cached: boolean;
   }>;
+  /**
+   * Reads a page and condenses it into a visual description — the studio's way
+   * of drawing something the model has never seen, from a reference the user
+   * already has. Optional: without it the control simply is not shown.
+   */
+  readPage?: (input: { url: string }) => Promise<StudioPage>;
   /** Hands the picture to the composer as a pending attachment. */
   onUseInChat: (image: StudioResult, prompt: string) => void;
 }
@@ -275,6 +296,7 @@ export function ImageStudio({
   search,
   enhance,
   lookup,
+  readPage,
   onUseInChat,
 }: ImageStudioProps) {
   const [prompt, setPrompt] = useState("");
@@ -297,6 +319,13 @@ export function ImageStudio({
   const [sharpenNote, setSharpenNote] = useState<string | null>(null);
   // Character grounding is on by default: naming a character is a request for
   // that character, and without a reference the generator invents its own.
+  // A page read is deliberately not part of the request: it is a reference the
+  // user brings, so it persists across renders until they clear it.
+  const [page, setPage] = useState<StudioPage | null>(null);
+  const [pageUrl, setPageUrl] = useState("");
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [readingPage, setReadingPage] = useState(false);
+
   const [lookups, setLookups] = useState(() => {
     try {
       return localStorage.getItem(LOOKUPS_KEY) !== "false";
@@ -349,14 +378,34 @@ export function ImageStudio({
   }, [preview]);
 
   const persist = useCallback((entries: HistoryEntry[]) => {
-    setHistory(entries);
+    // Twelve slots is enough scrollback but not enough to keep a reference you
+    // come back to, so a pin outlives the cap: overflow is dropped from the
+    // oldest *unpinned* entry, which leaves the newest-first order intact.
+    const kept = [...entries];
+    const room = Math.max(HISTORY_LIMIT, kept.filter((e) => e.pinned).length);
+    for (let i = kept.length - 1; i >= 0 && kept.length > room; i--) {
+      if (kept[i].pinned) continue;
+      kept.splice(i, 1);
+    }
+    setHistory(kept);
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(kept));
     } catch {
       // A full or disabled storage must not block the session — the in-memory
       // copy still drives the UI for this visit.
     }
   }, []);
+
+  const togglePin = useCallback(
+    (url: string) => {
+      persist(
+        history.map((entry) =>
+          entry.url === url ? { ...entry, pinned: !entry.pinned } : entry,
+        ),
+      );
+    },
+    [history, persist],
+  );
 
   const style = STYLES.find((s) => s.id === styleId) ?? STYLES[0];
 
@@ -463,6 +512,14 @@ export function ImageStudio({
           }
         }
 
+        // A page reference is picked by hand, so it applies whether or not the
+        // character lookup is on: it is how the user says "this exact design"
+        // about something the model has never seen.
+        const usedPage = page;
+        if (usedPage) {
+          grounded = `${grounded}\n\nPage reference (${usedPage.title}), keep this design recognisable: ${usedPage.brief}`;
+        }
+
         const result = await generate({
           prompt: grounded,
           model: requestModel,
@@ -477,6 +534,7 @@ export function ImageStudio({
           instructions: note(instructions) || undefined,
           avoid: note(avoid) || undefined,
           reference: usedReference,
+          page: usedPage ?? undefined,
           at: Date.now(),
         };
         setCurrent(entry);
@@ -501,6 +559,7 @@ export function ImageStudio({
       lookups,
       mode,
       model,
+      page,
       persist,
       prompt,
       search,
@@ -546,6 +605,38 @@ export function ImageStudio({
       setPolishing(false);
     }
   }, [avoid, busy, enhance, instructions, polishing, prompt, style.suffix]);
+
+  /**
+   * Read a page as a visual reference.
+   *
+   * The brief lives beside the prompt, never inside it: the user's wording is
+   * theirs, and a 600-character paragraph dropped into the textarea would be
+   * impossible to edit back out. It is appended when the picture is drawn.
+   */
+  const readPageNow = useCallback(async () => {
+    if (!readPage || readingPage) return;
+    const url = pageUrl.trim();
+    if (!isPageUrl(url)) {
+      setPageError("That doesn't look like a web address.");
+      return;
+    }
+    // A bare host is accepted in the box and completed here, so the server
+    // never has to guess what "example.com/wiki" meant.
+    const full = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    setReadingPage(true);
+    setPageError(null);
+    try {
+      const found = await readPage({ url: full });
+      setPage(found);
+      setPageUrl(found.url);
+    } catch (err) {
+      setPageError(
+        err instanceof Error ? err.message : "Couldn't read that page.",
+      );
+    } finally {
+      setReadingPage(false);
+    }
+  }, [pageUrl, readPage, readingPage]);
 
   const unsharpen = useCallback(() => {
     if (sharpenedFrom === null) return;
@@ -962,6 +1053,88 @@ export function ImageStudio({
             </button>
           )}
 
+          {/* ---- Page reference: draw this exact design, from a page the user
+              already has. Off by default — it is something you bring. ---- */}
+          {resolved === "ai" && readPage && (
+            <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+              <div className="flex items-center gap-2">
+                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                <input
+                  value={pageUrl}
+                  onChange={(e) => {
+                    setPageUrl(e.target.value);
+                    setPageError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void readPageNow();
+                    }
+                  }}
+                  placeholder="Ground on a page — paste a URL"
+                  inputMode="url"
+                  autoComplete="off"
+                  spellCheck={false}
+                  // 16px on phones for the same reason as the prompt box.
+                  className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground/70 sm:text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={() => void readPageNow()}
+                  disabled={readingPage || !isPageUrl(pageUrl)}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Read the page and describe what it shows"
+                >
+                  {readingPage ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Globe className="size-3" />
+                  )}
+                  {readingPage ? "Reading…" : "Read"}
+                </button>
+              </div>
+
+              {pageError && (
+                <p className="mt-1.5 text-[11px] leading-4 text-destructive">
+                  {pageError}
+                </p>
+              )}
+
+              {page && (
+                <div className="mt-2 rounded-md border border-border/60 bg-background/70 px-2.5 py-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <a
+                      href={page.url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="min-w-0 truncate text-[11px] font-medium text-foreground underline-offset-2 hover:underline"
+                      title={page.url}
+                    >
+                      {page.title}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPage(null);
+                        setPageUrl("");
+                      }}
+                      className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                      title="Stop grounding on this page"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                    {page.brief}
+                  </p>
+                  <p className="mt-1 text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
+                    read via {page.source.replace("-", " ")}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {resolved === "ai" && (style.suffix || instructions.trim() || avoid.trim()) && (
             <p className="text-[11px] leading-4 text-muted-foreground">
               Sending: <span className="text-foreground/80">{aiPrompt}</span>
@@ -1050,6 +1223,11 @@ export function ImageStudio({
                   Download
                 </button>
               </div>
+              {current.page && (
+                <p className="border-t border-border/70 px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                  Grounded on {current.page.title}
+                </p>
+              )}
               <div className="flex flex-wrap items-center gap-2 border-t border-border/70 bg-background px-3 py-2">
                 <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                   {current.prompt}
@@ -1203,10 +1381,11 @@ export function ImageStudio({
                 </span>
                 <button
                   type="button"
-                  onClick={() => persist([])}
+                  onClick={() => persist(history.filter((h) => h.pinned))}
                   className="text-[11px] text-muted-foreground transition-colors hover:text-destructive"
+                  title="Pinned pictures stay"
                 >
-                  Clear all
+                  {history.some((h) => h.pinned) ? "Clear unpinned" : "Clear all"}
                 </button>
               </div>
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
@@ -1229,6 +1408,12 @@ export function ImageStudio({
                             ? { names: [], brief: h.reference, sources: [] }
                             : null,
                         );
+                        // A picture drawn from a page brings that page back
+                        // with it, so "generate again" means the same design
+                        // rather than the same words and a new invention.
+                        setPage(h.page ?? null);
+                        setPageUrl(h.page?.url ?? "");
+                        setPageError(null);
                       }}
                       className="block w-full"
                       title={h.prompt}
@@ -1243,11 +1428,29 @@ export function ImageStudio({
                     <span className="pointer-events-none absolute bottom-1 left-1 rounded bg-black/60 px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white">
                       {h.kind === "web" ? "web" : "ai"}
                     </span>
+                    {/* Always visible on touch: there is no hover on a phone,
+                        so a hover-only control is one nobody can press. */}
+                    <button
+                      type="button"
+                      onClick={() => togglePin(h.url)}
+                      title={h.pinned ? "Unpin" : "Pin — keeps it past 12 images"}
+                      aria-pressed={!!h.pinned}
+                      className={cn(
+                        "absolute left-1 top-1 flex size-5 items-center justify-center rounded-full bg-black/60 transition-opacity hover:bg-black/80 focus-visible:opacity-100",
+                        h.pinned
+                          ? "text-amber-300 opacity-100"
+                          : "text-white opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100",
+                      )}
+                    >
+                      <Star
+                        className={cn("size-3", h.pinned && "fill-current")}
+                      />
+                    </button>
                     <button
                       type="button"
                       onClick={() => removeEntry(h.url)}
                       title="Remove from history"
-                      className="absolute right-1 top-1 hidden size-5 items-center justify-center rounded-full bg-black/60 text-white transition-colors hover:bg-black/80 group-hover:flex"
+                      className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-black/60 text-white opacity-100 transition-opacity hover:bg-black/80 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
                     >
                       <Trash2 className="size-3" />
                     </button>
