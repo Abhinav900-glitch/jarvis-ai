@@ -124,6 +124,7 @@ import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue }
 import { findYouTubeLinks, MAX_VIDEOS_PER_TURN } from "@/lib/youtube";
 import { findWebImageQuery } from "@/lib/web-images";
 import { downloadImage, imageFileName } from "@/lib/download-image";
+import { composeGroundedPrompt } from "@/lib/character-look";
 import { stripWakeWord } from "@/lib/wake-word";
 import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
@@ -1084,6 +1085,7 @@ export default function Dashboard() {
   const generateTitleAction = useAction(api.ai.generateTitle);
   const searchWebImagesAction = useAction(api.ai.searchWebImages);
   const enhanceImagePromptAction = useAction(api.ai.enhanceImagePrompt);
+  const characterLookAction = useAction(api.ai.characterLook);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
   const lookupMovieAction = useAction(api.spaceMedia.lookupMovie);
   const spacePictureAction = useAction(api.spaceMedia.spacePicture);
@@ -1749,6 +1751,21 @@ export default function Dashboard() {
     );
   };
 
+  // A named character is a request for THAT character. "goku" alone leaves the
+  // generator to invent a man in an orange suit with the wrong hair, so the
+  // design is researched first and appended — web evidence when it is
+  // reachable, model knowledge otherwise. Every failure path returns the
+  // prompt unchanged: a lookup must never cost the picture.
+  const groundImagePrompt = async (prompt: string): Promise<string> => {
+    try {
+      const look = await characterLookAction({ prompt });
+      return look.brief ? composeGroundedPrompt(prompt, look.brief) : prompt;
+    } catch (err) {
+      console.warn("[image-gen] character lookup failed:", err);
+      return prompt;
+    }
+  };
+
   // Returns whether an image actually landed, so callers that auto-send can
   // tell a real generation from a failure.
   const generateImageWithPrompt = async (
@@ -1757,7 +1774,9 @@ export default function Dashboard() {
     setGenerating(true);
     setAssistantError(null);
     try {
-      const { url, publicId, provider } = await generateImageSmart(prompt);
+      const { url, publicId, provider } = await generateImageSmart(
+        await groundImagePrompt(prompt),
+      );
       setPendingImages((prev) => [
         ...prev,
         { url, publicId, provider },
@@ -3074,7 +3093,7 @@ export default function Dashboard() {
 
       setGenerating(true);
       try {
-        generated = await generateImageSmart(prompt);
+        generated = await generateImageSmart(await groundImagePrompt(prompt));
       } catch (err) {
         genError = err instanceof Error ? err.message : "Image generation failed.";
       }
@@ -7318,6 +7337,9 @@ export default function Dashboard() {
                 instructions: extra,
                 avoid,
               })
+            }
+            lookup={async ({ prompt: p, refresh }) =>
+              await characterLookAction({ prompt: p, refresh })
             }
             onUseInChat={studioUseInChat}
           />

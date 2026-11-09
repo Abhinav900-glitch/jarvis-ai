@@ -34,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { OwnImageServer } from "@/components/own-image-server";
 import { cn } from "@/lib/utils";
 import { findWebImageQuery } from "@/lib/web-images";
+import { composeGroundedPrompt } from "@/lib/character-look";
 import { downloadImage, imageFileName } from "@/lib/download-image";
 import {
   Brain,
@@ -45,10 +46,12 @@ import {
   Loader2,
   RotateCcw,
   Search,
+  RefreshCw,
   Send,
   Sparkles,
   Trash2,
   Undo2,
+  UserRound,
   Wand2,
   X,
 } from "lucide-react";
@@ -110,6 +113,8 @@ interface HistoryEntry {
   aspect?: StudioAspect;
   instructions?: string;
   avoid?: string;
+  /** The character reference the prompt was grounded with, for transparency. */
+  reference?: string;
 }
 
 export interface ImageStudioProps {
@@ -140,6 +145,18 @@ export interface ImageStudioProps {
     instructions?: string;
     avoid?: string;
   }) => Promise<{ prompt: string; model: string | null; changed: boolean }>;
+  /**
+   * Researches the characters named in a prompt: which ones they are, what
+   * they look like, and their newest form. An empty `brief` means the prompt
+   * names nobody (or the lookup failed), and generation carries on unchanged.
+   */
+  lookup: (input: { prompt: string; refresh?: boolean }) => Promise<{
+    brief: string;
+    names: string[];
+    sources: { title: string; url: string }[];
+    model: string | null;
+    cached: boolean;
+  }>;
   /** Hands the picture to the composer as a pending attachment. */
   onUseInChat: (image: StudioResult, prompt: string) => void;
 }
@@ -219,6 +236,8 @@ const MODES: { id: StudioMode; label: string; hint: string; icon: typeof Globe }
 ];
 
 const HISTORY_KEY = "jarvis-image-studio-v2";
+/** Whether named characters are researched before drawing. On unless turned off. */
+const LOOKUPS_KEY = "jarvis-image-lookups";
 const HISTORY_LIMIT = 12;
 /** Long enough for a direction, short enough not to become a second prompt. */
 const NOTE_LIMIT = 220;
@@ -255,6 +274,7 @@ export function ImageStudio({
   generate,
   search,
   enhance,
+  lookup,
   onUseInChat,
 }: ImageStudioProps) {
   const [prompt, setPrompt] = useState("");
@@ -275,6 +295,21 @@ export function ImageStudio({
   // retyping what the user had already written.
   const [sharpenedFrom, setSharpenedFrom] = useState<string | null>(null);
   const [sharpenNote, setSharpenNote] = useState<string | null>(null);
+  // Character grounding is on by default: naming a character is a request for
+  // that character, and without a reference the generator invents its own.
+  const [lookups, setLookups] = useState(() => {
+    try {
+      return localStorage.getItem(LOOKUPS_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const [lookStage, setLookStage] = useState<string | null>(null);
+  const [reference, setReference] = useState<{
+    names: string[];
+    brief: string;
+    sources: { title: string; url: string }[];
+  } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // History is browser-local, so it is read on open rather than at mount:
@@ -389,12 +424,47 @@ export function ImageStudio({
           };
           setCurrent(entry);
           setPreview(null);
+          // A web picture was not drawn from a character reference, so the
+          // note from the last render would be a lie about this one.
+          setReference(null);
           persist([entry, ...history.filter((h) => h.url !== entry.url)]);
           return;
         }
 
+        // A named character needs their design in words before the generator
+        // sees the prompt. The lookup returns an empty brief when the prompt
+        // names nobody, which is the common case and costs one cheap call.
+        let grounded = aiPrompt || basePrompt;
+        // Held in a local, not read back off state: `reference` is the value
+        // from before this run, so the history entry would credit the wrong
+        // description.
+        let usedReference: string | undefined;
+        if (lookups) {
+          setLookStage("Checking for named characters…");
+          try {
+            const found = await lookup({ prompt: basePrompt });
+            if (found.brief) {
+              grounded = composeGroundedPrompt(grounded, found.brief);
+              usedReference = found.brief;
+              setReference({
+                names: found.names,
+                brief: found.brief,
+                sources: found.sources,
+              });
+            } else {
+              setReference(null);
+            }
+          } catch (err) {
+            // A failed lookup must never cost the picture.
+            console.warn("[studio] character lookup failed:", err);
+            setReference(null);
+          } finally {
+            setLookStage(null);
+          }
+        }
+
         const result = await generate({
-          prompt: aiPrompt || basePrompt,
+          prompt: grounded,
           model: requestModel,
           aspectRatio: requestAspect,
         });
@@ -406,6 +476,7 @@ export function ImageStudio({
           aspect: requestAspect,
           instructions: note(instructions) || undefined,
           avoid: note(avoid) || undefined,
+          reference: usedReference,
           at: Date.now(),
         };
         setCurrent(entry);
@@ -418,8 +489,7 @@ export function ImageStudio({
       } finally {
         setBusy(false);
       }
-    },
-    [
+    },      [
       aiPrompt,
       aspect,
       avoid,
@@ -427,6 +497,8 @@ export function ImageStudio({
       generate,
       history,
       instructions,
+      lookup,
+      lookups,
       mode,
       model,
       persist,
@@ -481,6 +553,37 @@ export function ImageStudio({
     setSharpenedFrom(null);
     setSharpenNote(null);
   }, [sharpenedFrom]);
+
+  /**
+   * Re-research a character on demand. Worth having: a character's newest form
+   * only exists in articles written since the last lookup, and the cache is a
+   * month old by design.
+   */
+  const refreshReference = useCallback(async () => {
+    const base = prompt.trim();
+    if (!reference || polishing || !base) return;
+    setPolishing(true);
+    setSharpenNote(null);
+    try {
+      const found = await lookup({ prompt: base, refresh: true });
+      if (found.brief) {
+        setReference({ names: found.names, brief: found.brief, sources: found.sources });
+        setSharpenNote(
+          found.names.length > 0
+            ? `Updated from the web just now — press Generate to use it.`
+            : null,
+        );
+      } else {
+        setSharpenNote("Couldn't find a newer description just now.");
+      }
+    } catch (err) {
+      setSharpenNote(
+        err instanceof Error ? err.message : "Couldn't refresh the reference.",
+      );
+    } finally {
+      setPolishing(false);
+    }
+  }, [lookup, polishing, prompt, reference]);
 
   const copyLink = useCallback(async () => {
     if (!current) return;
@@ -808,7 +911,11 @@ export function ImageStudio({
               {busy ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  {resolved === "web" ? "Searching…" : "Rendering…"}
+                  {resolved === "web"
+                    ? "Searching…"
+                    : lookStage
+                      ? "Looking up…"
+                      : "Rendering…"}
                 </>
               ) : resolved === "web" ? (
                 <>
@@ -827,10 +934,74 @@ export function ImageStudio({
           {/* ---- Self-hosted endpoint (optional, collapsed) ---- */}
           <OwnImageServer />
 
+          {resolved === "ai" && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={lookups}
+              onClick={() => {
+                const next = !lookups;
+                setLookups(next);
+                try {
+                  localStorage.setItem(LOOKUPS_KEY, String(next));
+                } catch {
+                  // Private mode: the setting just lasts this visit.
+                }
+                if (!next) setReference(null);
+              }}
+              className={cn(
+                "inline-flex w-fit items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors",
+                lookups
+                  ? "border-foreground/40 bg-accent text-foreground"
+                  : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+              )}
+              title="Looks up each named character's design and newest form before drawing"
+            >
+              <UserRound className="size-3" />
+              Character looks {lookups ? "on" : "off"}
+            </button>
+          )}
+
           {resolved === "ai" && (style.suffix || instructions.trim() || avoid.trim()) && (
             <p className="text-[11px] leading-4 text-muted-foreground">
               Sending: <span className="text-foreground/80">{aiPrompt}</span>
             </p>
+          )}
+
+          {/* The reference actually sent, so a wrong-looking result has an
+              explanation on screen rather than being a mystery. */}
+          {reference && (
+            <div className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  <UserRound className="size-3 shrink-0" />
+                  <span className="truncate">
+                    {reference.names.length > 0
+                      ? reference.names.join(", ")
+                      : "Character"}{" "}
+                    reference
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void refreshReference()}
+                  disabled={polishing}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground disabled:opacity-40"
+                  title="Look the character up again — new forms appear in new articles"
+                >
+                  <RefreshCw className={cn("size-3", polishing && "animate-spin")} />
+                  Refresh
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                {reference.brief}
+              </p>
+              {reference.sources.length > 0 && (
+                <p className="mt-1 truncate text-[10px] text-muted-foreground/80">
+                  From {reference.sources.map((s) => s.title).join(" · ")}
+                </p>
+              )}
+            </div>
           )}
 
           {/* ---- Failure keeps every stage's reason, newline-separated ---- */}
@@ -1051,7 +1222,14 @@ export function ImageStudio({
                   >
                     <button
                       type="button"
-                      onClick={() => setCurrent(h)}
+                      onClick={() => {
+                        setCurrent(h);
+                        setReference(
+                          h.reference
+                            ? { names: [], brief: h.reference, sources: [] }
+                            : null,
+                        );
+                      }}
                       className="block w-full"
                       title={h.prompt}
                     >

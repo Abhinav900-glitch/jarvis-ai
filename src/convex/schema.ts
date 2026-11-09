@@ -597,6 +597,20 @@ const schema = defineSchema(
       createdAt: v.number(),
     }).index("by_hash", ["promptHash"]),
 
+    // Researched visual references for fictional characters, keyed by a
+    // normalised name ("Ben 10" → "ben10"). Cached because describing Goku
+    // costs a web search and a model call, and the description is the same for
+    // every account; rows are refreshed after 30 days so a character's newest
+    // form still turns up.
+    characterLooks: defineTable({
+      key: v.string(),
+      subject: v.string(),
+      brief: v.string(),
+      sources: v.array(v.object({ title: v.string(), url: v.string() })),
+      model: v.optional(v.string()),
+      createdAt: v.number(),
+    }).index("by_key", ["key"]),
+
     // Cloudinary OAuth 2.0 connection (one row per user)
     cloudinaryAuth: defineTable({
       userId: v.id("users"),

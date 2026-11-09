@@ -50,6 +50,12 @@ import {
   enhancePromptRequest,
 } from "../lib/enhance-prompt";
 import {
+  characterKey,
+  cleanLookBrief,
+  lookSearchQuery,
+  parseSubjectNames,
+} from "../lib/character-look";
+import {
   PARALLEL_SEARCH_URL,
   parallelRequestBody,
   parallelResults,
@@ -2806,6 +2812,200 @@ export const enhanceImagePrompt = action({
       );
       return { prompt: base, model: null, changed: false };
     }
+  },
+});
+
+const CHARACTER_SYSTEM_PROMPT =
+  "You identify the fictional characters or franchises an image request refers " +
+  "to — people, creatures, robots, or a series someone names as a shorthand for " +
+  "its hero. Reply with only JSON in the form {\"names\":[\"Goku (Dragon Ball)\"]}, " +
+  "using the commonly known name and adding the franchise in parentheses when it " +
+  "disambiguates. Reply {\"names\":[]} when the request names no specific " +
+  "character — a lighthouse, a city, a wolf, a generic knight are not characters. " +
+  "Never explain, never add text outside the JSON.";
+
+const LOOK_SYSTEM_PROMPT =
+  "You write visual reference notes that help an image model draw one specific " +
+  "character correctly. Describe only what is visible: hair, eyes, face, build, " +
+  "skin, outfit and its exact colours, signature props, and the art style the " +
+  "character comes from. Then name the character's newest or most powerful form " +
+  "and what changes visually in it — hair, eyes, aura, markings, clothing. Never " +
+  "mention actors, studios, release dates, text or logos, and never write a plot " +
+  "summary. Under 80 words, one paragraph, plain text, no preamble and no list.";
+
+/**
+ * Research one character's look: web evidence first, model knowledge after.
+ *
+ * The search is the part that keeps this current — a character's newest form
+ * is usually only in articles written this season, not in the model's weights.
+ * When the search keys are missing or the query finds nothing, the model is
+ * asked anyway: a description from what it already knows beats a prompt that
+ * only says the name.
+ */
+async function researchCharacter(
+  ctx: Parameters<typeof routingFor>[0],
+  userId: Id<"users">,
+  name: string,
+): Promise<{
+  brief: string;
+  sources: { title: string; url: string }[];
+  model: string | null;
+}> {
+  let hits: SearchHit[] = [];
+  try {
+    const found = await webSearch(lookSearchQuery(name));
+    hits = found.sources.slice(0, 6);
+  } catch (err) {
+    console.error(
+      "Character search failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  const evidence = hits
+    .map((hit, i) => `${i + 1}. ${hit.title} — ${(hit.snippet ?? "").slice(0, 700)}`)
+    .join("\n");
+  const message =
+    `Character: ${name}\n\n` +
+    (evidence
+      ? `Web results:\n${evidence}`
+      : "No web results were available — use your own knowledge of this character.");
+
+  try {
+    const plan = await routingFor(ctx, userId, {
+      task: "chat",
+      hasImages: false,
+      prompt: message,
+    });
+    const result = await runProviderChain(
+      [{ role: "user", content: message }],
+      LOOK_SYSTEM_PROMPT,
+      "No engine was available to describe the character.",
+      plan,
+    );
+    return {
+      brief: cleanLookBrief(result.text, name),
+      sources: hits.slice(0, 3).map((hit) => ({ title: hit.title, url: hit.url })),
+      model: result.model,
+    };
+  } catch (err) {
+    console.error(
+      "Character description failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return { brief: "", sources: [], model: null };
+  }
+}
+
+/**
+ * The character references an image prompt needs, ready to append.
+ *
+ * Naming a character is a request for that character: "goku" alone leaves the
+ * generator to invent a man in an orange suit with the wrong hair. The prompt
+ * is classified first (one cheap call, because most prompts name nobody), each
+ * character is described from web results plus model knowledge, and the result
+ * is cached by normalised name so the second request for Goku is instant.
+ *
+ * Never throws for a lookup failure: the picture still has to be generated.
+ */
+export const characterLook = action({
+  args: { prompt: v.string(), refresh: v.optional(v.boolean()) },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    brief: string;
+    names: string[];
+    sources: { title: string; url: string }[];
+    model: string | null;
+    cached: boolean;
+  }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to look up characters.");
+
+    const prompt = args.prompt.trim().slice(0, 500);
+    const none = {
+      brief: "",
+      names: [] as string[],
+      sources: [] as { title: string; url: string }[],
+      model: null as string | null,
+      cached: false,
+    };
+    if (!prompt) return none;
+
+    let model: string | null = null;
+    let names: string[] = [];
+    try {
+      const plan = await routingFor(ctx, userId, {
+        task: "reason",
+        hasImages: false,
+        prompt,
+      });
+      const result = await runProviderChain(
+        [{ role: "user", content: prompt }],
+        CHARACTER_SYSTEM_PROMPT,
+        "No engine was available to identify characters.",
+        plan,
+      );
+      model = result.model;
+      names = parseSubjectNames(result.text, 2);
+    } catch (err) {
+      console.error(
+        "Character identification failed:",
+        err instanceof Error ? err.message : err,
+      );
+      return none;
+    }
+    if (names.length === 0) return { ...none, model };
+
+    const briefs: string[] = [];
+    const sources: { title: string; url: string }[] = [];
+    let cached = true;
+
+    for (const name of names) {
+      const key = characterKey(name);
+      if (!key) continue;
+
+      if (!args.refresh) {
+        const row = await ctx.runQuery(internal.looks.cached, { key });
+        if (row?.fresh) {
+          briefs.push(row.brief);
+          sources.push(...row.sources);
+          continue;
+        }
+      }
+
+      cached = false;
+      const found = await researchCharacter(ctx, userId, name);
+      if (!found.brief) {
+        // A stale row is still better than nothing when the fresh attempt
+        // failed, which is what an outage or an exhausted quota looks like.
+        const stale = await ctx.runQuery(internal.looks.cached, { key });
+        if (stale?.brief) {
+          briefs.push(stale.brief);
+          sources.push(...stale.sources);
+        }
+        continue;
+      }
+
+      briefs.push(found.brief);
+      sources.push(...found.sources);
+      await ctx.runMutation(internal.looks.save, {
+        key,
+        subject: name,
+        brief: found.brief,
+        sources: found.sources,
+        model: found.model ?? undefined,
+      });
+    }
+
+    return {
+      brief: briefs.join(". "),
+      names,
+      sources: sources.slice(0, 4),
+      model,
+      cached,
+    };
   },
 });
 
