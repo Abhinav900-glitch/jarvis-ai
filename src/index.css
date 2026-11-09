@@ -1519,6 +1519,101 @@ body {
   animation: jarvis-boot-bar 1.5s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
+/* --------------------------------------------------------------------------- */
+/* Boot sequence (boot-splash.tsx, reactor-core.tsx)                          */
+/*                                                                            */
+/* The opening is a lit field under a slow grid, a scan line on its way down,  */
+/* and the core's instrument rings turning at two different speeds. None of   */
+/* it carries information, so all of it stops under reduced-motion and the    */
+/* frame simply holds for a moment.                                          */
+/* --------------------------------------------------------------------------- */
+
+.jarvis-boot-field {
+  background:
+    radial-gradient(58% 44% at 50% 42%, rgba(58, 140, 255, 0.18), transparent 72%),
+    radial-gradient(40% 30% at 62% 64%, rgba(201, 75, 240, 0.14), transparent 72%),
+    radial-gradient(30% 24% at 30% 68%, rgba(99, 230, 255, 0.1), transparent 70%),
+    linear-gradient(180deg, #04060b 0%, #050810 55%, #04060b 100%);
+}
+
+.jarvis-boot-field::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(148, 214, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 214, 255, 0.06) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(60% 55% at 50% 50%, #000 10%, transparent 78%);
+  -webkit-mask-image: radial-gradient(60% 55% at 50% 50%, #000 10%, transparent 78%);
+  animation: jarvis-boot-grid 7s linear infinite;
+}
+
+@keyframes jarvis-boot-grid {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 0 56px, 56px 56px; }
+}
+
+.jarvis-boot-vignette {
+  background: radial-gradient(
+    circle at 50% 45%,
+    transparent 34%,
+    rgba(2, 4, 8, 0.5) 78%,
+    rgba(2, 4, 8, 0.92) 100%
+  );
+}
+
+/* One line of light crossing the frame: the read-head of a scanner. */
+.jarvis-boot-scan {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(120, 220, 255, 0.55),
+    transparent
+  );
+  box-shadow: 0 0 18px rgba(99, 230, 255, 0.35);
+  opacity: 0.6;
+  animation: jarvis-boot-scan 2.8s linear infinite;
+}
+
+@keyframes jarvis-boot-scan {
+  0% { transform: translateY(0); opacity: 0; }
+  12% { opacity: 0.7; }
+  80% { opacity: 0.35; }
+  100% { transform: translateY(100vh); opacity: 0; }
+}
+
+/* The reactor's outer rings turn; the centre only breathes. */
+.reactor-spin {
+  transform-box: view-box;
+  transform-origin: center;
+  animation: jarvis-orbit 60s linear infinite;
+}
+
+.reactor-pulse {
+  transform-box: view-box;
+  transform-origin: center;
+  animation: reactor-breathe 4.6s ease-in-out infinite;
+}
+
+@keyframes reactor-breathe {
+  0%, 100% { opacity: 0.55; transform: scale(0.94); }
+  50% { opacity: 0.95; transform: scale(1.06); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-boot-field::before,
+  .jarvis-boot-scan,
+  .reactor-spin,
+  .reactor-pulse {
+    animation: none !important;
+  }
+
+  .jarvis-boot-scan {
+    opacity: 0;
+  }
+}
+
 /* Motion here is decoration, not content: under reduced-motion the mark still
    assembles, it just does not travel or fade. */
 @media (prefers-reduced-motion: reduce) {

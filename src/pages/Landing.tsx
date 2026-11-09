@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { JarvisLogo } from "@/components/jarvis-logo";
+import { ReactorCore } from "@/components/reactor-core";
 import { useAuth } from "@/hooks/use-auth";
 import { PALETTES, usePalette } from "@/hooks/use-palette";
 import { AUTHOR } from "@/lib/languages";
@@ -260,6 +261,10 @@ export default function Landing() {
         >
           <div className="fx-aurora" />
           <div className="fx-grid" />
+          {/* The same core the opening is built on, kept as scenery so the
+              landing and the first frame read as one product. Hidden where
+              there is no room for it, and faint enough to sit behind copy. */}
+          <ReactorCore className="absolute -right-32 -top-24 hidden size-[560px] opacity-[0.13] lg:block" />
         </div>
 
         <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-14 lg:grid-cols-[1.05fr_0.95fr]">

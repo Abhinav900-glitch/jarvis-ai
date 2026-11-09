@@ -56,6 +56,15 @@ import {
   parseSubjectNames,
 } from "../lib/character-look";
 import {
+  browseAiConfig,
+  browseAiCreateUrl,
+  browseAiStatus,
+  browseAiTaskBody,
+  browseAiTaskId,
+  browseAiTaskStatusUrl,
+  browseAiText,
+} from "../lib/browse-ai";
+import {
   PARALLEL_SEARCH_URL,
   parallelRequestBody,
   parallelResults,
@@ -2834,6 +2843,81 @@ const LOOK_SYSTEM_PROMPT =
   "summary. Under 80 words, one paragraph, plain text, no preamble and no list.";
 
 /**
+ * One page through a Browse AI robot: start a task, then poll for what it
+ * captured.
+ *
+ * Browse AI is robot-based, not search-based — it can only open a page
+ * somebody already found — so this is an upgrade to the evidence a search
+ * returned, never a replacement for the search itself. Returns null instead of
+ * throwing: a slow run, a failed task or no robot configured must leave the
+ * snippets we already had intact.
+ *
+ * The poll is bounded on purpose. Two and a half seconds is Browse AI's own
+ * cadence for a rendered page, and eight rounds keeps a cold robot under the
+ * time a person will wait for an image prompt.
+ */
+const BROWSE_AI_POLL_MS = 2_500;
+const BROWSE_AI_MAX_POLLS = 8;
+
+async function browseAiRead(url: string): Promise<string | null> {
+  const config = browseAiConfig((name) => process.env[name]);
+  if (!config) return null;
+
+  const headers = {
+    Authorization: `Bearer ${config.key}`,
+    "Content-Type": "application/json",
+  };
+
+  try {
+    const created = await fetch(browseAiCreateUrl(config.robotId), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(browseAiTaskBody(url)),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!created.ok) {
+      console.error(`[browse-ai] create ${created.status}`);
+      return null;
+    }
+    const taskId = browseAiTaskId(await created.json().catch(() => null));
+    if (!taskId) {
+      console.error("[browse-ai] create returned no task id");
+      return null;
+    }
+
+    for (let attempt = 0; attempt < BROWSE_AI_MAX_POLLS; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, BROWSE_AI_POLL_MS));
+      const res = await fetch(browseAiTaskStatusUrl(config.robotId, taskId), {
+        headers,
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        console.error(`[browse-ai] poll ${res.status}`);
+        return null;
+      }
+      const payload = await res.json().catch(() => null);
+      const status = browseAiStatus(payload);
+      if (status === "failed") {
+        console.error("[browse-ai] task failed");
+        return null;
+      }
+      if (status === "successful") {
+        const text = browseAiText(payload);
+        return text.length >= 40 ? text : null;
+      }
+    }
+    console.error("[browse-ai] task did not finish in time");
+    return null;
+  } catch (err) {
+    console.error(
+      "[browse-ai] exception:",
+      err instanceof Error ? err.message : "failed",
+    );
+    return null;
+  }
+}
+
+/**
  * Research one character's look: web evidence first, model knowledge after.
  *
  * The search is the part that keeps this current — a character's newest form
@@ -2862,9 +2946,25 @@ async function researchCharacter(
     );
   }
 
-  const evidence = hits
-    .map((hit, i) => `${i + 1}. ${hit.title} — ${(hit.snippet ?? "").slice(0, 700)}`)
-    .join("\n");
+  // A search snippet is often one line. When the results are thin, a robot
+  // opens the best page itself so the brief is built on what the page says
+  // rather than on a headline — and only one page, because the second read
+  // rarely changes the description.
+  // "Thin" is either few results or results whose text is one line, which is
+  // what a keyword provider returns and what an Exa/Parallel extract does not.
+  let pageText = "";
+  const snippetChars = hits.reduce((n, hit) => n + (hit.snippet?.length ?? 0), 0);
+  if (hits.length > 0 && (hits.length < 3 || snippetChars < 700)) {
+    const text = await browseAiRead(hits[0].url);
+    if (text) pageText = `${hits[0].title}\n${text}`.slice(0, 2_500);
+  }
+
+  const evidence = [
+    ...hits.map(
+      (hit, i) => `${i + 1}. ${hit.title} — ${(hit.snippet ?? "").slice(0, 700)}`,
+    ),
+    ...(pageText ? [`Page text:\n${pageText}`] : []),
+  ].join("\n");
   const message =
     `Character: ${name}\n\n` +
     (evidence
@@ -3495,7 +3595,10 @@ export const summarizeUrl = action({
     const tinyFishKey = process.env.TINYFISH_API_KEY?.trim();
     const rendered = tinyFishKey ? await tinyFishFetch(tinyFishKey, url) : null;
 
-    let text = rendered;
+    // Browse AI next: a robot that renders the page is the same upgrade as
+    // TinyFish, so it is worth trying before falling back to raw HTML — which
+    // is what a site that builds its content in JavaScript returns empty for.
+    let text = rendered ?? (await browseAiRead(url));
     if (text === null) {
       // Fetch the webpage content
       let html: string;
