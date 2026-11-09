@@ -7313,8 +7313,20 @@ export default function Dashboard() {
           <ImageStudio
             open={showStudio}
             onOpenChange={setShowStudio}
-            generate={async ({ prompt: p, model: m, aspectRatio }) =>
-              await generateImageAction({ prompt: p, model: m, aspectRatio })
+            generate={async ({
+              prompt: p,
+              model: m,
+              aspectRatio,
+              sourceImage,
+              strength,
+            }) =>
+              await generateImageAction({
+                prompt: p,
+                model: m,
+                aspectRatio,
+                sourceImage,
+                strength,
+              })
             }
             search={async ({ query: q, decide }) => {
               const found = await searchWebImagesAction({ query: q, decide });

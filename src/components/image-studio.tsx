@@ -50,6 +50,7 @@ import {
   Search,
   RefreshCw,
   Send,
+  Shuffle,
   Sparkles,
   Star,
   Trash2,
@@ -120,6 +121,8 @@ interface HistoryEntry {
   reference?: string;
   /** The page whose description grounded the prompt, if any. */
   page?: StudioPage;
+  /** The picture this one was varied from, so "Again" varies the same way. */
+  base?: { url: string; strength: number };
   /** Pinned pictures survive the 12-entry cap. */
   pinned?: boolean;
 }
@@ -143,6 +146,10 @@ export interface ImageStudioProps {
     prompt: string;
     model: StudioModel;
     aspectRatio: StudioAspect;
+    /** Present means "variation": the picture to start from. */
+    sourceImage?: string;
+    /** 0.05–1: how far the variation may drift from that picture. */
+    strength?: number;
   }) => Promise<StudioResult>;
   /** Real images from the web, with the AI's pick if it was asked for one. */
   search: (input: {
@@ -198,6 +205,17 @@ const ASPECTS: { id: StudioAspect; label: string; hint: string }[] = [
   { id: "1:1", label: "Square", hint: "1:1" },
   { id: "3:2", label: "Landscape", hint: "3:2" },
   { id: "2:3", label: "Portrait", hint: "2:3" },
+];
+
+/**
+ * How far a variation may drift. The numbers are the generators' own
+ * `strength` dial — low keeps the source, high redraws it — so the labels
+ * describe the effect rather than exposing a slider nobody can calibrate.
+ */
+const STRENGTHS: { id: number; label: string; hint: string }[] = [
+  { id: 0.35, label: "Subtle", hint: "Same picture, finer details changed" },
+  { id: 0.6, label: "Balanced", hint: "Same subject, a new take" },
+  { id: 0.85, label: "Bold", hint: "Same idea, redrawn" },
 ];
 
 /**
@@ -326,6 +344,12 @@ export function ImageStudio({
   const [pageError, setPageError] = useState<string | null>(null);
   const [readingPage, setReadingPage] = useState(false);
 
+  // The picture a variation starts from. Deliberately not cleared by a render:
+  // the point of a variation is to keep drifting from the same source.
+  const [source, setSource] = useState<{ url: string; strength: number } | null>(
+    null,
+  );
+
   const [lookups, setLookups] = useState(() => {
     try {
       return localStorage.getItem(LOOKUPS_KEY) !== "false";
@@ -414,8 +438,15 @@ export function ImageStudio({
   // request — the special prompts ("draw", "render", "make an image") land
   // here, and they belong to the generator.
   const webQuery = findWebImageQuery(prompt);
-  const resolved: "web" | "ai" =
-    mode === "auto" ? (webQuery ? "web" : "ai") : mode;
+  // A variation has a source picture, and only generated images can be varied:
+  // searching the web for a photo of "a variation" is not a thing anyone means.
+  const resolved: "web" | "ai" = source
+    ? "ai"
+    : mode === "auto"
+      ? webQuery
+        ? "web"
+        : "ai"
+      : mode;
 
   /**
    * The prompt the generator receives: the description, the style, then the
@@ -437,7 +468,9 @@ export function ImageStudio({
   const run = useCallback(
     async (override?: { prompt: string; model: StudioModel; aspect: StudioAspect }) => {
       const basePrompt = (override?.prompt ?? prompt).trim();
-      if (!basePrompt || busy) return;
+      // A variation works without a prompt — "another take on this" is a
+      // complete request once there is a picture to take it from.
+      if ((!basePrompt && !source) || busy) return;
       const requestModel = override?.model ?? model;
       const requestAspect = override?.aspect ?? aspect;
       setBusy(true);
@@ -447,8 +480,13 @@ export function ImageStudio({
       // long after the state it was created with.
       const query =
         override?.prompt !== undefined ? findWebImageQuery(basePrompt) : webQuery;
-      const target: "web" | "ai" =
-        mode === "auto" ? (query ? "web" : "ai") : mode;
+      const target: "web" | "ai" = source
+        ? "ai"
+        : mode === "auto"
+          ? query
+            ? "web"
+            : "ai"
+          : mode;
 
       try {
         if (target === "web") {
@@ -483,7 +521,10 @@ export function ImageStudio({
         // A named character needs their design in words before the generator
         // sees the prompt. The lookup returns an empty brief when the prompt
         // names nobody, which is the common case and costs one cheap call.
-        let grounded = aiPrompt || basePrompt;
+        let grounded =
+          aiPrompt ||
+          basePrompt ||
+          (source ? "A new take on the reference image" : "");
         // Held in a local, not read back off state: `reference` is the value
         // from before this run, so the history entry would credit the wrong
         // description.
@@ -520,10 +561,20 @@ export function ImageStudio({
           grounded = `${grounded}\n\nPage reference (${usedPage.title}), keep this design recognisable: ${usedPage.brief}`;
         }
 
+        // The instruction is prose as well as a parameter: the legs that take
+        // an image read it as guidance, and the one that only takes words at
+        // least describes what was asked for.
+        const usedSource = source;
+        if (usedSource) {
+          grounded = `${grounded}\n\nVariation of the reference image: keep its subject, framing and palette; change what the prompt names.`;
+        }
+
         const result = await generate({
           prompt: grounded,
           model: requestModel,
           aspectRatio: requestAspect,
+          sourceImage: usedSource?.url,
+          strength: usedSource?.strength,
         });
         const entry: HistoryEntry = {
           kind: "ai",
@@ -535,6 +586,7 @@ export function ImageStudio({
           avoid: note(avoid) || undefined,
           reference: usedReference,
           page: usedPage ?? undefined,
+          base: usedSource ?? undefined,
           at: Date.now(),
         };
         setCurrent(entry);
@@ -563,6 +615,7 @@ export function ImageStudio({
       persist,
       prompt,
       search,
+      source,
       webQuery,
     ],
   );
@@ -769,8 +822,9 @@ export function ImageStudio({
             Image Studio
           </DialogTitle>
           <DialogDescription className="pr-6 text-xs sm:text-sm">
-            Real photos found on the web, or a picture made from scratch. Results
-            open in the viewer here — the download button saves the file itself.
+            Real photos found on the web, a picture made from scratch, or a new
+            take on one you already have. Results open in the viewer here — the
+            download button saves the file itself.
           </DialogDescription>
         </DialogHeader>
 
@@ -784,7 +838,13 @@ export function ImageStudio({
                   <button
                     key={m.id}
                     type="button"
-                    onClick={() => setMode(m.id)}
+                    onClick={() => {
+                      setMode(m.id);
+                      // Web mode looks for real photos, which cannot be varied —
+                      // keeping a source there would make the choice look
+                      // ignored, since the AI path would still be running.
+                      if (m.id === "web") setSource(null);
+                    }}
                     className={cn(
                       "flex flex-col items-center gap-0.5 rounded-lg border px-2 py-2 text-center transition-colors",
                       mode === m.id
@@ -996,7 +1056,7 @@ export function ImageStudio({
 
             <Button
               onClick={() => void run()}
-              disabled={busy || !prompt.trim()}
+              disabled={busy || (!prompt.trim() && !source)}
               className="h-9 w-full sm:ml-auto sm:h-8 sm:w-auto"
             >
               {busy ? (
@@ -1051,6 +1111,53 @@ export function ImageStudio({
               <UserRound className="size-3" />
               Character looks {lookups ? "on" : "off"}
             </button>
+          )}
+
+          {/* ---- Variation source: a picture to start from. The dial decides
+              how much of it survives; the prompt decides what changes. ---- */}
+          {resolved === "ai" && source && (
+            <div className="flex items-center gap-2.5 rounded-lg border border-border/70 bg-muted/25 px-2.5 py-2">
+              <img
+                src={source.url}
+                alt="Variation source"
+                className="size-11 shrink-0 rounded object-cover"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="flex items-center gap-1 text-[11px] font-medium text-foreground">
+                  <Shuffle className="size-3" />
+                  Variation of this image
+                </p>
+                <div className="mt-1 flex items-center gap-1">
+                  {STRENGTHS.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() =>
+                        setSource({ ...source, strength: s.id })
+                      }
+                      aria-pressed={source.strength === s.id}
+                      title={s.hint}
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                        source.strength === s.id
+                          ? "border-foreground/40 bg-accent text-foreground"
+                          : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                      )}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSource(null)}
+                title="Start from scratch instead"
+                className="shrink-0 self-start text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
           )}
 
           {/* ---- Page reference: draw this exact design, from a page the user
@@ -1235,6 +1342,20 @@ export function ImageStudio({
                 <Button
                   variant="outline"
                   size="sm"
+                  onClick={() =>
+                    setSource({
+                      url: current.url,
+                      strength: source?.strength ?? STRENGTHS[1].id,
+                    })
+                  }
+                  title="Draw a variation of this picture"
+                >
+                  <Shuffle className="size-3.5" />
+                  Vary
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => void run()}
                   disabled={busy}
                   title="Render the same prompt again"
@@ -1414,6 +1535,7 @@ export function ImageStudio({
                         setPage(h.page ?? null);
                         setPageUrl(h.page?.url ?? "");
                         setPageError(null);
+                        setSource(h.base ?? null);
                       }}
                       className="block w-full"
                       title={h.prompt}
