@@ -230,6 +230,26 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 8192,
     timeoutMs: 60_000,
   },
+  {
+    // Z.ai is Zhipu AI's platform; the GLM models are served on the same
+    // OpenAI-compatible path, so the call itself needs nothing special. The
+    // first accepted name is the one this deployment already holds — the rest
+    // are the spellings the vendor's own docs and SDKs use, so a key copied
+    // from another guide is not silently ignored.
+    id: "zai",
+    label: "Z.ai (GLM)",
+    url: "https://api.z.ai/api/paas/v4/chat/completions",
+    keyEnv: ["Z_AI_API", "Z_AI_API_KEY", "ZAI_API_KEY", "ZHIPU_API_KEY"],
+    missing: "Z_AI_API not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    textOnly: false,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    // The flagship thinks before it answers, and a long answer on a million
+    // tokens of context is slow by nature rather than by fault.
+    timeoutMs: 120_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -925,6 +945,86 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.66,
     context: 131_072,
     bestFor: "reading an image on the NIM catalogue",
+  },
+
+  // --- Z.ai (GLM) ---------------------------------------------------------
+  // Registered from the vendor's published model list on 2026-11-09, not from
+  // a live probe: the key arrived after this table was written, and an
+  // unprobed model id is the one thing that cannot be checked from here. Only
+  // ids the vendor's own chat reference enumerates are listed, so a wrong
+  // guess cannot appear as a routable engine; the free ones are included first
+  // in each family because this account's balance is unknown.
+  {
+    id: "zai/glm-5.3",
+    provider: "zai",
+    modelId: "glm-5.3",
+    label: "GLM-5.3",
+    vision: false,
+    reasoning: true,
+    quality: 0.95,
+    speed: 0.72,
+    context: 1_000_000,
+    bestFor: "the hardest reasoning and long-context questions",
+  },
+  {
+    id: "zai/glm-5.3-flash",
+    provider: "zai",
+    modelId: "glm-5.3-flash",
+    label: "GLM-5.3 Flash",
+    vision: false,
+    reasoning: true,
+    quality: 0.88,
+    speed: 0.92,
+    context: 1_000_000,
+    bestFor: "fast answers over very long documents",
+  },
+  {
+    id: "zai/glm-4.7",
+    provider: "zai",
+    modelId: "glm-4.7",
+    label: "GLM-4.7",
+    vision: false,
+    reasoning: true,
+    quality: 0.92,
+    speed: 0.78,
+    context: 204_800,
+    bestFor: "strong reasoning without the flagship's wait",
+  },
+  {
+    id: "zai/glm-4.7-flash",
+    provider: "zai",
+    modelId: "glm-4.7-flash",
+    label: "GLM-4.7 Flash",
+    vision: false,
+    reasoning: true,
+    quality: 0.85,
+    speed: 0.9,
+    context: 200_000,
+    bestFor: "day-to-day chat at no cost",
+  },
+  {
+    id: "zai/glm-4.6v",
+    provider: "zai",
+    modelId: "glm-4.6v",
+    label: "GLM-4.6V",
+    vision: true,
+    reasoning: true,
+    quality: 0.88,
+    speed: 0.7,
+    context: 128_000,
+    bestFor: "screenshots, charts and documents",
+  },
+  {
+    id: "zai/glm-4.6v-flash",
+    provider: "zai",
+    modelId: "glm-4.6v-flash",
+    label: "GLM-4.6V Flash",
+    vision: true,
+    reasoning: true,
+    quality: 0.82,
+    speed: 0.88,
+    context: 128_000,
+    bestFor: "reading an image at no cost",
   },
 ];
 
