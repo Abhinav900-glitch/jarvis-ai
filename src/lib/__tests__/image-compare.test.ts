@@ -119,3 +119,41 @@ describe("largestImageIndex", () => {
     expect(largestImageIndex([])).toBe(0);
   });
 });
+
+describe("web-first matching", () => {
+  test("the prompt asks for a verdict only when one is needed", () => {
+    expect(imagePickPrompt("a red barn", candidates)).not.toContain("\"match\"");
+    expect(
+      imagePickPrompt("a red barn", candidates, { requireMatch: true }),
+    ).toContain("\"match\"");
+  });
+
+  test("a confirmed match comes back as a normal pick", () => {
+    const pick = parseImagePick(
+      '{"match": true, "index": 2, "reason": "Right subject, high resolution."}',
+      3,
+      { requireMatch: true },
+    );
+    expect(pick).toEqual({
+      index: 1,
+      matched: true,
+      reason: "Right subject, high resolution.",
+    });
+  });
+
+  test("a rejected match yields no picture rather than the closest one", () => {
+    const pick = parseImagePick(
+      '{"match": false, "index": 0, "reason": "All three are a different lighthouse."}',
+      3,
+      { requireMatch: true },
+    );
+    expect(pick?.index).toBe(-1);
+    expect(pick?.matched).toBe(false);
+    expect(pick?.reason).toContain("different lighthouse");
+  });
+
+  test("an answer with no verdict is not a match", () => {
+    expect(parseImagePick("2", 3, { requireMatch: true })).toBeNull();
+    expect(parseImagePick('{"index": 2}', 3, { requireMatch: true })?.index).toBe(-1);
+  });
+});

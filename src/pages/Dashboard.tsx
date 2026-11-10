@@ -3068,6 +3068,42 @@ export default function Dashboard() {
     }
   };
 
+  // ---- Smart routing for pictures: web first, generator second ----
+  //
+  // "generate an image of the Eiffel Tower at night" has two good answers: the
+  // photograph somebody already published, or a new drawing. The web is tried
+  // first because it costs nothing, is instant, and is literally correct — but
+  // only when the AI confirms one of the candidates really shows the thing.
+  // `requireMatch` is what makes that safe: without it the comparison always
+  // returns *a* picture, and the wrong lighthouse is worse than a drawn one.
+  // Every failure path returns null, so the generator still runs.
+  const pickWebImageForPrompt = async (
+    prompt: string,
+  ): Promise<{
+    url: string;
+    reason: string;
+    model: string | null;
+    images: { url: string; pageUrl: string; source: string; title?: string }[];
+  } | null> => {
+    try {
+      const { images, pick } = await searchWebImagesAction({
+        query: prompt,
+        decide: true,
+        requireMatch: true,
+      });
+      if (!pick?.matched) return null;
+      return {
+        url: pick.url,
+        reason: pick.reason,
+        model: pick.model,
+        images: storedWebImages(images),
+      };
+    } catch (err) {
+      console.warn("[image-gen] web-first lookup failed:", err);
+      return null;
+    }
+  };
+
   // ---- Natural-language image gen: stores msg, generates, sends result ----
   const runImageGenerationMessage = async (
     prompt: string,
@@ -3090,6 +3126,46 @@ export default function Dashboard() {
       } else {
         sessionId = activeId;
         await appendMessage({ sessionId, role: "user", content: originalText });
+      }
+
+      // Web first: if the picture already exists, this turn is a lookup and
+      // nothing is drawn. The strip alongside it keeps the other candidates so
+      // the user can pick a different one without asking again.
+      const fromWeb = await pickWebImageForPrompt(prompt);
+      if (fromWeb) {
+        // The pick is the big picture; the strip carries the runners-up, so
+        // nobody sees the same photo twice and can still switch without asking
+        // again. A source is only worth printing when one came back.
+        const runnersUp = fromWeb.images.filter((img) => img.url !== fromWeb.url);
+        const picked = fromWeb.images.find((img) => img.url === fromWeb.url) ?? {
+          url: fromWeb.url,
+          pageUrl: fromWeb.url,
+          source: "",
+        };
+        const webReplyId = await appendMessage({
+          sessionId,
+          role: "assistant",
+          content:
+            `Found it on the web: **${prompt}** — the AI compared ` +
+            `${fromWeb.images.length} match${fromWeb.images.length === 1 ? "" : "es"}` +
+            `${fromWeb.model ? ` with ${fromWeb.model}` : ""}` +
+            `${picked.source ? ` and picked this one from ${picked.source}` : " and picked this one"}. ` +
+            `${fromWeb.reason}${runnersUp.length > 0 ? " The other candidates are below." : ""} ` +
+            `Ask again with "generate" if you want a new picture drawn instead.`,
+          model: "web-images",
+          imageUrl: fromWeb.url,
+          images: [{ url: fromWeb.url }],
+        });
+        if (runnersUp.length > 0) {
+          await setWebImagesMutation({
+            messageId: webReplyId,
+            images: runnersUp,
+          });
+        }
+        if (pinnedTo && webReplyId != null) {
+          await setWebImagesMutation({ messageId: pinnedTo, images: [picked] });
+        }
+        return;
       }
 
       setGenerating(true);

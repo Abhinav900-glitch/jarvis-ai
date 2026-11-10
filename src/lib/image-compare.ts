@@ -23,9 +23,16 @@ export interface ImageCandidate {
 }
 
 export interface ImagePick {
-  /** Zero-based index into the candidate array. */
+  /** Zero-based index into the candidate array; -1 when nothing matched. */
   index: number;
   reason: string;
+  /**
+   * Set when the caller asked whether the web actually had this picture. True
+   * only when the model said so explicitly — the same default-deny the
+   * generator relies on, since a forced pick is a wrong picture wearing an
+   * "AI chose it" label.
+   */
+  matched?: boolean;
 }
 
 const MAX_REASON = 280;
@@ -42,8 +49,16 @@ const RULES = [
   "Judge only from the metadata listed. Never describe an image you cannot see.",
 ].join(" ");
 
+const MATCH_RULE =
+  "Also decide whether the query is actually covered at all: a near miss, a different thing with the " +
+  "same name, or a generic stand-in is not a match. Set match to false rather than forcing a pick.";
+
 /** One line per candidate, numbered from 1 because models are reliable there. */
-export function imagePickPrompt(query: string, candidates: ImageCandidate[]): string {
+export function imagePickPrompt(
+  query: string,
+  candidates: ImageCandidate[],
+  opts: { requireMatch?: boolean } = {},
+): string {
   const lines = candidates.map((c, i) => {
     const size =
       c.width && c.height ? `${c.width}×${c.height}` : "size unknown";
@@ -58,9 +73,26 @@ export function imagePickPrompt(query: string, candidates: ImageCandidate[]): st
     ...lines,
     "",
     RULES,
+    ...(opts.requireMatch ? [MATCH_RULE] : []),
     "",
-    'Answer with JSON and nothing else: {"index": <candidate number>, "reason": "<one short sentence>"}',
+    opts.requireMatch
+      ? 'Answer with JSON and nothing else: {"match": <true|false>, "index": <candidate number, 0 when match is false>, "reason": "<one short sentence>"}'
+      : 'Answer with JSON and nothing else: {"index": <candidate number>, "reason": "<one short sentence>"}',
   ].join("\n");
+}
+
+/** Whether the model said the query is actually represented by a candidate. */
+function readMatch(parsed: Record<string, unknown>): boolean | undefined {
+  for (const key of ["match", "matches", "matched", "found", "relevant", "is_match"]) {
+    const value = parsed[key];
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const text = value.trim().toLowerCase();
+      if (/^(?:true|yes|y|1)$/.test(text)) return true;
+      if (/^(?:false|no|n|0|none)$/.test(text)) return false;
+    }
+  }
+  return undefined;
 }
 
 /** First usable number under any of the keys a model might choose. */
@@ -97,7 +129,11 @@ function readReason(parsed: Record<string, unknown>, fallback: string): string {
  * caller falls back to a deterministic choice — silently returning candidate
  * #0 for a nonsense number is how a wrong picture ends up labelled "AI pick".
  */
-export function parseImagePick(text: string, count: number): ImagePick | null {
+export function parseImagePick(
+  text: string,
+  count: number,
+  opts: { requireMatch?: boolean } = {},
+): ImagePick | null {
   if (!text || count <= 0) return null;
   // Fenced JSON is common enough to be worth unwrapping before parsing.
   const body = text.replace(/```(?:json)?/gi, " ").trim();
@@ -107,6 +143,19 @@ export function parseImagePick(text: string, count: number): ImagePick | null {
     try {
       const parsed = JSON.parse(block[0]) as Record<string, unknown>;
       if (parsed && typeof parsed === "object") {
+        if (opts.requireMatch) {
+          const matched = readMatch(parsed);
+          if (matched !== true) {
+            return {
+              index: -1,
+              matched: false,
+              reason: readReason(parsed, "Nothing on the web matched closely enough."),
+            };
+          }
+          const index = toIndex(readIndex(parsed), count);
+          if (index === null) return null;
+          return { index, matched: true, reason: readReason(parsed, "") };
+        }
         const n = readIndex(parsed);
         const index = toIndex(n, count);
         if (index !== null) return { index, reason: readReason(parsed, "") };
@@ -115,6 +164,11 @@ export function parseImagePick(text: string, count: number): ImagePick | null {
       // Not JSON after all; the keyword scan below may still find the number.
     }
   }
+
+  // A prose answer can still name a candidate, but it cannot state a match:
+  // without the JSON the caller asked for, a web-first request falls through
+  // to the generator rather than guessing.
+  if (opts.requireMatch) return null;
 
   const keyword = /\b(?:index|image|candidate|pick|choice|best|number)\b\D{0,16}(\d{1,2})/i.exec(
     body,

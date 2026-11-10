@@ -2545,19 +2545,24 @@ async function chooseBestImage(
   userId: Id<"users">,
   query: string,
   candidates: ImageCandidate[],
-): Promise<{ index: number; reason: string; model: string | null }> {
+  requireMatch = false,
+): Promise<{ index: number; reason: string; model: string | null; matched: boolean }> {
   if (candidates.length <= 1) {
     return {
-      index: 0,
+      index: requireMatch ? -1 : 0,
       reason:
         candidates.length === 1
           ? "Only one image came back, so there was nothing to compare."
           : "No images to compare.",
       model: null,
+      // One candidate is not a comparison: with nothing to weigh it against
+      // there is no evidence it is the right picture, so a caller that needs
+      // a match falls through to the generator.
+      matched: false,
     };
   }
 
-  const prompt = imagePickPrompt(query, candidates);
+  const prompt = imagePickPrompt(query, candidates, { requireMatch });
   try {
     const plan = await routingFor(ctx, userId, {
       task: "reason",
@@ -2570,18 +2575,30 @@ async function chooseBestImage(
       "No engine was available to compare the images.",
       plan,
     );
-    const parsed = parseImagePick(result.text, candidates.length);
+    const parsed = parseImagePick(result.text, candidates.length, {
+      requireMatch,
+    });
     if (!parsed) {
       return {
-        index: largestImageIndex(candidates),
+        index: requireMatch ? -1 : largestImageIndex(candidates),
         reason: "The comparison answer was unusable, so the largest image was chosen.",
         model: result.model,
+        matched: false,
+      };
+    }
+    if (parsed.matched === false || parsed.index < 0) {
+      return {
+        index: -1,
+        reason: parsed.reason || "Nothing on the web matched closely enough.",
+        model: result.model,
+        matched: false,
       };
     }
     return {
       index: parsed.index,
       reason: parsed.reason || "Chosen as the closest match.",
       model: result.model,
+      matched: true,
     };
   } catch (err) {
     console.error(
@@ -2589,9 +2606,10 @@ async function chooseBestImage(
       err instanceof Error ? err.message : err,
     );
     return {
-      index: largestImageIndex(candidates),
+      index: requireMatch ? -1 : largestImageIndex(candidates),
       reason: "AI comparison was unavailable, so the largest image was chosen.",
       model: null,
+      matched: false,
     };
   }
 }
@@ -2609,14 +2627,29 @@ async function chooseBestImage(
  * it, while the studio — where the picture is the entire answer — should not.
  */
 export const searchWebImages = action({
-  args: { query: v.string(), decide: v.optional(v.boolean()) },
+  args: {
+    query: v.string(),
+    decide: v.optional(v.boolean()),
+    /**
+     * Ask for a verdict instead of a ranking: is the requested picture really
+     * out there? The smart router uses this to decide between "here it is" and
+     * "make one", and the difference matters — handing back a stock photo of
+     * the wrong lighthouse is worse than drawing the right one.
+     */
+    requireMatch: v.optional(v.boolean()),
+  },
   handler: async (
     ctx,
     args,
   ): Promise<{
     images: WebImage[];
     reason: string | null;
-    pick: { url: string; reason: string; model: string | null } | null;
+    pick: {
+      url: string;
+      reason: string;
+      model: string | null;
+      matched: boolean;
+    } | null;
   }> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to search the web.");
@@ -2645,7 +2678,22 @@ export const searchWebImages = action({
         }
         if (!args.decide) return { images, reason: null, pick: null };
 
-        const choice = await chooseBestImage(ctx, userId, query, images);
+        const choice = await chooseBestImage(
+          ctx,
+          userId,
+          query,
+          images,
+          args.requireMatch === true,
+        );
+        if (!choice.matched || choice.index < 0) {
+          // The web has pictures, just not this one. No pick: the caller's
+          // fallback is the generator, which can make exactly what was asked.
+          return {
+            images,
+            reason: choice.reason,
+            pick: null,
+          };
+        }
         const best = images[choice.index] ?? images[0];
         // The pick leads so the first thing anyone sees is the chosen picture,
         // and the sender can credit one source rather than a grid.
@@ -2653,7 +2701,12 @@ export const searchWebImages = action({
         return {
           images: ordered,
           reason: null,
-          pick: { url: best.url, reason: choice.reason, model: choice.model },
+          pick: {
+            url: best.url,
+            reason: choice.reason,
+            model: choice.model,
+            matched: true,
+          },
         };
       } catch (err) {
         failure = err instanceof Error ? err.message : "Image search failed.";
