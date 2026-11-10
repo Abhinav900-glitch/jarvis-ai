@@ -12,6 +12,7 @@ import {
   CF_KEY_ENVS,
   FAL_KEY_ENVS,
   META_KEY_ENVS,
+  ZIMAGE_KEY_ENVS,
   readEnv,
 } from "./imageProviders";
 
@@ -629,6 +630,137 @@ async function generateViaFal(
     if (!url) throw new Error("fal: could not store the generated image");
     return { url, publicId: storageId, provider: "fal" };
   }
+}
+
+/**
+ * Z Image Turbo (zimageturbo.ai) — a hosted Z-Image-Turbo endpoint.
+ *
+ * Asynchronous by design: POST /api/generate returns a task id and GET
+ * /api/status reports SUCCESS with a list of image URLs. The poll below is
+ * bounded rather than open-ended — the model renders in under a second, so a
+ * task still running after roughly fifteen seconds is a stuck one, and the
+ * legs after this can still answer the same turn.
+ *
+ * Aspect ratios are the vendor's own set (1:1, 4:3, 3:4, 16:9, 9:16). The
+ * studio's 3:2 and 2:3 are mapped onto the nearest of those instead of being
+ * forwarded unchanged, which the endpoint rejects with a 400.
+ */
+async function generateViaZImageTurbo(
+  ctx: ActionCtx,
+  key: string,
+  prompt: string,
+  aspectRatio?: string,
+): Promise<GeneratedImage> {
+  const ratio =
+    aspectRatio === "3:2" ? "16:9" : aspectRatio === "2:3" ? "9:16" : "1:1";
+
+  const res = await fetch("https://zimageturbo.ai/api/generate", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ prompt: prompt.slice(0, 990), aspect_ratio: ratio }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const raw = await res.text();
+  if (!res.ok) {
+    const message = `z-image-turbo → ${res.status}${raw ? ` ${raw.slice(0, 140)}` : ""}`;
+    // 401 is a bad key and 402 an empty balance: neither improves on retry,
+    // so both trip the breaker. A 429 is a rate limit and cools down normally.
+    if (res.status === 401 || res.status === 402) {
+      throw new AccountLockedError(message);
+    }
+    throw new Error(message);
+  }
+
+  type TaskReply = {
+    data?: {
+      status?: string;
+      task_id?: string;
+      response?: string[] | string;
+      error_message?: string | null;
+    };
+  };
+  const parse = (text: string): TaskReply | null => {
+    try {
+      return JSON.parse(text) as TaskReply;
+    } catch {
+      return null;
+    }
+  };
+
+  const finish = async (reply: TaskReply | null): Promise<GeneratedImage> => {
+    const urls = reply?.data?.response;
+    const picture = Array.isArray(urls) ? urls[0] : urls;
+    if (!picture) throw new Error("z-image-turbo finished without an image");
+    const bytes = await pictureBytes(picture);
+    return storeGeneratedImage(
+      ctx,
+      bytes,
+      "image/jpeg",
+      "z-image-turbo",
+      "zturbo",
+    );
+  };
+
+  const submitted = parse(raw);
+  // Some deployments answer the render inline instead of task-shaped; taking
+  // the picture when it is already there saves the whole poll.
+  if (submitted?.data?.response) return finish(submitted);
+  const taskId = submitted?.data?.task_id;
+  if (!taskId) throw new Error("z-image-turbo returned no task id");
+
+  // The docs name `/api/status`, but that path answers 404 on the live host
+  // while `/api/image/status` answers 401 to the same unauthenticated probe —
+  // a route that exists. Both are tried, documented path first, and whichever
+  // one answers is remembered: a stale doc should cost one round-trip, not
+  // the whole leg.
+  const statusPaths = ["/api/status", "/api/image/status"];
+  let statusPath: string | null = null;
+
+  for (let step = 0; step < 10; step += 1) {
+    await new Promise((resolve) => setTimeout(resolve, step === 0 ? 500 : 1500));
+
+    const candidates: string[] = statusPath ? [statusPath] : [...statusPaths];
+    let replied = false;
+    for (const path of candidates) {
+      const statusRes = await fetch(
+        `https://zimageturbo.ai${path}?task_id=${encodeURIComponent(taskId)}`,
+        {
+          headers: { authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(20_000),
+        },
+      );
+      if (statusRes.status === 404) continue;
+      replied = true;
+      statusPath = path;
+      if (!statusRes.ok) {
+        const detail = (await statusRes.text().catch(() => "")).slice(0, 160);
+        const message = `z-image-turbo status → ${statusRes.status}${detail ? ` ${detail}` : ""}`;
+        if (statusRes.status === 401 || statusRes.status === 402) {
+          throw new AccountLockedError(message);
+        }
+        throw new Error(message);
+      }
+      const reply = parse(await statusRes.text());
+      const state = (reply?.data?.status ?? "").toUpperCase();
+      if (state === "SUCCESS") return finish(reply);
+      if (state === "FAILED" || state === "ERROR" || state === "CANCELLED") {
+        throw new Error(
+          `z-image-turbo task ${state.toLowerCase()}: ${
+            reply?.data?.error_message ?? "no reason given"
+          }`,
+        );
+      }
+      break;
+    }
+    if (!replied) {
+      throw new Error("z-image-turbo has no status endpoint that answers");
+    }
+  }
+
+  throw new Error("z-image-turbo did not finish in time");
 }
 
 // ---------------------------------------------------------------------------
@@ -1945,6 +2077,17 @@ export const generateImage = action({
       attempts.push({
         name: "fal",
         run: () => generateViaFal(ctx, falKey, prompt, args.aspectRatio),
+      });
+    }
+    // Z Image Turbo next: a fast, cheap, keyed endpoint that honours the aspect
+    // ratio, so it sits with the other configured legs rather than behind the
+    // keyless ones that take the bare prompt.
+    const zimageKey = readEnv(ZIMAGE_KEY_ENVS);
+    if (zimageKey) {
+      attempts.push({
+        name: "z-image-turbo",
+        run: () =>
+          generateViaZImageTurbo(ctx, zimageKey, prompt, args.aspectRatio),
       });
     }
     // Meta joins only when a key exists: an official endpoint that answers on

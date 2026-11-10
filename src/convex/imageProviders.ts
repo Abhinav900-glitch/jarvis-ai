@@ -40,6 +40,19 @@ export const CF_KEY_ENVS = [
 
 export const CF_ACCOUNT_ENVS = ["CLOUDFLARE_ACCOUNT_ID"] as const;
 
+/**
+ * Z Image Turbo (zimageturbo.ai) — a hosted Z-Image-Turbo endpoint that takes
+ * a prompt and an aspect ratio, then answers asynchronously. The first name is
+ * the one this deployment stores; the rest are plausible spellings so a key
+ * pasted under a different label is not silently dead.
+ */
+export const ZIMAGE_KEY_ENVS = [
+  "Z_AI_API",
+  "Z_IMAGE_TURBO_API_KEY",
+  "ZIMAGE_API_KEY",
+  "ZIMAGE_TURBO_API_KEY",
+] as const;
+
 /** First non-empty value among `names`, trimmed. */
 export function readEnv(names: readonly string[]): string | null {
   for (const name of names) {
@@ -74,6 +87,11 @@ export function imageProviderStatuses(): ImageProviderStatus[] {
       id: "fal",
       label: "fal.ai FLUX",
       available: Boolean(readEnv(FAL_KEY_ENVS)),
+    },
+    {
+      id: "z-image-turbo",
+      label: "Z Image Turbo",
+      available: Boolean(readEnv(ZIMAGE_KEY_ENVS)),
     },
     {
       id: "meta",
