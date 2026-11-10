@@ -79,6 +79,11 @@ export interface ImageProviderStatus {
 export function imageProviderStatuses(): ImageProviderStatus[] {
   return [
     {
+      id: "z-image-turbo",
+      label: "Z Image Turbo",
+      available: Boolean(readEnv(ZIMAGE_KEY_ENVS)),
+    },
+    {
       id: "cloudflare-workers-ai",
       label: "Cloudflare Workers AI",
       available: Boolean(readEnv(CF_KEY_ENVS) && readEnv(CF_ACCOUNT_ENVS)),
@@ -87,11 +92,6 @@ export function imageProviderStatuses(): ImageProviderStatus[] {
       id: "fal",
       label: "fal.ai FLUX",
       available: Boolean(readEnv(FAL_KEY_ENVS)),
-    },
-    {
-      id: "z-image-turbo",
-      label: "Z Image Turbo",
-      available: Boolean(readEnv(ZIMAGE_KEY_ENVS)),
     },
     {
       id: "meta",

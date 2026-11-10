@@ -2056,12 +2056,23 @@ export const generateImage = action({
         run: () => generateViaOwnServer(ctx, ownServer, prompt, args.aspectRatio),
       });
     }
-    // Cloudflare Workers AI leads the keyed legs: it is the free daily
-    // allowance, it answers in about 1.4s, and it is the account the user
-    // configured first. It does not take a size (see generateViaCfWorkers), so
-    // an explicit aspect ratio is the one thing the legs below it honour better
-    // — but a square picture from the configured provider beats a correct
-    // aspect ratio from one that was never asked for.
+    // Z Image Turbo leads the hosted legs: it is the provider this account
+    // expects its text-to-image results from, it honours the aspect ratio, and
+    // it answers in about a second. It is text-to-image only — the variation
+    // list below replaces this one wholesale, so it can never be handed a
+    // reference image it would silently ignore.
+    const zimageKey = readEnv(ZIMAGE_KEY_ENVS);
+    if (zimageKey) {
+      attempts.push({
+        name: "z-image-turbo",
+        run: () =>
+          generateViaZImageTurbo(ctx, zimageKey, prompt, args.aspectRatio),
+      });
+    }
+    // Cloudflare Workers AI is the free fallback: it is the daily allowance and
+    // it answers in about 1.4s. It does not take a size (see
+    // generateViaCfWorkers), so an explicit aspect ratio is the one thing the
+    // legs around it honour better — but a square picture beats no picture.
     const cfWorkersKey = readEnv(CF_KEY_ENVS);
     const cfAccountId = readEnv(CF_ACCOUNT_ENVS);
     if (cfWorkersKey && cfAccountId) {
@@ -2077,17 +2088,6 @@ export const generateImage = action({
       attempts.push({
         name: "fal",
         run: () => generateViaFal(ctx, falKey, prompt, args.aspectRatio),
-      });
-    }
-    // Z Image Turbo next: a fast, cheap, keyed endpoint that honours the aspect
-    // ratio, so it sits with the other configured legs rather than behind the
-    // keyless ones that take the bare prompt.
-    const zimageKey = readEnv(ZIMAGE_KEY_ENVS);
-    if (zimageKey) {
-      attempts.push({
-        name: "z-image-turbo",
-        run: () =>
-          generateViaZImageTurbo(ctx, zimageKey, prompt, args.aspectRatio),
       });
     }
     // Meta joins only when a key exists: an official endpoint that answers on
