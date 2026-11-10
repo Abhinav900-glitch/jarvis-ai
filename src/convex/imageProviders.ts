@@ -62,6 +62,18 @@ export function readEnv(names: readonly string[]): string | null {
   return null;
 }
 
+/**
+ * Kie.ai — a reseller that fronts Google's Nano Banana models (plus others)
+ * behind one job API. One model, `nano-banana-2-1`, covers both text-to-image
+ * and editing: adding `image_input` turns the same call into an edit, which is
+ * why it is also usable as a variation leg.
+ */
+export const KIE_KEY_ENVS = [
+  "KIE_API_KEY",
+  "KIE_AI_API_KEY",
+  "KIEAI_API_KEY",
+] as const;
+
 export interface ImageProviderStatus {
   /** Matches the `provider` field the generation chain returns. */
   id: string;
@@ -92,6 +104,11 @@ export function imageProviderStatuses(): ImageProviderStatus[] {
       id: "fal",
       label: "fal.ai FLUX",
       available: Boolean(readEnv(FAL_KEY_ENVS)),
+    },
+    {
+      id: "kie",
+      label: "Kie.ai Nano Banana",
+      available: Boolean(readEnv(KIE_KEY_ENVS)),
     },
     {
       id: "meta",

@@ -11,6 +11,7 @@ import {
   CF_ACCOUNT_ENVS,
   CF_KEY_ENVS,
   FAL_KEY_ENVS,
+  KIE_KEY_ENVS,
   META_KEY_ENVS,
   ZIMAGE_KEY_ENVS,
   readEnv,
@@ -761,6 +762,168 @@ async function generateViaZImageTurbo(
   }
 
   throw new Error("z-image-turbo did not finish in time");
+}
+
+/**
+ * Kie.ai — Google's Nano Banana 2.1 through Kie's unified job API.
+ *
+ * One model does both jobs: `nano-banana-2-1` without `image_input` is
+ * text-to-image, and with it the same call edits the supplied pictures. That
+ * makes this the one hosted provider here that can honour a reference, so it
+ * serves as both a text leg and a variation leg.
+ *
+ * The task is asynchronous — POST /api/v1/jobs/createTask returns a task id and
+ * GET /api/v1/jobs/recordInfo reports `state` with the pictures inside a
+ * `resultJson` string — so the poll below is bounded at roughly forty-five
+ * seconds. Nano Banana usually answers in about fifteen.
+ */
+async function generateViaKie(
+  ctx: ActionCtx,
+  key: string,
+  prompt: string,
+  aspectRatio: string | undefined,
+  sourceImage: string | null,
+): Promise<GeneratedImage> {
+  const RATIOS = new Set([
+    "1:1",
+    "2:3",
+    "3:2",
+    "3:4",
+    "4:3",
+    "16:9",
+    "9:16",
+    "21:9",
+  ]);
+  const ratio = aspectRatio && RATIOS.has(aspectRatio) ? aspectRatio : "1:1";
+
+  const created = await fetch("https://api.kie.ai/api/v1/jobs/createTask", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "nano-banana-2-1",
+      input: {
+        prompt: prompt.slice(0, 19_000),
+        aspect_ratio: ratio,
+        // The field only exists for an edit; leaving it out is what makes the
+        // same model a text-to-image call.
+        ...(sourceImage ? { image_input: [sourceImage] } : {}),
+      },
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  const raw = await created.text();
+  if (!created.ok) {
+    const message = `kie → ${created.status} ${raw.slice(0, 160)}`.trim();
+    // 401 is a rejected key and 402 an empty balance: neither improves by
+    // retrying, so both trip the breaker.
+    if (created.status === 401 || created.status === 402) {
+      throw new AccountLockedError(message);
+    }
+    throw new Error(message);
+  }
+
+  const submitted = (() => {
+    try {
+      return JSON.parse(raw) as {
+        code?: number;
+        msg?: string;
+        data?: { taskId?: string };
+      };
+    } catch {
+      return null;
+    }
+  })();
+  // Kie reports application errors inside a 200 response, so the HTTP status
+  // alone is not enough: `code` is the real verdict.
+  const submitCode = submitted?.code;
+  if (typeof submitCode === "number" && submitCode !== 200 && submitCode !== 0) {
+    const message = `kie → ${submitCode} ${submitted?.msg ?? ""}`.trim();
+    if (submitCode === 401 || submitCode === 402) {
+      throw new AccountLockedError(message);
+    }
+    throw new Error(message);
+  }
+
+  const taskId = submitted?.data?.taskId;
+  if (!taskId) {
+    throw new Error(
+      `kie: no task id returned (${submitted?.msg ?? raw.slice(0, 120)})`,
+    );
+  }
+
+  for (let step = 0; step < 15; step += 1) {
+    await new Promise((resolve) => setTimeout(resolve, step === 0 ? 2500 : 3000));
+
+    const statusRes = await fetch(
+      `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`,
+      {
+        headers: { authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(20_000),
+      },
+    );
+    if (!statusRes.ok) throw new Error(`kie status → ${statusRes.status}`);
+
+    const status = (await statusRes.json().catch(() => null)) as
+      | {
+          code?: number;
+          msg?: string;
+          data?: { state?: string; resultJson?: string; failMsg?: string };
+        }
+      | null;
+    const statusCode = status?.code;
+    if (typeof statusCode === "number" && statusCode !== 200 && statusCode !== 0) {
+      const message = `kie status → ${statusCode} ${status?.msg ?? ""}`.trim();
+      if (statusCode === 401 || statusCode === 402) {
+        throw new AccountLockedError(message);
+      }
+      throw new Error(message);
+    }
+    const state = (status?.data?.state ?? "").toLowerCase();
+
+    if (state === "success") {
+      const urls = (() => {
+        const json = status?.data?.resultJson;
+        if (!json) return [] as string[];
+        try {
+          const parsed = JSON.parse(json) as Record<string, unknown>;
+          const list =
+            parsed.resultUrls ?? parsed.images ?? parsed.urls ?? parsed.imageUrls;
+          if (Array.isArray(list)) {
+            return list.filter((entry): entry is string => typeof entry === "string");
+          }
+          if (typeof parsed.url === "string") return [parsed.url];
+          // Models differ in how they name their output; anything that looks
+          // like a picture URL is a usable answer.
+          return Object.values(parsed).filter(
+            (value): value is string =>
+              typeof value === "string" && /^https?:\/\//i.test(value),
+          );
+        } catch {
+          return [] as string[];
+        }
+      })();
+      if (!urls.length) throw new Error("kie finished without an image");
+      const bytes = await pictureBytes(urls[0]);
+      return storeGeneratedImage(
+        ctx,
+        bytes,
+        "image/jpeg",
+        "kie/nano-banana-2-1",
+        "kie",
+      );
+    }
+    if (state === "fail") {
+      throw new Error(
+        `kie task failed: ${status?.data?.failMsg ?? "no reason given"}`,
+      );
+    }
+  }
+
+  throw new Error("kie did not finish in time");
 }
 
 // ---------------------------------------------------------------------------
@@ -2090,6 +2253,17 @@ export const generateImage = action({
         run: () => generateViaFal(ctx, falKey, prompt, args.aspectRatio),
       });
     }
+    // Kie.ai (Nano Banana) follows: it honours the aspect ratio and is the only
+    // hosted leg that can also take a reference image (see the variation list
+    // below), so having one key configured improves both halves of the studio.
+    const kieKey = readEnv(KIE_KEY_ENVS);
+    if (kieKey) {
+      attempts.push({
+        name: "kie",
+        run: () =>
+          generateViaKie(ctx, kieKey, prompt, args.aspectRatio, null),
+      });
+    }
     // Meta joins only when a key exists: an official endpoint that answers on
     // the first try beats a hosted chain whose leading members fast-fail.
     const metaKey = readEnv(META_KEY_ENVS);
@@ -2160,6 +2334,16 @@ export const generateImage = action({
             generateVariationViaFal(ctx, falKey, prompt, sourceImage, strength),
         });
       }
+      if (kieKey) {
+        // After fal, not before: Nano Banana follows the instruction but has no
+        // strength dial, so it cannot honour the subtle/balanced/bold choice
+        // the studio offers. It is still the strongest leg when fal is absent.
+        attempts.push({
+          name: "kie-variation",
+          run: () =>
+            generateViaKie(ctx, kieKey, prompt, args.aspectRatio, sourceImage),
+        });
+      }
       if (cfWorkersKey && cfAccountId) {
         attempts.push({
           name: "cloudflare-variation",
@@ -2210,12 +2394,12 @@ export const generateImage = action({
     if (sourceImage) {
       // Without a keyed leg the only attempt was the free one, which is
       // rate-limited; saying so turns a mystery failure into a next step.
-      const keyed = falKey || (cfWorkersKey && cfAccountId);
+      const keyed = falKey || kieKey || (cfWorkersKey && cfAccountId);
       throw new Error(
         `Couldn't make a variation of that picture. ${errors.join(" | ")}` +
           (keyed
             ? ""
-            : " Variations need a FAL_KEY or a Cloudflare account — the keyless leg is rate-limited."),
+            : " Variations need a FAL_KEY, a Kie.ai key or a Cloudflare account — the keyless leg is rate-limited."),
       );
     }
 
