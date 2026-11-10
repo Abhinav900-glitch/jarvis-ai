@@ -7404,8 +7404,12 @@ export default function Dashboard() {
                 strength,
               })
             }
-            search={async ({ query: q, decide }) => {
-              const found = await searchWebImagesAction({ query: q, decide });
+            search={async ({ query: q, decide, requireMatch }) => {
+              const found = await searchWebImagesAction({
+                query: q,
+                decide,
+                requireMatch,
+              });
               return {
                 images: found.images.map((img) => ({
                   url: img.url,

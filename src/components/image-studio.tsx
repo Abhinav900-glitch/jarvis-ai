@@ -92,7 +92,13 @@ export interface StudioCandidate {
 
 export interface StudioSearchResult {
   images: StudioCandidate[];
-  pick: { url: string; reason: string; model: string | null } | null;
+  /** The AI's choice. `matched: false` means it found nothing close enough. */
+  pick: {
+    url: string;
+    reason: string;
+    model: string | null;
+    matched?: boolean;
+  } | null;
   reason: string | null;
 }
 
@@ -125,6 +131,11 @@ interface HistoryEntry {
   base?: { url: string; strength: number };
   /** Pinned pictures survive the 12-entry cap. */
   pinned?: boolean;
+  /**
+   * Found because Generate looked on the web before drawing. Only these offer
+   * "Draw instead": an ordinary web search is already what the user asked for.
+   */
+  foundFirst?: boolean;
 }
 
 /** A page read as a visual reference: what it is, and how it looks. */
@@ -155,6 +166,8 @@ export interface ImageStudioProps {
   search: (input: {
     query: string;
     decide: boolean;
+    /** Ask "is this picture really out there?" rather than "which is best?". */
+    requireMatch?: boolean;
   }) => Promise<StudioSearchResult>;
   /**
    * Rewrites a rough description into a detailed prompt. `changed: false`
@@ -466,7 +479,13 @@ export function ImageStudio({
   })();
 
   const run = useCallback(
-    async (override?: { prompt: string; model: StudioModel; aspect: StudioAspect }) => {
+    async (override?: {
+      prompt: string;
+      model: StudioModel;
+      aspect: StudioAspect;
+      /** Skip the web check — the "Draw instead" path. */
+      draw?: boolean;
+    }) => {
       const basePrompt = (override?.prompt ?? prompt).trim();
       // A variation works without a prompt — "another take on this" is a
       // complete request once there is a picture to take it from.
@@ -516,6 +535,66 @@ export function ImageStudio({
           setReference(null);
           persist([entry, ...history.filter((h) => h.url !== entry.url)]);
           return;
+        }
+
+        // Web first, before a credit is spent: "a red fox in snow" may already
+        // be a photograph somebody published, and the real one is a better
+        // answer than a drawing. Only Auto does this — choosing "AI art" is
+        // itself the instruction to draw, and a stock photo back from that
+        // button would be ignoring the user. Only an explicit match from the
+        // comparison counts, and only for a bare prompt: the comparison judges
+        // candidates from their metadata, so a style, an instruction, a page
+        // or a reference picture is something it cannot confirm, and a photo
+        // that ignores "in oil paint" is not the picture that was asked for.
+        //
+        // Pressing Generate a second time on a web-first result means "yes,
+        // draw it" — handing back the same photograph again would read as a
+        // broken button.
+        const alreadyFound =
+          current?.foundFirst === true &&
+          current.prompt.trim().toLowerCase() === basePrompt.toLowerCase();
+        const bareRequest =
+          !override?.draw &&
+          !alreadyFound &&
+          mode === "auto" &&
+          !source &&
+          !page &&
+          !note(instructions) &&
+          !note(avoid) &&
+          (style.id === "none" || style.id === "photo");
+        if (bareRequest && basePrompt) {
+          try {
+            const found = await search({
+              query: basePrompt,
+              decide: true,
+              requireMatch: true,
+            });
+            if (found.pick?.matched && found.images.length > 0) {
+              const best = found.images[0];
+              const entry: HistoryEntry = {
+                kind: "web",
+                url: best.url,
+                prompt: basePrompt,
+                at: Date.now(),
+                source: best.source,
+                title: best.title,
+                pageUrl: best.pageUrl,
+                candidates: found.images,
+                pickReason: found.pick.reason,
+                pickModel: found.pick.model ?? null,
+                foundFirst: true,
+              };
+              setCurrent(entry);
+              setPreview(null);
+              setReference(null);
+              persist([entry, ...history.filter((h) => h.url !== entry.url)]);
+              return;
+            }
+          } catch (err) {
+            // An optimisation, never a gate: a missing key, a spent quota or a
+            // slow comparison must not cost the render it was meant to save.
+            console.warn("[studio] web-first lookup failed:", err);
+          }
         }
 
         // A named character needs their design in words before the generator
@@ -604,6 +683,7 @@ export function ImageStudio({
       aspect,
       avoid,
       busy,
+      current,
       generate,
       history,
       instructions,
@@ -616,6 +696,7 @@ export function ImageStudio({
       prompt,
       search,
       source,
+      style.id,
       webQuery,
     ],
   );
@@ -872,14 +953,18 @@ export function ImageStudio({
                 ) : (
                   <>
                     Auto reads this as <span className="text-foreground">a request to
-                    make a picture</span>. Phrases like “photos of X” switch to the
-                    web instead.
+                    make a picture</span> — but it checks the web for that exact
+                    picture first, and only draws one when nothing real matches.
+                    Phrases like “photos of X” go straight to the web.
                   </>
                 )
               ) : resolved === "web" ? (
                 <>Searching real images from across the web. Nothing is generated.</>
               ) : (
-                <>Rendering a new image with the provider chain.</>
+                <>
+                  Drawing a new image with the provider chain — no web check,
+                  since you asked to draw.
+                </>
               )}
             </p>
           </div>
@@ -1397,7 +1482,9 @@ export function ImageStudio({
             <div className="overflow-hidden rounded-lg border border-border/70">
               <div className="flex items-center gap-1.5 border-b border-border/70 bg-muted/40 px-3 py-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
                 <Globe className="size-3" />
-                {current.candidates?.length ?? 1} real images from the web
+                {current.foundFirst
+                  ? "Found on the web — nothing was drawn"
+                  : `${current.candidates?.length ?? 1} real images from the web`}
                 {current.pickModel ? (
                   <span className="ml-auto normal-case tracking-normal text-muted-foreground/80">
                     compared by {current.pickModel}
@@ -1485,6 +1572,27 @@ export function ImageStudio({
                   )}
                   Compare again
                 </Button>
+                {/* The way out of web-first: a real photo is only the right
+                    answer until the user says they wanted a drawing. */}
+                {current.foundFirst ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    title="Skip the web and render a new picture from this prompt"
+                    onClick={() =>
+                      void run({
+                        prompt: current.prompt,
+                        model,
+                        aspect,
+                        draw: true,
+                      })
+                    }
+                  >
+                    <Wand2 className="size-3.5" />
+                    Draw instead
+                  </Button>
+                ) : null}
                 <Button size="sm" onClick={() => save(current.url)}>
                   <Download className="size-3.5" />
                   Download
