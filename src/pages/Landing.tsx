@@ -13,6 +13,10 @@ import { useState } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
+  Cloud,
+  Download,
+  FileText,
+  Upload,
   Zap,
   Layers,
   Cpu,
@@ -499,6 +503,100 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* your cloud — the thing an account adds that a guest cannot have */}
+      <section className="mx-auto w-full max-w-6xl px-6 pb-12 pt-6">
+        <div className="grid items-center gap-10 md:grid-cols-2">
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: "-80px" }}
+            transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <p className="hud-label hud-label-cyan">With an account</p>
+            <h2 className="mt-4 text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
+              Your own cloud, not a scratch folder.
+            </h2>
+            <p className="mt-4 text-base leading-7 text-muted-foreground">
+              Half a gigabyte of storage that belongs to your account. Upload
+              from your phone, open it on your laptop, and keep every deck, CSV
+              and chart Jarvis builds — instead of scrolling back through a chat
+              to find a link that expired.
+            </p>
+            <ul className="mt-6 space-y-2.5 text-sm text-foreground/85">
+              <li className="flex items-start gap-2">
+                <Upload className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                Drop files in from any device; 64 MB per file, 512 MB in total.
+              </li>
+              <li className="flex items-start gap-2">
+                <FileText className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                Files from a run are one click from being kept, not re-generated.
+              </li>
+              <li className="flex items-start gap-2">
+                <Download className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                Download or delete anything, whenever. Nothing is locked in.
+              </li>
+            </ul>
+            <div className="mt-7 flex flex-wrap items-center gap-3">
+              <Button asChild size="lg" className="px-7">
+                <Link
+                  to={
+                    isAuthenticated
+                      ? "/dashboard?panel=cloud"
+                      : `/auth?returnTo=${encodeURIComponent("/dashboard?panel=cloud")}`
+                  }
+                >
+                  Open your cloud
+                  <ArrowRight className="size-4" />
+                </Link>
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Free with a sign-in. Guests chat; accounts keep.
+              </span>
+            </div>
+          </motion.div>
+
+          {/* A depiction of the panel, in the same visual language. */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: "-80px" }}
+            transition={{ duration: 0.5, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+            className="hud-panel p-5"
+            aria-hidden
+          >
+            <div className="flex items-center gap-2">
+              <Cloud className="size-3.5 text-primary" />
+              <span className="hud-label">Your cloud</span>
+              <span className="ml-auto text-[10px] text-muted-foreground/70">
+                312 MB of 512 MB
+              </span>
+            </div>
+            <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full w-[61%] rounded-full bg-primary/70" />
+            </div>
+            <ul className="mt-4 divide-y divide-border/40 text-[11px]">
+              {[
+                { name: "q3-forecast.xlsx", meta: "148 KB · upload · just now" },
+                { name: "revenue-chart.png", meta: "96 KB · from a run · 2m ago" },
+                { name: "meeting-notes.md", meta: "4 KB · upload · yesterday" },
+                { name: "quarterly-deck.pptx", meta: "1.8 MB · from a run · 3d ago" },
+              ].map((row) => (
+                <li key={row.name} className="flex items-center gap-2 py-2">
+                  <span className="flex size-6 items-center justify-center rounded border border-border/50 bg-muted/40">
+                    <FileText className="size-3 text-muted-foreground/70" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-foreground/90">{row.name}</span>
+                    <span className="block text-muted-foreground/60">{row.meta}</span>
+                  </span>
+                  <Download className="size-3 text-muted-foreground/50" />
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+        </div>
+      </section>
+
       {/* starter prompts — real links into the console */}
       <section className="mx-auto w-full max-w-6xl px-6 pb-24">
         <motion.div
@@ -676,8 +774,9 @@ export default function Landing() {
                 </h2>
                 <p className="mx-auto mt-4 max-w-md text-sm leading-6 text-muted-foreground">
                   Sign in with email or continue as a guest. Every conversation is
-                  saved, memory is built as you go, you can see exactly which engine
-                  replied, and you can add your own MCP servers when you are ready.
+                  saved, memory is built as you go, you get a cloud of your own, you
+                  can see exactly which engine replied, and you can add your own MCP
+                  servers when you are ready.
                 </p>
                 <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
                   <Button asChild size="lg" className="px-7">

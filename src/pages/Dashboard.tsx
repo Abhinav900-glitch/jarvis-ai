@@ -12,6 +12,7 @@ import {
   Camera,
   CameraOff,
   Check,
+  Cloud,
   Code2,
   Download,
   FileSearch,
@@ -179,6 +180,7 @@ import { runLocalTool } from "@/lib/local-tools";
 import { Radio, ExternalLink } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
+import { CloudPanel } from "@/components/cloud-panel";
 import { ExportPanel } from "@/components/export-panel";
 import { useCamera } from "@/hooks/use-camera";
 import { useLiveTranslation } from "@/hooks/use-live-translation";
@@ -1382,6 +1384,7 @@ export default function Dashboard() {
   const [pdfBusy, setPdfBusy] = useState(false);
   // --- Feature panels: memory, export, camera, live translation ---
   const [showMemory, setShowMemory] = useState(false);
+  const [showCloud, setShowCloud] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
@@ -2509,6 +2512,22 @@ export default function Dashboard() {
     setSearchParams(next, { replace: true });
     inputRef.current?.focus();
   }, [handedOffPrompt, searchParams, setSearchParams]);
+
+  // A landing card can open a panel by name: /dashboard?panel=cloud. Taken
+  // during render for the same reason as the prompt above, then dropped from
+  // the URL so a refresh starts with the panel closed.
+  const handedOffPanel = searchParams.get("panel");
+  const [panelTaken, setPanelTaken] = useState(false);
+  if (handedOffPanel === "cloud" && !panelTaken) {
+    setPanelTaken(true);
+    setShowCloud(true);
+  }
+  useEffect(() => {
+    if (handedOffPanel === null) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("panel");
+    setSearchParams(next, { replace: true });
+  }, [handedOffPanel, searchParams, setSearchParams]);
 
   /**
    * The graphs the replies should have carried but did not.
@@ -5448,6 +5467,14 @@ export default function Dashboard() {
         run: () => setShowMemory(true),
       },
       {
+        id: "cloud",
+        label: "Your cloud — files you keep",
+        group: "Configure",
+        keywords: "storage drive upload files download quota",
+        icon: <Cloud className="size-4" />,
+        run: () => setShowCloud(true),
+      },
+      {
         id: "code",
         label: "Code runner",
         group: "Configure",
@@ -5835,6 +5862,13 @@ export default function Dashboard() {
                     <Brain className="size-4" />
                     Memory
                     {showMemory ? (
+                      <Check className="ml-auto size-4" />
+                    ) : null}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowCloud((v) => !v)}>
+                    <Cloud className="size-4" />
+                    Your cloud
+                    {showCloud ? (
                       <Check className="ml-auto size-4" />
                     ) : null}
                   </DropdownMenuItem>
@@ -7299,6 +7333,11 @@ export default function Dashboard() {
           </AnimatePresence>            {/* ---- Memory panel ---- */}
             <AnimatePresence>
               {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
+            </AnimatePresence>
+
+            {/* ---- Cloud panel: the user's own storage ---- */}
+            <AnimatePresence>
+              {showCloud && <CloudPanel onClose={() => setShowCloud(false)} />}
             </AnimatePresence>
 
             {/* ---- AeroTransformGen overview: runs + workspace ---- */}

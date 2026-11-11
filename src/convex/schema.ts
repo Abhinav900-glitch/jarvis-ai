@@ -570,7 +570,27 @@ const schema = defineSchema(
       createdAt: v.number(),
     })
       .index("by_token", ["token"])
+      .index("by_storage", ["storageId"])
       .index("by_user_time", ["userId", "createdAt"]),
+
+    // ---- The user's own cloud --------------------------------------------
+    // Anything a signed-in account wants to keep: an upload from this device,
+    // or a file copied out of a run. The bytes live in Convex storage; this row
+    // is the index and the owner, which is what makes the file theirs rather
+    // than a random URL. `agentArtifacts` above is a transport for a single run
+    // and is cleared; rows here are kept until the user deletes them.
+    cloudFiles: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      mime: v.string(),
+      size: v.number(),
+      storageId: v.id("_storage"),
+      /** Where it came from, so the panel can label it honestly. */
+      source: v.optional(
+        v.union(v.literal("upload"), v.literal("run"), v.literal("image")),
+      ),
+      createdAt: v.number(),
+    }).index("by_user_time", ["userId", "createdAt"]),
 
     // A snapshot of one file taken immediately before the agent overwrites it.
     // `previous` is optional because its absence is meaningful: it records that
