@@ -10,6 +10,7 @@ import {
   ChevronUp,
   Code2,
   Copy,
+  Download,
   Eraser,
   FileText,
   Info,
@@ -17,6 +18,7 @@ import {
   Loader2,
   Package,
   Play,
+  Plus,
   Send,
   Terminal,
   X,
@@ -54,7 +56,6 @@ import { colabWorkerCell } from "@/lib/colab-worker";
 
 const INDENT = "  ";
 
-/** How each probe verdict is worded and coloured. */
 /** The runner installs at most this many packages for one run. */
 const MAX_INSTALLS = 8;
 
@@ -79,6 +80,54 @@ function parsePackages(raw: string): string[] {
   return [...new Set(names)].slice(0, MAX_INSTALLS);
 }
 
+/**
+ * A program that prints the version of each installed package.
+ *
+ * Installation and running are one request on every engine, so the only
+ * honest way to say "installed" is to ask the engine afterwards: this runs
+ * with the packages and reports what each one resolved to, exiting non-zero
+ * when one is simply not there.
+ */
+function installProbe(languageId: string, packages: string[]): string | null {
+  const list = JSON.stringify(packages);
+  if (languageId === "python3") {
+    return [
+      "from importlib.metadata import version, PackageNotFoundError",
+      "missing = 0",
+      `for name in ${list}:`,
+      "    try:",
+      '        print(name + " " + version(name))',
+      "    except PackageNotFoundError:",
+      '        print(name + " MISSING")',
+      "        missing += 1",
+      "raise SystemExit(1 if missing else 0)",
+    ].join("\n");
+  }
+  if (languageId === "nodejs") {
+    return [
+      `const names = ${list};`,
+      "let missing = 0;",
+      "for (const name of names) {",
+      "  try {",
+      '    const meta = require(name + "/package.json");',
+      '    console.log(name + " " + meta.version);',
+      "  } catch (e) {",
+      "    try {",
+      '      require(name);',
+      '      console.log(name + " ok");',
+      "    } catch (e2) {",
+      '      console.log(name + " MISSING");',
+      "      missing += 1;",
+      "    }",
+      "  }",
+      "}",
+      "process.exit(missing ? 1 : 0);",
+    ].join("\n");
+  }
+  return null;
+}
+
+/** How each probe verdict is worded and coloured. */
 const PROBE_LABELS: Record<EngineProbe["state"], string> = {
   ok: "working",
   rejected: "key rejected",
@@ -287,7 +336,15 @@ export function CodePanel({
    * and edit is the only way "it said numpy was missing" becomes fixable here.
    */
   const [packageInput, setPackageInput] = useState("");
-  const [showPackages, setShowPackages] = useState(false);
+  /** The install list itself: chips you added, not the text you are typing. */
+  const [libs, setLibs] = useState<string[]>([]);
+  /** What the engine last reported after installing the list above. */
+  const [checkResult, setCheckResult] = useState<{
+    provider: CodeRunResult["provider"];
+    failed: boolean;
+    output: string;
+  } | null>(null);
+  const [checking, setChecking] = useState(false);
   const [stdin, setStdin] = useState("");
   const [showStdin, setShowStdin] = useState(false);
   const [running, setRunning] = useState(false);
@@ -318,7 +375,56 @@ export function CodePanel({
   const installer =
     language.id === "python3" ? "pip" : language.id === "nodejs" ? "npm" : null;
 
-  const libs = useMemo(() => parsePackages(packageInput), [packageInput]);
+  const addPackages = () => {
+    const parsed = parsePackages(packageInput);
+    if (parsed.length === 0) return;
+    setLibs((prev) => [...new Set([...prev, ...parsed])].slice(0, MAX_INSTALLS));
+    setPackageInput("");
+    setCheckResult(null);
+  };
+
+  const removePackage = (name: string) => {
+    setLibs((prev) => prev.filter((entry) => entry !== name));
+    setCheckResult(null);
+  };
+
+  /**
+   * Install the list on the engine and print what each package resolved to.
+   *
+   * A field that only feeds the next run leaves the user guessing whether a
+   * name is right; this answers it with a version number, from the same chain
+   * the run uses.
+   */
+  const checkInstalls = async () => {
+    const probe = installProbe(language.id, libs);
+    if (!probe || libs.length === 0 || checking) return;
+    setChecking(true);
+    setCheckResult(null);
+    try {
+      const run = await runCode({
+        language: language.id,
+        versionIndex: version.index,
+        sourceCode: probe,
+        libs,
+      });
+      setCheckResult({
+        provider: run.provider,
+        failed: run.failed,
+        output: [run.output.trim(), run.error.trim(), run.requestError?.trim()]
+          .filter(Boolean)
+          .join("\n"),
+      });
+    } catch (err) {
+      setCheckResult({
+        provider: null,
+        failed: true,
+        output:
+          err instanceof Error ? err.message : "The install check could not be started.",
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
   const version =
     language.versions.find((v) => v.index === versionIndex) ??
     language.versions[language.defaultVersion] ??
@@ -342,8 +448,9 @@ export function CodePanel({
     chooseLanguage(program.language);
     setVersionIndex(program.versionIndex);
     setSource(program.code);
-    setPackageInput((program.libs ?? []).join(" "));
-    setShowPackages((program.libs ?? []).length > 0);
+    setLibs(program.libs ?? []);
+    setPackageInput("");
+    setCheckResult(null);
     setResult(null);
     setShowLibrary(false);
     window.setTimeout(() => editorRef.current?.focus(), 60);
@@ -600,26 +707,7 @@ export function CodePanel({
             </Button>
           )}
 
-          {installer ? (
             <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => setShowPackages((v) => !v)}
-              title={`Install ${installer === "pip" ? "Python" : "Node"} packages before the run`}
-            >
-              <Package className="size-3.5" />
-              {installer} install
-              {libs.length > 0 ? (
-                <span className="tabular-nums text-primary">{libs.length}</span>
-              ) : null}
-              {showPackages ? (
-                <ChevronUp className="size-3" />
-              ) : (
-                <ChevronDown className="size-3" />
-              )}
-            </Button>
-          ) : null}            <Button
               variant="ghost"
               size="sm"
               className="h-7 px-2 text-xs"
@@ -697,6 +785,101 @@ export function CodePanel({
             </Button>
           </div>
         </div>
+
+        {/* ---- Packages ---- */}
+        {installer ? (
+          <div className="mb-2 rounded-lg border border-primary/20 bg-muted/20 p-2">
+            <div className="mb-1.5 flex flex-wrap items-center gap-2">
+              <Package className="size-3 text-muted-foreground" />
+              <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                {installer === "pip" ? "Python packages" : "Node packages"}
+              </span>
+              <span className="text-[10px] text-muted-foreground/60">
+                {installer} install on every run · up to {MAX_INSTALLS}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-6 px-2 text-[11px]"
+                onClick={() => void checkInstalls()}
+                disabled={libs.length === 0 || checking}
+                title="Install these on the engine now and print the version each one resolves to"
+              >
+                {checking ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <Download className="size-3" />
+                )}
+                {checking ? "Installing" : "Install & check"}
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Input
+                value={packageInput}
+                onChange={(e) => setPackageInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addPackages();
+                  }
+                }}
+                spellCheck={false}
+                placeholder={
+                  installer === "pip" ? "pip install numpy pandas" : "npm install express"
+                }
+                className="h-7 font-mono text-xs"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={addPackages}
+                disabled={!packageInput.trim()}
+              >
+                <Plus className="size-3" /> Add
+              </Button>
+            </div>
+
+            {libs.length > 0 ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                {libs.map((name) => (
+                  <button
+                    key={name}
+                    onClick={() => removePackage(name)}
+                    className="group inline-flex items-center gap-1 rounded border border-primary/25 bg-primary/10 px-1.5 py-px font-mono text-[10px] text-primary transition-colors hover:border-destructive/50 hover:text-destructive"
+                    title={`Remove ${name}`}
+                  >
+                    {name}
+                    <X className="size-2.5 opacity-60 group-hover:opacity-100" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            {checkResult ? (
+              <div className="mt-1.5 overflow-hidden rounded border border-primary/15 bg-background/60">
+                <div className="flex flex-wrap items-center gap-2 border-b border-primary/10 px-2 py-1 text-[10px] text-muted-foreground">
+                  <span
+                    className={
+                      checkResult.failed
+                        ? "text-amber-500"
+                        : "text-emerald-500"
+                    }
+                  >
+                    {checkResult.failed ? "not all installed" : "installed"}
+                  </span>
+                  {checkResult.provider ? (
+                    <span>on {PROVIDER_LABELS[checkResult.provider]}</span>
+                  ) : null}
+                </div>
+                <pre className="max-h-32 overflow-auto px-2 py-1.5 font-mono text-[11px] leading-5 whitespace-pre-wrap">
+                  {checkResult.output || "(no output)"}
+                </pre>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* ---- Engine availability ---- */}
         {showEngines && (
@@ -1110,48 +1293,6 @@ export function CodePanel({
         </div>
 
         {/* ---- stdin ---- */}
-        {/* ---- Packages ---- */}
-        {showPackages && installer ? (
-          <div className="mt-2">
-            <div className="mb-1 flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-                {installer === "pip" ? "Python packages (pip)" : "Node packages (npm)"}
-              </span>
-              <span className="text-[10px] text-muted-foreground/60">
-                installed before the run — an engine that cannot install says so
-              </span>
-            </div>
-            <Input
-              value={packageInput}
-              onChange={(e) => setPackageInput(e.target.value)}
-              spellCheck={false}
-              placeholder={
-                installer === "pip"
-                  ? "pip install numpy pandas"
-                  : "npm install express"
-              }
-              className="h-8 font-mono text-xs"
-            />
-            {libs.length > 0 ? (
-              <div className="mt-1 flex flex-wrap items-center gap-1">
-                {libs.map((name) => (
-                  <span
-                    key={name}
-                    className="rounded bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground"
-                  >
-                    {name}
-                  </span>
-                ))}
-                {parsePackages(packageInput).length === MAX_INSTALLS ? (
-                  <span className="text-[10px] text-muted-foreground/60">
-                    {MAX_INSTALLS} at a time
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
         {showStdin && language.stdin && (
           <div className="mt-2">
             <div className="mb-1 flex items-center gap-2">
