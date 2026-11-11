@@ -725,6 +725,57 @@ const schema = defineSchema(
       toolCount: v.optional(v.number()),
       lastError: v.optional(v.string()),
     }).index("by_user", ["userId"]),
+
+    // ------------------------------------------------------------------------
+    // A machine the user connected as Jarvis's own computer.
+    //
+    // Colab has no API, so the notebook itself is the agent: a pasted cell polls
+    // `/machine/next` with this token, runs whatever Python it is handed on its
+    // own interpreter, and posts the answer to `/machine/result`. One row per
+    // user, because there is one notebook; connecting again rotates the token
+    // and retires the old cell.
+    // ------------------------------------------------------------------------
+    machines: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      token: v.string(),
+      /** The worker's Python version, e.g. "3.11.9". */
+      version: v.optional(v.string()),
+      /** What it is, so the panel can say "linux · 12 cores · Tesla T4". */
+      platform: v.optional(v.string()),
+      connectedAt: v.number(),
+      /** Last poll, which is the only liveness signal a polling worker has. */
+      lastSeenAt: v.number(),
+      jobsRun: v.number(),
+      lastError: v.optional(v.string()),
+    })
+      .index("by_user", ["userId"])
+      .index("by_token", ["token"]),
+
+    // Work waiting for that machine. A row is the whole request and the whole
+    // reply: queued, then running, then done or error. The runner waits on it
+    // so an agent's `run_code` still returns an ordinary result.
+    machineJobs: defineTable({
+      userId: v.id("users"),
+      language: v.string(),
+      source: v.string(),
+      stdin: v.string(),
+      packages: v.array(v.string()),
+      /** Lets the worker upload files it wrote, through `/artifact`. */
+      artifactToken: v.optional(v.string()),
+      state: v.string(),
+      output: v.string(),
+      error: v.string(),
+      failed: v.boolean(),
+      timedOut: v.boolean(),
+      exitCode: v.number(),
+      timeoutMs: v.number(),
+      createdAt: v.number(),
+      startedAt: v.optional(v.number()),
+      finishedAt: v.optional(v.number()),
+    })
+      .index("by_user_state", ["userId", "state"])
+      .index("by_state", ["state", "createdAt"]),
   },
   {
     schemaValidation: false,
