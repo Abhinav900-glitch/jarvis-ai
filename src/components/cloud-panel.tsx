@@ -5,9 +5,12 @@ import {
   CloudUpload,
   Download,
   FileText,
+  Folder,
+  FolderPlus,
   HardDrive,
   Image as ImageIcon,
   Loader2,
+  Search,
   Trash2,
   Upload,
   X,
@@ -51,20 +54,45 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
   const saveUpload = useMutation(api.cloud.save);
   const keepRun = useMutation(api.cloud.keepRun);
   const removeFile = useMutation(api.cloud.remove);
+  const createFolder = useMutation(api.cloud.createFolder);
+  const deleteFolder = useMutation(api.cloud.deleteFolder);
+  const moveFile = useMutation(api.cloud.moveFile);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Id<"cloudFiles"> | null>(null);
+  const [confirmFolder, setConfirmFolder] =
+    useState<Id<"cloudFolders"> | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [folderId, setFolderId] = useState<Id<"cloudFolders"> | null>(null);
+  const [search, setSearch] = useState("");
+  const [folderDraft, setFolderDraft] = useState("");
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [folderBusy, setFolderBusy] = useState(false);
 
-  const uploadFiles = async (files: File[]) => {
-    if (files.length === 0) return;
+  const folders = data?.folders ?? [];
+  const activeFolder = folders.find((f) => f._id === folderId) ?? null;
+  const allFiles = data?.files ?? [];
+  const query = search.trim().toLowerCase();
+  const files = allFiles.filter(
+    (file) =>
+      (folderId === null || file.folderId === folderId) &&
+      (query === "" || file.name.toLowerCase().includes(query)),
+  );
+  const folderName = (id: Id<"cloudFolders"> | null) =>
+    id === null ? null : (folders.find((f) => f._id === id)?.name ?? null);
+  const countIn = (id: Id<"cloudFolders"> | null) =>
+    allFiles.filter((file) => file.folderId === id).length;
+
+  const uploadFiles = async (picked: File[]) => {
+    if (picked.length === 0) return;
     setError(null);
     setNote(null);
     let saved = 0;
-    for (const file of files) {
+    for (const file of picked) {
       setBusy(file.name);
       try {
         const url = await createUpload();
@@ -84,6 +112,7 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
           name: file.name,
           mime: file.type || "application/octet-stream",
           size: file.size,
+          folderId: folderId ?? undefined,
         });
         saved += 1;
       } catch (err) {
@@ -94,7 +123,11 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
     }
     setBusy(null);
     if (saved > 0) {
-      setNote(`${saved} ${saved === 1 ? "file" : "files"} in your cloud.`);
+      setNote(
+        activeFolder
+          ? `${saved} ${saved === 1 ? "file" : "files"} in ${activeFolder.name}.`
+          : `${saved} ${saved === 1 ? "file" : "files"} in your cloud.`,
+      );
       window.setTimeout(() => setNote(null), 3000);
     }
   };
@@ -103,7 +136,7 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
     setError(null);
     setBusy("keep");
     try {
-      await keepRun({ id });
+      await keepRun({ id, folderId: folderId ?? undefined });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not keep that file.");
     } finally {
@@ -126,10 +159,66 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const handleCreateFolder = async () => {
+    const name = folderDraft.trim();
+    if (name === "") {
+      setNewFolderOpen(false);
+      return;
+    }
+    setFolderBusy(true);
+    setError(null);
+    try {
+      const id = await createFolder({ name });
+      setFolderId(id);
+      setFolderDraft("");
+      setNewFolderOpen(false);
+      setSearch("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not make that folder.");
+    } finally {
+      setFolderBusy(false);
+    }
+  };
+
+  const handleDeleteFolder = async (id: Id<"cloudFolders">) => {
+    if (confirmFolder !== id) {
+      setConfirmFolder(id);
+      window.setTimeout(
+        () => setConfirmFolder((c) => (c === id ? null : c)),
+        3000,
+      );
+      return;
+    }
+    setConfirmFolder(null);
+    setFolderBusy(true);
+    setError(null);
+    try {
+      await deleteFolder({ id });
+      setFolderId(null);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not delete that folder.",
+      );
+    } finally {
+      setFolderBusy(false);
+    }
+  };
+
+  const handleMove = async (
+    id: Id<"cloudFiles">,
+    next: Id<"cloudFolders"> | null,
+  ) => {
+    setError(null);
+    try {
+      await moveFile({ id, folderId: next });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not move that file.");
+    }
+  };
+
   const used = data?.used ?? 0;
   const limit = data?.limit ?? 1;
   const pct = Math.min(100, Math.round((used / limit) * 100));
-  const files = data?.files ?? [];
   const recent = data?.recentRuns ?? [];
 
   return (
@@ -198,6 +287,125 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
           />
         </div>
 
+        {/* Search — client-side because the whole drive is already in memory. */}
+        <div className="mt-2 flex items-center gap-1.5 rounded border border-border/60 px-2 py-1 focus-within:border-primary/40">
+          <Search className="size-3 shrink-0 text-muted-foreground/60" />
+          <input
+            ref={searchRef}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={
+              activeFolder ? `Search in ${activeFolder.name}…` : "Search files…"
+            }
+            className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/50"
+            aria-label="Search your cloud"
+          />
+          {search ? (
+            <button
+              onClick={() => {
+                setSearch("");
+                searchRef.current?.focus();
+              }}
+              className="rounded p-0.5 text-muted-foreground/60 hover:text-foreground"
+              title="Clear search"
+            >
+              <X className="size-3" />
+            </button>
+          ) : null}
+        </div>
+
+        {/* Folders: one flat row, with the active one singled out. */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+          <button
+            onClick={() => setFolderId(null)}
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+              folderId === null
+                ? "border-primary/50 bg-primary/10 text-foreground"
+                : "border-border/60 text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            All files
+            <span className="text-muted-foreground/50">{allFiles.length}</span>
+          </button>
+          {folders.map((folder) => (
+            <button
+              key={folder._id}
+              onClick={() => setFolderId(folder._id)}
+              className={`inline-flex max-w-[10rem] items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                folderId === folder._id
+                  ? "border-primary/50 bg-primary/10 text-foreground"
+                  : "border-border/60 text-muted-foreground hover:text-foreground"
+              }`}
+              title={folder.name}
+            >
+              <Folder className="size-2.5 shrink-0" />
+              <span className="truncate">{folder.name}</span>
+              <span className="shrink-0 text-muted-foreground/50">
+                {countIn(folder._id)}
+              </span>
+            </button>
+          ))}
+
+          {newFolderOpen ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleCreateFolder();
+              }}
+              className="inline-flex items-center gap-1 rounded-full border border-border/60 px-2 py-0.5"
+            >
+              <input
+                autoFocus
+                value={folderDraft}
+                onChange={(e) => setFolderDraft(e.target.value)}
+                onBlur={() => {
+                  if (folderDraft.trim() === "") setNewFolderOpen(false);
+                }}
+                maxLength={40}
+                placeholder="Folder name"
+                className="w-24 bg-transparent text-[10px] outline-none placeholder:text-muted-foreground/50"
+              />
+              <button
+                type="submit"
+                disabled={folderBusy || folderDraft.trim() === ""}
+                className="text-[10px] font-medium text-primary disabled:opacity-40"
+              >
+                {folderBusy ? (
+                  <Loader2 className="size-2.5 animate-spin" />
+                ) : (
+                  "Add"
+                )}
+              </button>
+            </form>
+          ) : (
+            <button
+              onClick={() => setNewFolderOpen(true)}
+              disabled={folders.length >= 40}
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+              title="New folder"
+            >
+              <FolderPlus className="size-2.5" />
+              New
+            </button>
+          )}
+
+          {activeFolder ? (
+            <button
+              onClick={() => void handleDeleteFolder(activeFolder._id)}
+              disabled={folderBusy}
+              className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] transition-colors disabled:opacity-50 ${
+                confirmFolder === activeFolder._id
+                  ? "bg-destructive/10 text-destructive"
+                  : "text-muted-foreground/60 hover:text-destructive"
+              }`}
+              title="Delete this folder; the files inside stay"
+            >
+              <Trash2 className="size-2.5" />
+              {confirmFolder === activeFolder._id ? "Sure?" : "Folder"}
+            </button>
+          ) : null}
+        </div>
+
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -224,19 +432,20 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
               Uploading {busy}…
             </div>
           ) : files.length === 0 ? (
-            <button
-              onClick={() => inputRef.current?.click()}
-              className="flex w-full flex-col items-center gap-1 px-3 py-5 text-center transition-colors hover:bg-accent/20"
-            >
+            <div className="flex flex-col items-center gap-1 px-3 py-5 text-center">
               <CloudUpload className="size-5 text-muted-foreground/60" />
               <span className="text-[11px] text-muted-foreground">
-                Drop files here, or click to choose.
+                {query
+                  ? `No files match “${search.trim()}”.`
+                  : activeFolder
+                    ? `${activeFolder.name} is empty — drop files here.`
+                    : "Drop files here, or click Upload."}
               </span>
               <span className="text-[10px] text-muted-foreground/60">
                 {formatBytes(data?.maxFile ?? 0)} per file · kept for as long as
                 you want them
               </span>
-            </button>
+            </div>
           ) : (
             <ul className="max-h-56 divide-y divide-border/40 overflow-y-auto">
               {files.map((file) => (
@@ -259,11 +468,32 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs leading-4">{file.name}</p>
-                    <p className="text-[10px] text-muted-foreground/60">
+                    <p className="truncate text-[10px] text-muted-foreground/60">
                       {formatBytes(file.size)} · {SOURCE_LABEL[file.source] ?? "file"} ·{" "}
+                      {folderName(file.folderId) ?? "top level"} ·{" "}
                       {ago(file.createdAt)}
                     </p>
                   </div>
+                  {folders.length > 0 ? (
+                    <select
+                      value={file.folderId ?? ""}
+                      onChange={(e) =>
+                        void handleMove(
+                          file.id,
+                          (e.target.value || null) as Id<"cloudFolders"> | null,
+                        )
+                      }
+                      className="max-w-20 shrink-0 truncate rounded border border-border/50 bg-transparent px-1 py-0.5 text-[10px] text-muted-foreground outline-none hover:text-foreground"
+                      title="Move to folder"
+                    >
+                      <option value="">Top level</option>
+                      {folders.map((folder) => (
+                        <option key={folder._id} value={folder._id}>
+                          {folder.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
                   {file.url ? (
                     <a
                       href={file.url}

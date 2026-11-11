@@ -25,6 +25,8 @@ export const LIMIT_BYTES = 512 * 1024 * 1024;
 export const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_FILES = 300;
 const MAX_NAME = 120;
+const MAX_FOLDERS = 40;
+const MAX_FOLDER_NAME = 40;
 
 /** Directory separators are stripped: the name is a label, not a path. */
 function cleanName(raw: string): string {
@@ -66,6 +68,7 @@ export const list = query({
         mime: row.mime,
         size: row.size,
         source: row.source ?? "upload",
+        folderId: row.folderId ?? null,
         createdAt: row.createdAt,
         // Null when the blob is gone but the row survived; the row still shows
         // so the user can delete it rather than stare at a dead download.
@@ -96,8 +99,14 @@ export const list = query({
       });
     }
 
+    const folders = await ctx.db
+      .query("cloudFolders")
+      .withIndex("by_user_time", (q) => q.eq("userId", userId))
+      .take(MAX_FOLDERS);
+
     return {
       files,
+      folders,
       recentRuns,
       used,
       limit: LIMIT_BYTES,
@@ -122,6 +131,16 @@ export const createUpload = mutation({
   },
 });
 
+/** A folder belongs to exactly one user; anything else is treated as missing. */
+async function ownedFolder(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  folderId: Id<"cloudFolders">,
+): Promise<boolean> {
+  const folder = await ctx.db.get(folderId);
+  return folder !== null && folder.userId === userId;
+}
+
 /** Record an uploaded blob. The blob is removed when it would break the quota. */
 export const save = mutation({
   args: {
@@ -132,10 +151,15 @@ export const save = mutation({
     source: v.optional(
       v.union(v.literal("upload"), v.literal("run"), v.literal("image")),
     ),
+    folderId: v.optional(v.id("cloudFolders")),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to use your cloud.");
+    if (args.folderId && !(await ownedFolder(ctx, userId, args.folderId))) {
+      await ctx.storage.delete(args.storageId);
+      throw new Error("That folder no longer exists.");
+    }
 
     if (args.size > MAX_FILE_BYTES) {
       // The upload already happened, so the orphan is cleaned up here. Leaving
@@ -156,6 +180,7 @@ export const save = mutation({
       size: args.size,
       storageId: args.storageId,
       source: args.source ?? "upload",
+      folderId: args.folderId,
       createdAt: Date.now(),
     });
   },
@@ -163,10 +188,16 @@ export const save = mutation({
 
 /** Keep a file a run produced, by referencing the same blob — no re-upload. */
 export const keepRun = mutation({
-  args: { id: v.id("agentArtifacts") },
-  handler: async (ctx, { id }) => {
+  args: {
+    id: v.id("agentArtifacts"),
+    folderId: v.optional(v.id("cloudFolders")),
+  },
+  handler: async (ctx, { id, folderId }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to use your cloud.");
+    if (folderId && !(await ownedFolder(ctx, userId, folderId))) {
+      throw new Error("That folder no longer exists.");
+    }
 
     const artifact = await ctx.db.get(id);
     if (!artifact || artifact.userId !== userId || !artifact.storageId) {
@@ -193,6 +224,7 @@ export const keepRun = mutation({
       size: artifact.size,
       storageId: artifact.storageId,
       source: "run",
+      folderId,
       createdAt: Date.now(),
     });
   },
@@ -218,6 +250,87 @@ export const remove = mutation({
     if (!artifact) await ctx.storage.delete(row.storageId);
 
     await ctx.db.delete(row._id);
+    return true;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Folders
+//
+// Flat and one level deep. A drive of a few hundred files needs grouping, not a
+// hierarchy, and a single level keeps every read to one index scan.
+// ---------------------------------------------------------------------------
+
+export const createFolder = mutation({
+  args: { name: v.string() },
+  handler: async (ctx, { name }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to use your cloud.");
+
+    const clean = name.trim().replace(/\s+/g, " ").slice(0, MAX_FOLDER_NAME);
+    if (clean.length === 0) throw new Error("Give the folder a name.");
+
+    const existing = await ctx.db
+      .query("cloudFolders")
+      .withIndex("by_user_time", (q) => q.eq("userId", userId))
+      .take(MAX_FOLDERS);
+    if (existing.length >= MAX_FOLDERS) {
+      throw new Error(`You can have ${MAX_FOLDERS} folders.`);
+    }
+    if (existing.some((f) => f.name.toLowerCase() === clean.toLowerCase())) {
+      throw new Error("A folder with that name already exists.");
+    }
+
+    return await ctx.db.insert("cloudFolders", {
+      userId,
+      name: clean,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/** Move a file into a folder, or to the top level with `folderId: null`. */
+export const moveFile = mutation({
+  args: {
+    id: v.id("cloudFiles"),
+    folderId: v.union(v.id("cloudFolders"), v.null()),
+  },
+  handler: async (ctx, { id, folderId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to use your cloud.");
+
+    const row = await ctx.db.get(id);
+    if (!row || row.userId !== userId) throw new Error("File not found.");
+    if (folderId && !(await ownedFolder(ctx, userId, folderId))) {
+      throw new Error("That folder no longer exists.");
+    }
+
+    await ctx.db.patch(row._id, { folderId: folderId ?? undefined });
+    return true;
+  },
+});
+
+/** Delete a folder, keeping what was in it — its files fall back to the top. */
+export const deleteFolder = mutation({
+  args: { id: v.id("cloudFolders") },
+  handler: async (ctx, { id }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to use your cloud.");
+
+    const folder = await ctx.db.get(id);
+    if (!folder || folder.userId !== userId) throw new Error("Folder not found.");
+
+    const files = await ctx.db
+      .query("cloudFiles")
+      .withIndex("by_user_time", (q) => q.eq("userId", userId))
+      .take(MAX_FILES);
+    for (const file of files) {
+      if (file.folderId === folder._id) {
+        await ctx.db.patch(file._id, { folderId: undefined });
+      }
+    }
+
+    await ctx.db.delete(folder._id);
     return true;
   },
 });

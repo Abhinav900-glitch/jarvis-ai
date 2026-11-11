@@ -589,6 +589,17 @@ const schema = defineSchema(
       source: v.optional(
         v.union(v.literal("upload"), v.literal("run"), v.literal("image")),
       ),
+      /** Absent means unfiled — at the top level, not in a missing folder. */
+      folderId: v.optional(v.id("cloudFolders")),
+      createdAt: v.number(),
+    }).index("by_user_time", ["userId", "createdAt"]),
+
+    // Folders are flat on purpose: one level is enough to organise a drive and
+    // keeps every listing a single indexed read. Deleting a folder unfiles its
+    // contents rather than destroying them.
+    cloudFolders: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
       createdAt: v.number(),
     }).index("by_user_time", ["userId", "createdAt"]),
 
