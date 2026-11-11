@@ -15,6 +15,7 @@ import {
   Info,
   Laptop,
   Loader2,
+  Package,
   Play,
   Send,
   Terminal,
@@ -30,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   CODE_LANGUAGES,
@@ -53,6 +55,30 @@ import { colabWorkerCell } from "@/lib/colab-worker";
 const INDENT = "  ";
 
 /** How each probe verdict is worded and coloured. */
+/** The runner installs at most this many packages for one run. */
+const MAX_INSTALLS = 8;
+
+/**
+ * The package names inside a `pip install …` line.
+ *
+ * The box is typed the way a shell is typed, so the words that are the command
+ * rather than an argument (`pip`, `install`, `!`) are dropped and anything
+ * starting with `-` is left to pip. The list is capped where the runner caps
+ * it, so a ninth name is a visible limit rather than a silent omission.
+ */
+function parsePackages(raw: string): string[] {
+  const words = raw
+    .split(/[\s,]+/)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  const names = words.filter(
+    (word) =>
+      !/^(pip|pip3|python|python3|npm|install|i|add|-m|!)$/i.test(word) &&
+      !word.startsWith("-"),
+  );
+  return [...new Set(names)].slice(0, MAX_INSTALLS);
+}
+
 const PROBE_LABELS: Record<EngineProbe["state"], string> = {
   ok: "working",
   rejected: "key rejected",
@@ -251,8 +277,17 @@ export function CodePanel({
   const [languageId, setLanguageId] = useState(DEFAULT_CODE_LANGUAGE);
   const [versionIndex, setVersionIndex] = useState<number | undefined>(undefined);
   const [source, setSource] = useState("");
-  /** Packages JDoodle installs before the run, carried over from a starter. */
-  const [libs, setLibs] = useState<string[]>([]);
+  /**
+   * Packages installed before the run, typed the way pip is typed.
+   *
+   * `pip install numpy pandas` is what people already know, so the box accepts
+   * exactly that (or the bare names, or a comma-separated list) and the
+   * installers read the names out of it. It used to be invisible state that a
+   * starter set and any keystroke in the editor dropped; a field you can see
+   * and edit is the only way "it said numpy was missing" becomes fixable here.
+   */
+  const [packageInput, setPackageInput] = useState("");
+  const [showPackages, setShowPackages] = useState(false);
   const [stdin, setStdin] = useState("");
   const [showStdin, setShowStdin] = useState(false);
   const [running, setRunning] = useState(false);
@@ -278,6 +313,12 @@ export function CodePanel({
     () => getCodeLanguage(languageId) ?? CODE_LANGUAGES[0],
     [languageId],
   );
+
+  /** pip for Python, npm for Node — the engines that can install at all. */
+  const installer =
+    language.id === "python3" ? "pip" : language.id === "nodejs" ? "npm" : null;
+
+  const libs = useMemo(() => parsePackages(packageInput), [packageInput]);
   const version =
     language.versions.find((v) => v.index === versionIndex) ??
     language.versions[language.defaultVersion] ??
@@ -301,7 +342,8 @@ export function CodePanel({
     chooseLanguage(program.language);
     setVersionIndex(program.versionIndex);
     setSource(program.code);
-    setLibs(program.libs ?? []);
+    setPackageInput((program.libs ?? []).join(" "));
+    setShowPackages((program.libs ?? []).length > 0);
     setResult(null);
     setShowLibrary(false);
     window.setTimeout(() => editorRef.current?.focus(), 60);
@@ -402,7 +444,6 @@ export function CodePanel({
     const { selectionStart, selectionEnd, value } = el;
     setSource(`${value.slice(0, selectionStart)}${INDENT}${value.slice(selectionEnd)}`);
     setResult(null);
-    setLibs([]);
     requestAnimationFrame(() => {
       el.selectionStart = el.selectionEnd = selectionStart + INDENT.length;
     });
@@ -414,11 +455,10 @@ export function CodePanel({
     setResult(null);
   };
 
-  // A hand-edited program is no longer the one the starter described, so the
-  // packages it asked for are dropped rather than installed uninvited.
+  // The packages field is the user's now, so editing the code leaves it alone:
+  // dropping what a starter asked for is right only while it is invisible.
   const handleEdit = (value: string) => {
     onSourceChange(value);
-    setLibs([]);
   };
 
   // The gutter renders one div per line, so cap it rather than laying out
@@ -558,7 +598,28 @@ export function CodePanel({
                 <ChevronDown className="size-3" />
               )}
             </Button>
-          )}            <Button
+          )}
+
+          {installer ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setShowPackages((v) => !v)}
+              title={`Install ${installer === "pip" ? "Python" : "Node"} packages before the run`}
+            >
+              <Package className="size-3.5" />
+              {installer} install
+              {libs.length > 0 ? (
+                <span className="tabular-nums text-primary">{libs.length}</span>
+              ) : null}
+              {showPackages ? (
+                <ChevronUp className="size-3" />
+              ) : (
+                <ChevronDown className="size-3" />
+              )}
+            </Button>
+          ) : null}            <Button
               variant="ghost"
               size="sm"
               className="h-7 px-2 text-xs"
@@ -1049,6 +1110,48 @@ export function CodePanel({
         </div>
 
         {/* ---- stdin ---- */}
+        {/* ---- Packages ---- */}
+        {showPackages && installer ? (
+          <div className="mt-2">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                {installer === "pip" ? "Python packages (pip)" : "Node packages (npm)"}
+              </span>
+              <span className="text-[10px] text-muted-foreground/60">
+                installed before the run — an engine that cannot install says so
+              </span>
+            </div>
+            <Input
+              value={packageInput}
+              onChange={(e) => setPackageInput(e.target.value)}
+              spellCheck={false}
+              placeholder={
+                installer === "pip"
+                  ? "pip install numpy pandas"
+                  : "npm install express"
+              }
+              className="h-8 font-mono text-xs"
+            />
+            {libs.length > 0 ? (
+              <div className="mt-1 flex flex-wrap items-center gap-1">
+                {libs.map((name) => (
+                  <span
+                    key={name}
+                    className="rounded bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground"
+                  >
+                    {name}
+                  </span>
+                ))}
+                {parsePackages(packageInput).length === MAX_INSTALLS ? (
+                  <span className="text-[10px] text-muted-foreground/60">
+                    {MAX_INSTALLS} at a time
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {showStdin && language.stdin && (
           <div className="mt-2">
             <div className="mb-1 flex items-center gap-2">
