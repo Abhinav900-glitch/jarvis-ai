@@ -602,6 +602,70 @@ const RUNNER_LANGUAGES = new Set([
   "bash",
 ]);
 
+/**
+ * The pip distribution behind an import name, where the two differ.
+ *
+ * "No module named 'pptx'" is answered by installing python-pptx, not pptx,
+ * and a model that has to look that up spends a turn on something the runner
+ * can settle by itself. Anything absent here is its own distribution name,
+ * which pip normalises (`foo_bar` and `foo-bar` are the same thing).
+ */
+const PYTHON_PACKAGE_FOR_MODULE: Record<string, string> = {
+  PIL: "pillow",
+  cv2: "opencv-python",
+  pptx: "python-pptx",
+  docx: "python-docx",
+  sklearn: "scikit-learn",
+  yaml: "pyyaml",
+  bs4: "beautifulsoup4",
+  fitz: "pymupdf",
+  dateutil: "python-dateutil",
+  dotenv: "python-dotenv",
+  jwt: "pyjwt",
+  Crypto: "pycryptodome",
+  OpenSSL: "pyopenssl",
+  serial: "pyserial",
+  MySQLdb: "mysqlclient",
+  psycopg2: "psycopg2-binary",
+  attr: "attrs",
+  dns: "dnspython",
+  magic: "python-magic",
+  googleapiclient: "google-api-python-client",
+  telegram: "python-telegram-bot",
+  telebot: "pytelegrambotapi",
+  speech_recognition: "SpeechRecognition",
+  Levenshtein: "python-levenshtein",
+  slugify: "python-slugify",
+};
+
+function pythonPackageFor(module: string): string {
+  const top = module.split(".")[0];
+  return PYTHON_PACKAGE_FOR_MODULE[top] ?? top;
+}
+
+/** The import that made a Python run fail, if that is why it failed. */
+function missingModule(result: {
+  error?: string;
+  exitCode?: number | null;
+  failed?: boolean;
+}): string | null {
+  // Not every engine reports an exit code — JDoodle answers with `failed`
+  // alone — so a traceback has to be able to count as a failure without one.
+  if (!result.failed && (result.exitCode ?? 0) === 0) return null;
+  const match = /ModuleNotFoundError: No module named '([^'.]+)/.exec(result.error ?? "");
+  return match ? match[1] : null;
+}
+
+interface RunOutcome {
+  output?: string;
+  error?: string;
+  failed?: boolean;
+  exitCode?: number | null;
+  requestError?: string | null;
+  engineNote?: string | null;
+  files?: RunFile[];
+}
+
 async function runCode(
   ec: ExecContext,
   language: string,
@@ -627,26 +691,36 @@ async function runCode(
     };
   }
 
-  const result = (await ec.ctx.runAction(
-    internal.codeRunner.runProgramInternal,
-    {
+  const attempt = async (libs: string[]): Promise<RunOutcome> =>
+    (await ec.ctx.runAction(internal.codeRunner.runProgramInternal, {
       language: slug,
       sourceCode: code,
       stdin,
       // pip installs for Python, npm for Node: the engine's own package
       // manager, which is why the names are passed through untouched.
-      libs: packages.length > 0 ? packages : undefined,
+      libs: libs.length > 0 ? libs : undefined,
       // Only Python can hand files back, and only the agent wants them.
       captureFiles: true,
-    },
-  )) as {
-    output?: string;
-    error?: string;
-    exitCode?: number | null;
-    requestError?: string | null;
-    engineNote?: string | null;
-    files?: RunFile[];
-  };
+    })) as RunOutcome;
+
+  let result = await attempt(packages);
+
+  // A missing import is the most common way a Python run dies, and it is not a
+  // mistake in the program: the package simply is not there. Install it and run
+  // the same code again rather than spending a turn on the traceback. Only when
+  // nothing was produced does a retry cost nothing.
+  let installed: string | null = null;
+  const missing = slug === "python3" ? missingModule(result) : null;
+  if (missing && !(result.files ?? []).length) {
+    const dependency = pythonPackageFor(missing);
+    if (dependency && !packages.includes(dependency)) {
+      const retried = await attempt([...packages, dependency]);
+      if (!retried.requestError?.trim() && !missingModule(retried)) {
+        result = retried;
+        installed = dependency;
+      }
+    }
+  }
 
   const note = result.requestError?.trim();
 
@@ -659,7 +733,17 @@ async function runCode(
     };
   }
 
-  return deliver(describe(result, `Ran ${slug}`), result.files ?? []);
+  const outcome = describe(result, `Ran ${slug}`);
+  return deliver(
+    installed
+      ? {
+          ...outcome,
+          result: `${outcome.result}\n\n(\`${installed}\` was missing, so it was installed and the program ran again. Name it in \`packages\` next time.)`,
+          summary: `${outcome.summary} · installed ${installed}`,
+        }
+      : outcome,
+    result.files ?? [],
+  );
 }
 
 /**
@@ -742,6 +826,7 @@ function describe(
     output?: string;
     error?: string;
     exitCode?: number | null;
+    failed?: boolean;
   },
   label: string,
 ): ToolOutcome {
@@ -754,13 +839,18 @@ function describe(
   if (out) parts.push(`stdout:\n${out.slice(0, 6000)}`);
   if (err) parts.push(`stderr:\n${err.slice(0, 4000)}`);
 
-  const failed = (result.exitCode ?? 0) !== 0;
+  // The engine's own verdict leads: a traceback is a failure even when the
+  // engine hands back no exit code for it, and calling that run clean is what
+  // lets "it works" reach the user on code that has never actually run.
+  const failed = result.failed === true || (result.exitCode ?? 0) !== 0;
   return {
     result:
       parts.length > 0
         ? parts.join("\n\n")
         : "The program ran and produced no output.",
-    summary: `${label}${failed ? " — failed" : ""}`,
+    // The summary is the receipt the user sees next to the step, so the exit
+    // code belongs in it: "Ran python3" alone cannot tell a proof from a crash.
+    summary: `${label}${result.exitCode !== null && result.exitCode !== undefined ? ` · exit ${result.exitCode}` : ""}${failed ? " — failed" : ""}`,
     mutated: false,
     refused: failed,
   };
