@@ -193,6 +193,24 @@ export const args = {
   ref: (a: Record<string, unknown>) => str(a, "ref"),
   code: (a: Record<string, unknown>) => str(a, "code"),
   stdin: (a: Record<string, unknown>) => str(a, "stdin"),
+  /**
+   * Package names to install before a run, e.g. ["python-pptx"].
+   *
+   * Deliberately not a comma-separated string: a model that writes
+   * "python-pptx, pillow" into one name installs nothing, and the failure is
+   * invisible until the program's import fails. The cap matches what the runner
+   * will install, so a long list is trimmed here rather than silently dropped
+   * by an engine.
+   */
+  packages: (a: Record<string, unknown>): string[] => {
+    const raw = a["packages"];
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 6);
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -201,6 +219,11 @@ export const args = {
 
 const strArg = (description: string) => ({ type: "string", description });
 const optInt = (description: string) => ({ type: "integer", description });
+const listArg = (description: string) => ({
+  type: "array",
+  items: { type: "string" },
+  description,
+});
 
 /**
  * Which sandbox runner can execute a workspace file.
@@ -385,12 +408,15 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
       function: {
         name: "run_file",
         description:
-          "Runs a file that already exists in the workspace and returns its stdout, stderr and exit code. This is how you check what you just wrote: run the file itself rather than pasting a copy into run_code, so the thing you test is the thing that was saved. The language comes from the extension.",
+          "Runs a file that already exists in the workspace and returns its stdout, stderr and exit code. This is how you check what you just wrote: run the file itself rather than pasting a copy into run_code, so the thing you test is the thing that was saved. The language comes from the extension. A Python file that writes a file (a .pptx, .xlsx or image) keeps it: it comes back as a download link for the user.",
         parameters: {
           type: "object",
           properties: {
             path: strArg("Workspace-relative path, e.g. main.py or src/check.js"),
             stdin: strArg("Optional text piped to standard input"),
+            packages: listArg(
+              "Package names to install before the run, in the language's own manager: pip for Python (\"python-pptx\"), npm for Node (\"pptxgenjs\"). Required for any import that is not in the standard library.",
+            ),
           },
           required: ["path"],
         },
@@ -401,7 +427,7 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
       function: {
         name: "run_code",
         description:
-          "Runs a snippet in a sandbox and returns stdout, stderr and the exit code. Use it to check your work rather than assuming a change is correct.",
+          "Runs a snippet in a fresh sandbox and returns stdout, stderr and the exit code. Use it to check your work rather than assuming a change is correct. Files up to 12 MB that a Python program writes come back as download links for the user, which is how a real .pptx or .xlsx gets delivered instead of being described.",
         parameters: {
           type: "object",
           properties: {
@@ -410,6 +436,9 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
             ),
             code: strArg("The complete program to run"),
             stdin: strArg("Optional text piped to standard input"),
+            packages: listArg(
+              "Package names to install before the run, in the language's own manager: pip for Python (\"python-pptx\", \"openpyxl\"), npm for Node. Required for any import that is not in the standard library.",
+            ),
           },
           required: ["language", "code"],
         },

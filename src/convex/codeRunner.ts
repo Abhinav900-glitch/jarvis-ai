@@ -3,6 +3,9 @@
 import { v } from "convex/values";
 import { action, internalAction } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { internal } from "./_generated/api";
+import type { ActionCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import {
   CODE_LANGUAGES,
   getCodeLanguage,
@@ -10,7 +13,7 @@ import {
   type CodeLanguage,
   type CodeVersion,
 } from "../lib/code-languages";
-import type { CodeProvider, CodeRunResult } from "../lib/code-run";
+import type { CodeProvider, CodeRunResult, RunFile } from "../lib/code-run";
 
 // ---------------------------------------------------------------------------
 // Code execution, with fallback engines.
@@ -73,6 +76,131 @@ const OC_OUTPUT_CAP = 999;
  * indication that it did, so the length itself is the only available signal.
  */
 const WANDBOX_OUTPUT_CAP = 131_072;
+
+// ---------------------------------------------------------------------------
+// Files a program writes
+//
+// An engine hands back stdout and nothing else. That is the whole reason
+// python-pptx was useless here: a deck can be built perfectly inside the
+// sandbox and still never reach the person who asked for it. What stands in the
+// way is the transport — an engine returns stdout, and the one engine that can
+// install python-pptx caps that output at a few kilobytes. That is measured, not
+// assumed: one slide of base64 already trips "JDoodle - output Limit reached."
+//
+// So the bytes never travel through stdout. The sandbox has a network, so the
+// tail below POSTs every file the program created to this deployment's
+// /artifact endpoint, authorised by a token minted for that run alone. The
+// action then reads back what arrived and gives the model ordinary links.
+//
+// The tail is appended to a Python program when the caller asks for it, and it
+// registers an atexit hook rather than trailing statements, so a program that
+// ends with sys.exit() still delivers what it made.
+// ---------------------------------------------------------------------------
+
+/**
+ * The Python tail that hands every file the program created to this deployment.
+ *
+ * Written defensively on purpose: this code is appended to somebody else's
+ * program, and a traceback from the tail would look like a bug in their code.
+ * Every step that can fail is wrapped, the hook is registered last so a program
+ * that crashes on its own still reaches its own error first, and nothing is
+ * printed on success — stdout is scarce here.
+ *
+ * Only files newer than the script itself are sent. That one check is what
+ * keeps the engine's own scaffolding out of the user's downloads: the venv that
+ * pip installs into is created before the program runs, so its thousands of
+ * files are all older.
+ */
+function fileTail(endpoint: string, token: string): string {
+  return String.raw`
+import atexit as _jv_exit, os as _jv_os, sys as _jv_sys, time as _jv_time
+import urllib.parse as _jv_parse, urllib.request as _jv_request
+
+_jv_url = "__JV_ENDPOINT__"
+_jv_token = "__JV_TOKEN__"
+_jv_skip = {"__pycache__", ".git", "node_modules", ".cache"}
+_jv_limit = 8
+_jv_max = 12582912
+
+def _jv_venvs():
+    roots = []
+    for _jv_root, _jv_dirs, _jv_files in _jv_os.walk("."):
+        if "pyvenv.cfg" in _jv_files:
+            roots.append(_jv_os.path.abspath(_jv_root))
+            _jv_dirs[:] = []
+    return roots
+
+def _jv_inside(_jv_path, _jv_roots):
+    _jv_target = _jv_os.path.abspath(_jv_path)
+    for _jv_root in _jv_roots:
+        if _jv_target == _jv_root or _jv_target.startswith(_jv_root + _jv_os.sep):
+            return True
+    return False
+
+def _jv_send():
+    try:
+        _jv_own = _jv_os.path.abspath(__file__)
+    except Exception:
+        # Some engines hand the program to the interpreter in a way that leaves
+        # __file__ undefined. argv[0] names the same file when it exists, and the
+        # point of this value is only to keep the program's own source out of the
+        # user's downloads.
+        try:
+            _jv_own = _jv_os.path.abspath(_jv_sys.argv[0] or "")
+        except Exception:
+            _jv_own = ""
+    try:
+        _jv_since = _jv_os.path.getmtime(_jv_own) - 2.0 if _jv_own else _jv_time.time() - 900.0
+    except Exception:
+        _jv_since = _jv_time.time() - 900.0
+    _jv_roots = _jv_venvs()
+    _jv_sent = 0
+    for _jv_dir, _jv_subdirs, _jv_files in _jv_os.walk("."):
+        _jv_subdirs[:] = [
+            d for d in _jv_subdirs
+            if d not in _jv_skip and not _jv_inside(_jv_os.path.join(_jv_dir, d), _jv_roots)
+        ]
+        for _jv_name in sorted(_jv_files):
+            if _jv_sent >= _jv_limit:
+                return
+            _jv_path = _jv_os.path.join(_jv_dir, _jv_name)
+            if _jv_name.endswith(".pyc") or _jv_os.path.abspath(_jv_path) == _jv_own:
+                continue
+            try:
+                if _jv_os.path.getmtime(_jv_path) < _jv_since:
+                    continue
+                if _jv_os.path.getsize(_jv_path) > _jv_max:
+                    continue
+                with open(_jv_path, "rb") as _jv_handle:
+                    _jv_data = _jv_handle.read()
+            except Exception:
+                continue
+            if not _jv_data:
+                continue
+            _jv_rel = _jv_os.path.relpath(_jv_path).replace("\\", "/")
+            try:
+                _jv_req = _jv_request.Request(
+                    _jv_url,
+                    data=_jv_data,
+                    method="POST",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-Jarvis-Token": _jv_token,
+                        "X-Jarvis-Name": _jv_parse.quote(_jv_rel, safe=""),
+                    },
+                )
+                _jv_request.urlopen(_jv_req, timeout=25).read()
+                _jv_sent += 1
+            except Exception as _jv_error:
+                _jv_sys.stdout.write(
+                    "\n@@JARVIS_UNDELIVERED@@" + _jv_rel + " (" + type(_jv_error).__name__ + ")\n"
+                )
+
+_jv_exit.register(_jv_send)
+`
+    .replace("__JV_ENDPOINT__", endpoint)
+    .replace("__JV_TOKEN__", token);
+}
 
 /**
  * Every spelling of each variable that has ever been used for these engines.
@@ -721,6 +849,14 @@ const runArgs = {
   sourceCode: v.string(),
   /** Packages to install before the run, e.g. ["numpy"]. */
   libs: v.optional(v.array(v.string())),
+  /**
+   * Collect the files the program writes and hand their bytes back.
+   *
+   * Off by default. A run whose output is being read by a person in the panel
+   * has no use for megabytes of base64, and the transport costs output budget,
+   * so only the agent — which turns them into download links — asks for it.
+   */
+  captureFiles: v.optional(v.boolean()),
 };
 
 export const runCode = action({
@@ -728,7 +864,9 @@ export const runCode = action({
   handler: async (ctx, args): Promise<CodeRunResult> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to run code.");
-    return runProgram(args);
+    // The panel shows text, not downloads: it runs without a capture token, so
+    // its response stays small and its latency stays unchanged.
+    return runInSandbox(args);
   },
 });
 
@@ -741,11 +879,17 @@ export const runCode = action({
  * running code must not be able to disagree about what happens.
  */
 export const runProgramInternal = internalAction({
-  args: runArgs,
-  handler: async (_ctx, args): Promise<CodeRunResult> => runProgram(args),
+  args: {
+    ...runArgs,
+    /** Whose artifact list the run's files land in. Omitted, nothing is kept. */
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args): Promise<CodeRunResult> =>
+    args.userId ? runWithFiles(ctx, args.userId, args) : runInSandbox(args),
 });
 
-async function runProgram(args: {
+/** The runner proper: what the chain actually executes. */
+async function runInSandbox(args: {
   language: string;
   versionIndex?: number;
   stdin?: string;
@@ -869,6 +1013,83 @@ async function runProgram(args: {
       }`;
     }
     return failure;
+}
+
+/**
+ * The runner, with file capture around it.
+ *
+ * Appending the tail is the whole implementation of "the program keeps what it
+ * made": the engines are unchanged, the fallback chain is unchanged, and a run
+ * that writes nothing behaves exactly as it did before. A non-Python program is
+ * passed straight through, because a tail written in Python would be a syntax
+ * error in it.
+ */
+async function runWithFiles(
+  ctx: ActionCtx,
+  userId: Id<"users">,
+  args: {
+    language: string;
+    versionIndex?: number;
+    stdin?: string;
+    sourceCode: string;
+    libs?: string[];
+    captureFiles?: boolean;
+  },
+): Promise<CodeRunResult> {
+  // Only Python can be asked to hand files back, and only when the caller
+  // wants them: the tail is Python, so appending it to anything else would be
+  // a syntax error rather than a feature.
+  if (!args.captureFiles || args.language !== "python3") {
+    return runInSandbox(args);
+  }
+
+  const site = process.env.CONVEX_SITE_URL?.trim();
+  if (!site) {
+    // No HTTP endpoint to post to means no delivery; running without capture is
+    // still worth doing, and saying nothing would be worse than saying why.
+    const plain = await runInSandbox(args);
+    plain.engineNote = [
+      plain.engineNote,
+      "Files are not collected here: this deployment has no CONVEX_SITE_URL, so the sandbox has nowhere to send them.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    return plain;
+  }
+
+  const token = await ctx.runMutation(internal.artifacts.issue, { userId });
+  const result = await runInSandbox({
+    ...args,
+    sourceCode: `${args.sourceCode}\n\n\n${fileTail(`${site}/artifact`, token)}\n`,
+  });
+
+  const arrived = await ctx.runQuery(internal.artifacts.listForToken, { token });
+  const files: RunFile[] = [];
+  for (const row of arrived) {
+    const url = await ctx.storage.getUrl(row.storageId);
+    if (url) files.push({ path: row.name, bytes: row.size, url });
+  }
+  if (files.length > 0) result.files = files;
+
+  // The tail reports a file it could not deliver on one short line. Left in the
+  // output it would read as the program's own printing, so it is lifted out and
+  // said once, in the place the caller already looks for run notes.
+  const undelivered = [...result.output.matchAll(/@@JARVIS_UNDELIVERED@@([^\n]*)/g)].map(
+    (match) => match[1].trim(),
+  );
+  if (undelivered.length > 0) {
+    result.output = result.output
+      .replace(/\n?@@JARVIS_UNDELIVERED@@[^\n]*/g, "")
+      .trimEnd();
+    result.engineNote = [
+      result.engineNote,
+      `These files were written but could not be delivered: ${undelivered.join(", ")}.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------

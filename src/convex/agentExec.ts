@@ -29,6 +29,7 @@ import {
   type ToolOutcome,
 } from "../lib/agent-tools";
 import { AUTO_WRITE_BUDGET } from "../lib/agent-contract";
+import type { RunFile } from "../lib/code-run";
 
 export interface ExecContext {
   ctx: GenericActionCtx<DataModel>;
@@ -110,13 +111,19 @@ export async function executeTool(
       case "delete_file":
         return await deleteFile(ec, args.path(parsed));
       case "run_file":
-        return await runFile(ec, args.path(parsed), args.stdin(parsed));
+        return await runFile(
+          ec,
+          args.path(parsed),
+          args.stdin(parsed),
+          args.packages(parsed),
+        );
       case "run_code":
         return await runCode(
           ec,
           args.language(parsed),
           args.code(parsed),
           args.stdin(parsed),
+          args.packages(parsed),
         );
       default:
         return {
@@ -600,6 +607,7 @@ async function runCode(
   language: string,
   code: string,
   stdin: string,
+  packages: string[],
 ): Promise<ToolOutcome> {
   const slug = language.trim();
   if (!RUNNER_LANGUAGES.has(slug)) {
@@ -621,12 +629,23 @@ async function runCode(
 
   const result = (await ec.ctx.runAction(
     internal.codeRunner.runProgramInternal,
-    { language: slug, sourceCode: code, stdin },
+    {
+      language: slug,
+      sourceCode: code,
+      stdin,
+      // pip installs for Python, npm for Node: the engine's own package
+      // manager, which is why the names are passed through untouched.
+      libs: packages.length > 0 ? packages : undefined,
+      // Only Python can hand files back, and only the agent wants them.
+      captureFiles: true,
+    },
   )) as {
     output?: string;
     error?: string;
     exitCode?: number | null;
     requestError?: string | null;
+    engineNote?: string | null;
+    files?: RunFile[];
   };
 
   const note = result.requestError?.trim();
@@ -640,7 +659,29 @@ async function runCode(
     };
   }
 
-  return describe(result, `Ran ${slug}`);
+  return deliver(describe(result, `Ran ${slug}`), result.files ?? []);
+}
+
+/**
+ * Put the links to whatever the run produced into the tool's result.
+ *
+ * This is the only way a program's output leaves the sandbox: the engines
+ * return text, so a generated deck is posted to the deployment by the program
+ * itself and the link is handed to the model here. It goes in the tool result
+ * on purpose — the model reads it and can pass it on, and a link the model has
+ * actually seen is one it cannot silently invent.
+ */
+function deliver(outcome: ToolOutcome, files: RunFile[]): ToolOutcome {
+  if (files.length === 0) return outcome;
+
+  const lines = files.map(
+    (file) => `- ${file.path} (${bytes(file.bytes)}): ${file.url}`,
+  );
+  return {
+    ...outcome,
+    result: `${outcome.result}\n\nFiles the program wrote. Give the user these links — they are the finished artifact, not a preview:\n${lines.join("\n")}`,
+    summary: `${outcome.summary} · ${files.map((file) => file.path).join(", ")} ready`,
+  };
 }
 
 /**
@@ -655,6 +696,7 @@ async function runFile(
   ec: ExecContext,
   raw: string,
   stdin: string,
+  packages: string[],
 ): Promise<ToolOutcome> {
   const resolved = safePath(raw);
   if ("error" in resolved) return resolved.error;
@@ -689,6 +731,7 @@ async function runFile(
     // already executing it, so the first line is dropped for those files.
     file.content.replace(/^#![^\n]*\n/, ""),
     stdin,
+    packages,
   );
   return { ...outcome, summary: outcome.summary.replace("Ran ", `Ran ${resolved.path} `) };
 }

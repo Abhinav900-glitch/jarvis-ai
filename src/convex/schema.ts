@@ -551,6 +551,27 @@ const schema = defineSchema(
       .index("by_user", ["userId"])
       .index("by_user_path", ["userId", "path"]),
 
+    // ---- Files a program wrote ------------------------------------------
+    // The engines return stdout and nothing else, so a deck built with
+    // python-pptx has no way home. The program posts each file it made to this
+    // deployment's HTTP endpoint instead, authorised by a token minted for that
+    // one run: that is why a token appears here before any file does. A row
+    // with no `storageId` is a grant waiting to be used; one with it is a
+    // finished download.
+    agentArtifacts: defineTable({
+      userId: v.id("users"),
+      /** Single-use-ish secret handed to the sandbox for this run. */
+      token: v.string(),
+      /** Empty on the grant row, the filename once a file arrives. */
+      name: v.string(),
+      mime: v.string(),
+      size: v.number(),
+      storageId: v.optional(v.id("_storage")),
+      createdAt: v.number(),
+    })
+      .index("by_token", ["token"])
+      .index("by_user_time", ["userId", "createdAt"]),
+
     // A snapshot of one file taken immediately before the agent overwrites it.
     // `previous` is optional because its absence is meaningful: it records that
     // the file did not exist, so a rewind deletes rather than restoring.

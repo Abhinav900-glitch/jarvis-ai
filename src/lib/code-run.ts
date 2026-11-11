@@ -34,6 +34,55 @@ export interface EngineStatus {
 }
 
 /**
+ * A file a program wrote, now stored and downloadable.
+ *
+ * Only produced when the caller asked for capture, and only for Python. The
+ * bytes do not pass through this value: the sandbox posts them to the
+ * deployment while it runs — an engine returns stdout, and its cap is far below
+ * the size of a deck — so what comes back here is the link to what already
+ * landed.
+ */
+export interface RunFile {
+  /** Name the program gave it, e.g. deck.pptx. */
+  path: string;
+  /** Size in bytes. */
+  bytes: number;
+  /** Download link for the stored file. */
+  url: string;
+}
+
+/**
+ * The content type to store a produced file under.
+ *
+ * A deck serves as the reason this exists: without the right type, a browser
+ * gets `application/octet-stream` and offers to save `deck.pptx` as a download
+ * with no idea what it is, and Office's own preview refuses to open it.
+ * Unknown extensions stay generic rather than being guessed at.
+ */
+export function artifactMimeType(path: string): string {
+  const dot = path.lastIndexOf(".");
+  const ext = dot === -1 ? "" : path.slice(dot + 1).toLowerCase();
+  const known: Record<string, string> = {
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pdf: "application/pdf",
+    csv: "text/csv",
+    txt: "text/plain",
+    md: "text/markdown",
+    json: "application/json",
+    html: "text/html",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    svg: "image/svg+xml",
+    zip: "application/zip",
+    gif: "image/gif",
+  };
+  return known[ext] ?? "application/octet-stream";
+}
+
+/**
  * The outcome of probing one engine, which is not the same question as "did
  * the program work". An engine can be perfectly healthy and still be unable to
  * run the selected language, so these are kept separate.
@@ -108,6 +157,11 @@ export interface CodeRunResult {
    * error: which engine was used, and what changed about the environment.
    */
   engineNote: string | null;
+  /**
+   * Files the program wrote, when capture was asked for. Absent for an ordinary
+   * run and for every language that is not Python.
+   */
+  files?: RunFile[];
 }
 
 // The composed message has to stay under the 8,000 character limit the chat
