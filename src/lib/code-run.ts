@@ -8,13 +8,25 @@
 // ---------------------------------------------------------------------------
 
 /** The execution engines available, in the order they are tried. */
-export type CodeProvider = "jdoodle" | "wandbox" | "onlinecompiler";
+export type CodeProvider = "colab" | "jdoodle" | "wandbox" | "onlinecompiler";
 
 export const PROVIDER_LABELS: Record<CodeProvider, string> = {
+  colab: "Your Colab machine",
   jdoodle: "JDoodle",
   wandbox: "Wandbox",
   onlinecompiler: "OnlineCompiler.io",
 };
+
+/**
+ * What a connected machine is given to run one program.
+ *
+ * It is longer than a sandbox run because the machine is the user's own: a
+ * notebook can legitimately spend a minute installing torch before printing
+ * anything useful. The runner waits this long plus a margin for the poll to
+ * notice, then hands the job to the sandbox rather than leaving the user
+ * waiting on a tab that has gone to sleep.
+ */
+export const MACHINE_JOB_TIMEOUT_MS = 90_000;
 
 /**
  * What the server knows about one engine's configuration, with no key material

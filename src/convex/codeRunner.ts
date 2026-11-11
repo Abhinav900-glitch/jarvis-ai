@@ -13,7 +13,12 @@ import {
   type CodeLanguage,
   type CodeVersion,
 } from "../lib/code-languages";
-import type { CodeProvider, CodeRunResult, RunFile } from "../lib/code-run";
+import {
+  MACHINE_JOB_TIMEOUT_MS,
+  type CodeProvider,
+  type CodeRunResult,
+  type RunFile,
+} from "../lib/code-run";
 
 // ---------------------------------------------------------------------------
 // Code execution, with fallback engines.
@@ -24,8 +29,14 @@ import type { CodeProvider, CodeRunResult, RunFile } from "../lib/code-run";
 //   2. OnlineCompiler.io  POST api.onlinecompiler.io/api/run-code-sync/  (needs a key)
 //   3. Wandbox            POST wandbox.org/api/compile.json      (no key at all)
 //
-// JDoodle leads because it honours the version the user picked and can install
-// packages, which neither of the others can do.
+// Ahead of all three sits the machine the user connected: their own notebook,
+// polling for work. It goes first because it is the only engine that runs on
+// real hardware with a real pip, where a wheel installed by one run is still
+// there for the next. It is skipped entirely when no machine is connected, when
+// the worker has not polled recently, or when the language is not Python.
+//
+// JDoodle leads the sandboxes because it honours the version the user picked and
+// can install packages, which neither of the others can do.
 //
 // OnlineCompiler.io comes second and Wandbox last. Both used to be the other way
 // round, on the reasoning that a keyless service is the safest floor. That was
@@ -58,6 +69,7 @@ const WANDBOX_URL = "https://wandbox.org/api/compile.json";
 const ONLINECOMPILER_URL = "https://api.onlinecompiler.io/api/run-code-sync/";
 
 const PROVIDER_LABEL: Record<CodeProvider, string> = {
+  colab: "your Colab machine",
   jdoodle: "JDoodle",
   wandbox: "Wandbox",
   onlinecompiler: "OnlineCompiler.io",
@@ -864,9 +876,11 @@ export const runCode = action({
   handler: async (ctx, args): Promise<CodeRunResult> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to run code.");
-    // The panel shows text, not downloads: it runs without a capture token, so
-    // its response stays small and its latency stays unchanged.
-    return runInSandbox(args);
+    // The panel shows text, not downloads, so it runs without a capture token
+    // and its response stays small. It still prefers the user's own machine,
+    // which is where the run is cheapest and where pip has already installed
+    // whatever the last run needed.
+    return runForUser(ctx, userId, args);
   },
 });
 
@@ -885,17 +899,27 @@ export const runProgramInternal = internalAction({
     userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args): Promise<CodeRunResult> =>
-    args.userId ? runWithFiles(ctx, args.userId, args) : runInSandbox(args),
+    args.userId ? runForUser(ctx, args.userId, args) : runInSandbox(args),
 });
 
-/** The runner proper: what the chain actually executes. */
-async function runInSandbox(args: {
-  language: string;
-  versionIndex?: number;
-  stdin?: string;
-  sourceCode: string;
-  libs?: string[];
-}): Promise<CodeRunResult> {
+/**
+ * The runner proper: what the chain actually executes.
+ *
+ * `machine` is the optional step in front of the sandboxes. It is a function
+ * rather than a flag because it needs the action context and the user, neither
+ * of which belongs in here; returning null from it means "there is no machine
+ * to use", which is not a failure and must not be reported as one.
+ */
+async function runInSandbox(
+  args: {
+    language: string;
+    versionIndex?: number;
+    stdin?: string;
+    sourceCode: string;
+    libs?: string[];
+  },
+  machine?: (tried: CodeProvider[]) => Promise<Attempt | null>,
+): Promise<CodeRunResult> {
     const startedAt = Date.now();
 
     const language = getCodeLanguage(args.language);
@@ -946,10 +970,15 @@ async function runInSandbox(args: {
     // key, so it is always available for any language it actually supports.
     // Order is JDoodle, OnlineCompiler.io, then Wandbox — see the header note
     // for why the keyless playground goes last.
-    const chain: Array<() => Promise<Attempt>> = [];
+    const chain: Array<() => Promise<Attempt | null>> = [];
+    if (machine) {
+      chain.push(() => machine(providersTried));
+    }
     if (jdoodle) {
       chain.push(() => {
-        runCtx.isFallback = false;
+        // A sandbox standing in for a machine that was contacted and did not
+        // answer is a fallback, and saying so explains the switch in engines.
+        runCtx.isFallback = providersTried.includes("colab");
         providersTried.push("jdoodle");
         return runWithJdoodle(runCtx, jdoodle as JdoodleCredentials, startedAt, providersTried);
       });
@@ -988,12 +1017,22 @@ async function runInSandbox(args: {
     let lastFailure: CodeRunResult | null = null;
     for (const step of chain) {
       const attempt = await step();
+      // Null is "this engine did not apply" — a machine that is asleep — which
+      // is neither a result nor a failure.
+      if (!attempt) continue;
       if (!attempt.retryable) return attempt.result;
       lastFailure = attempt.result;
     }
 
+    if (lastFailure === null) {
+      // Nothing was even contactable, so there is no engine result to return.
+      const result = baseResult(runCtx, null, version.label, startedAt, providersTried);
+      result.requestError = `No engine was able to run ${language.label} just now.`;
+      return result;
+    }
+
     // Every engine was tried and every one of them failed.
-    const failure = lastFailure as CodeRunResult;
+    const failure = lastFailure;
     failure.providersTried = providersTried;
     if (providersTried.length > 1) {
       failure.requestError =
@@ -1016,15 +1055,120 @@ async function runInSandbox(args: {
 }
 
 /**
- * The runner, with file capture around it.
+ * Run a program on the machine the user connected, or report there is nothing
+ * to run it on.
  *
- * Appending the tail is the whole implementation of "the program keeps what it
- * made": the engines are unchanged, the fallback chain is unchanged, and a run
- * that writes nothing behaves exactly as it did before. A non-Python program is
- * passed straight through, because a tail written in Python would be a syntax
- * error in it.
+ * The protocol is a queue: the job is written down, the notebook picks it up on
+ * its next poll, and this action watches the row until it is done. The machine
+ * is only asked when it has polled recently, because the alternative is waiting
+ * a minute and a half for a Colab tab that was closed an hour ago.
+ *
+ * A machine that goes quiet is a retryable failure, not a result: the user
+ * asked for their code to run, not for their notebook to be proven alive, so
+ * the chain moves on and the sandbox answers instead.
  */
-async function runWithFiles(
+async function runOnMachine(
+  ctx: ActionCtx,
+  userId: Id<"users">,
+  args: { language: string; sourceCode: string; stdin?: string; libs?: string[] },
+  artifactToken: string | null,
+  tried: CodeProvider[],
+): Promise<Attempt | null> {
+  const machine = await ctx.runQuery(internal.machines.machineForUser, { userId });
+  if (!machine?.online) return null;
+
+  const startedAt = Date.now();
+
+  const jobId = await ctx.runMutation(internal.machines.enqueue, {
+    userId,
+    language: "python3",
+    // The raw program. The machine uploads the files it wrote itself, so it
+    // must not also be handed the sandbox's upload tail.
+    source: args.sourceCode,
+    stdin: args.stdin ?? "",
+    packages: (args.libs ?? [])
+      .slice(0, 6)
+      .map((lib) => lib.trim())
+      .filter(Boolean),
+    artifactToken: artifactToken ?? undefined,
+    timeoutMs: MACHINE_JOB_TIMEOUT_MS,
+  });
+
+  // A machine with a backlog is busy, not broken: the sandbox takes this run
+  // rather than making it queue behind the last one. It is not listed as tried,
+  // because nothing was sent to it.
+  if (!jobId) return null;
+
+  tried.push("colab");
+
+  const python = getCodeLanguage("python3");
+  const version = python ? resolveVersion(python, undefined) : null;
+  const result: CodeRunResult = {
+    ok: true,
+    provider: "colab",
+    providersTried: tried,
+    language: "python3",
+    languageLabel: "Python 3",
+    versionIndex: version?.index ?? 0,
+    versionLabel: machine.version ?? version?.label ?? "3",
+    output: "",
+    error: "",
+    failed: false,
+    timedOut: false,
+    cpuTime: null,
+    memory: null,
+    elapsedMs: 0,
+    outputTruncated: false,
+    requestError: null,
+    engineNote: null,
+  };
+
+  const deadline = startedAt + MACHINE_JOB_TIMEOUT_MS + 20_000;
+  let state = await ctx.runQuery(internal.machines.jobState, { jobId });
+  while (state && state.state !== "done" && Date.now() < deadline) {
+    if (state.state === "error") break;
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    state = await ctx.runQuery(internal.machines.jobState, { jobId });
+  }
+
+  if (!state || state.state !== "done") {
+    await ctx.runMutation(internal.machines.abandon, {
+      jobId,
+      message: "The runner stopped waiting for the machine.",
+    });
+    result.elapsedMs = Date.now() - startedAt;
+    result.requestError =
+      `The machine you connected did not answer within ${Math.round(
+        MACHINE_JOB_TIMEOUT_MS / 1000,
+      )} seconds, so another engine was used instead.`;
+    return { result, retryable: true };
+  }
+
+  const long = state.output.length > 24_000;
+  result.output = long ? state.output.slice(0, 24_000) : state.output;
+  result.outputTruncated = long;
+  result.error = state.error;
+  result.failed = state.failed;
+  result.timedOut = state.timedOut;
+  result.elapsedMs = Date.now() - startedAt;
+  result.engineNote = machine.platform
+    ? `Ran on the machine you connected (${machine.platform}).`
+    : "Ran on the machine you connected.";
+  return { result, retryable: false };
+}
+
+/**
+ * The runner as a user sees it: the machine first when there is one, then the
+ * sandbox chain, then whatever files the program wrote.
+ *
+ * Capture and the machine are one feature seen from two sides. A program that
+ * writes a deck has to get the bytes here somehow, and both paths do it the
+ * same way — through `/artifact`, on a token minted here — so the files are
+ * gathered once, after the run, whichever of them ran it. The only difference
+ * is who appends the upload code: the sandbox gets a Python tail, the machine
+ * uploads for itself.
+ */
+async function runForUser(
   ctx: ActionCtx,
   userId: Id<"users">,
   args: {
@@ -1039,37 +1183,50 @@ async function runWithFiles(
   // Only Python can be asked to hand files back, and only when the caller
   // wants them: the tail is Python, so appending it to anything else would be
   // a syntax error rather than a feature.
-  if (!args.captureFiles || args.language !== "python3") {
-    return runInSandbox(args);
+  const capture = args.captureFiles === true && args.language === "python3";
+  const site = process.env.CONVEX_SITE_URL?.trim();
+
+  let artifactToken: string | null = null;
+  if (capture && site) {
+    artifactToken = await ctx.runMutation(internal.artifacts.issue, { userId });
   }
 
-  const site = process.env.CONVEX_SITE_URL?.trim();
-  if (!site) {
+  const machineStep =
+    args.language === "python3"
+      ? (tried: CodeProvider[]) => runOnMachine(ctx, userId, args, artifactToken, tried)
+      : undefined;
+
+  const result = await runInSandbox(
+    {
+      ...args,
+      sourceCode:
+        capture && site && artifactToken
+          ? `${args.sourceCode}\n\n\n${fileTail(`${site}/artifact`, artifactToken)}\n`
+          : args.sourceCode,
+    },
+    machineStep,
+  );
+
+  if (capture && !site) {
     // No HTTP endpoint to post to means no delivery; running without capture is
     // still worth doing, and saying nothing would be worse than saying why.
-    const plain = await runInSandbox(args);
-    plain.engineNote = [
-      plain.engineNote,
-      "Files are not collected here: this deployment has no CONVEX_SITE_URL, so the sandbox has nowhere to send them.",
+    result.engineNote = [
+      result.engineNote,
+      "Files are not collected here: this deployment has no CONVEX_SITE_URL, so the program has nowhere to send them.",
     ]
       .filter(Boolean)
       .join(" ");
-    return plain;
   }
 
-  const token = await ctx.runMutation(internal.artifacts.issue, { userId });
-  const result = await runInSandbox({
-    ...args,
-    sourceCode: `${args.sourceCode}\n\n\n${fileTail(`${site}/artifact`, token)}\n`,
-  });
-
-  const arrived = await ctx.runQuery(internal.artifacts.listForToken, { token });
-  const files: RunFile[] = [];
-  for (const row of arrived) {
-    const url = await ctx.storage.getUrl(row.storageId);
-    if (url) files.push({ path: row.name, bytes: row.size, url });
+  if (artifactToken) {
+    const arrived = await ctx.runQuery(internal.artifacts.listForToken, { token: artifactToken });
+    const files: RunFile[] = [];
+    for (const row of arrived) {
+      const url = await ctx.storage.getUrl(row.storageId);
+      if (url) files.push({ path: row.name, bytes: row.size, url });
+    }
+    if (files.length > 0) result.files = files;
   }
-  if (files.length > 0) result.files = files;
 
   // The tail reports a file it could not deliver on one short line. Left in the
   // output it would read as the program's own printing, so it is lifted out and
@@ -1279,7 +1436,11 @@ export interface EngineStatus {
 export const runnerStatus = action({
   args: {},
   handler: async (ctx): Promise<{ engines: EngineStatus[]; ready: CodeProvider[] }> => {
-    await getAuthUserId(ctx);
+    const userId = await getAuthUserId(ctx);
+    const machine = userId
+      ? await ctx.runQuery(internal.machines.machineForUser, { userId })
+      : null;
+    const machineReady = machine?.online === true;
 
     const jdoodleReady = getJdoodleCredentials() !== null;
     const onlineCompilerReady = getOnlineCompilerKey() !== null;
@@ -1289,6 +1450,22 @@ export const runnerStatus = action({
     const allLabels = CODE_LANGUAGES.map((l) => l.label);
 
     const engines: EngineStatus[] = [
+      {
+        provider: "colab",
+        label: "Your Colab machine",
+        // Ready means a worker has polled recently, not merely that a token
+        // exists: a closed notebook leaves the row behind and runs nothing.
+        configured: machineReady,
+        envNames: [],
+        unsupported: CODE_LANGUAGES.filter((language) => language.id !== "python3").map(
+          (language) => language.label,
+        ),
+        problem: machineReady
+          ? null
+          : machine
+            ? "Connected, but the notebook has not checked in for three minutes. Re-run the cell in Colab."
+            : "No machine connected. Use Connect Colab below to paste the worker into a notebook.",
+      },
       {
         provider: "jdoodle",
         label: "JDoodle",

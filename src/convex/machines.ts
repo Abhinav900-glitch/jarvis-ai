@@ -136,6 +136,9 @@ export const myMachine = query({
 
     return {
       token: machine.token,
+      // The panel rebuilds the cell from this, so it never has to keep a copy of
+      // the text around or ask the server for it again.
+      endpoint: process.env.CONVEX_SITE_URL?.trim() ?? null,
       name: machine.name,
       version: machine.version ?? null,
       platform: machine.platform ?? null,
@@ -260,7 +263,7 @@ export const claim = internalMutation({
 export const finish = internalMutation({
   args: {
     token: v.string(),
-    jobId: v.id("machineJobs"),
+    jobId: v.string(),
     output: v.string(),
     error: v.string(),
     failed: v.boolean(),
@@ -275,7 +278,11 @@ export const finish = internalMutation({
       .first();
     if (!machine) return false;
 
-    const job = await ctx.db.get(args.jobId);
+    // The worker has this as a plain string from JSON, so an id that is not
+    // even shaped like one has to fail as a refusal rather than a thrown 500.
+    const jobId = ctx.db.normalizeId("machineJobs", args.jobId);
+    if (!jobId) return false;
+    const job = await ctx.db.get(jobId);
     if (!job || job.userId !== machine.userId) return false;
     if (job.state !== "running") return job.state === "done";
 
@@ -292,23 +299,6 @@ export const finish = internalMutation({
       lastSeenAt: Date.now(),
       jobsRun: machine.jobsRun + 1,
       lastError: undefined,
-    });
-    return true;
-  },
-});
-
-/** Let a worker report that it could not run something at all. */
-export const reportError = internalMutation({
-  args: { token: v.string(), message: v.string() },
-  handler: async (ctx, { token, message }) => {
-    const machine = await ctx.db
-      .query("machines")
-      .withIndex("by_token", (q) => q.eq("token", token))
-      .first();
-    if (!machine) return false;
-    await ctx.db.patch(machine._id, {
-      lastSeenAt: Date.now(),
-      lastError: message.slice(0, 300),
     });
     return true;
   },

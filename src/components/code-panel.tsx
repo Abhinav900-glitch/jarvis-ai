@@ -13,13 +13,14 @@ import {
   Eraser,
   FileText,
   Info,
+  Laptop,
   Loader2,
   Play,
   Send,
   Terminal,
   X,
 } from "lucide-react";
-import { useAction } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,6 +48,7 @@ import {
   STARTER_CATEGORIES,
   type StarterProgram,
 } from "@/lib/starter-code";
+import { colabWorkerCell } from "@/lib/colab-worker";
 
 const INDENT = "  ";
 
@@ -90,6 +92,21 @@ const PROBE_STYLES: Record<
   },
 };
 
+/**
+ * How long ago the worker last polled.
+ *
+ * A polling machine has no other way to say it is alive, so the panel reports
+ * the check-in itself rather than a bare "offline": "checked in 4 min ago" is
+ * a diagnosis (the tab was closed) and "offline" is only a symptom.
+ */
+function sinceLabel(lastSeenAt: number): string {
+  if (!lastSeenAt) return "the notebook has not checked in yet";
+  const seconds = Math.max(0, Math.round((Date.now() - lastSeenAt) / 1000));
+  if (seconds < 90) return `checked in ${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  return `checked in ${minutes} min ago`;
+}
+
 function formatKb(raw: string | null): string {
   const bytes = Number(raw);
   if (raw === null || !Number.isFinite(bytes)) return "";
@@ -129,6 +146,63 @@ export function CodePanel({
   const runCode = useAction(api.codeRunner.runCode);
   const getRunnerStatus = useAction(api.codeRunner.runnerStatus);
   const probeEngines = useAction(api.codeRunner.probeEngines);
+
+  const machine = useQuery(api.machines.myMachine);
+  const connectMachine = useAction(api.machines.connect);
+  const disconnectMachine = useMutation(api.machines.disconnect);
+  const [showCell, setShowCell] = useState(false);
+  const [cellCopied, setCellCopied] = useState(false);
+  const [machineBusy, setMachineBusy] = useState(false);
+  const [machineError, setMachineError] = useState<string | null>(null);
+
+  // The cell is derived, not stored: rotating the token or moving deployments
+  // changes it, and a stale copy in the clipboard would connect to nothing.
+  const cell = useMemo(
+    () =>
+      machine?.token && machine.endpoint
+        ? colabWorkerCell({ token: machine.token, endpoint: machine.endpoint })
+        : null,
+    [machine],
+  );
+
+  const connectColab = async () => {
+    if (machineBusy) return;
+    setMachineBusy(true);
+    setMachineError(null);
+    try {
+      await connectMachine();
+      setShowCell(true);
+    } catch (err) {
+      setMachineError(
+        err instanceof Error ? err.message : "The machine could not be connected.",
+      );
+    } finally {
+      setMachineBusy(false);
+    }
+  };
+
+  const removeMachine = async () => {
+    setMachineBusy(true);
+    try {
+      await disconnectMachine();
+      setShowCell(false);
+    } catch {
+      setMachineError("The machine could not be removed.");
+    } finally {
+      setMachineBusy(false);
+    }
+  };
+
+  const copyCell = async () => {
+    if (!cell) return;
+    try {
+      await navigator.clipboard.writeText(cell);
+      setCellCopied(true);
+      setTimeout(() => setCellCopied(false), 2000);
+    } catch {
+      setMachineError("Copying was blocked — select the cell text and copy it by hand.");
+    }
+  };
 
   const [engines, setEngines] = useState<EngineStatus[] | null>(null);
   const [showEngines, setShowEngines] = useState(false);
@@ -580,6 +654,113 @@ export function CodePanel({
                   className={cn("size-3", checkingEngines && "animate-spin")}
                 />
               </button>
+            </div>
+
+            {/* ---- The user's own machine ---- */}
+            <div className="mb-2 rounded-md border border-dashed bg-background/60 p-2">
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <Laptop className="size-3 shrink-0 text-muted-foreground" />
+                <span className="font-medium">Your Colab machine</span>
+                <span
+                  className={cn(
+                    "ml-auto",
+                    !machine
+                      ? "text-muted-foreground"
+                      : machine.online
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  {!machine ? "not connected" : machine.online ? "online" : "offline"}
+                </span>
+              </div>
+
+              <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
+                {!machine
+                  ? "Run Python on your own notebook rather than a sandbox: any pip package, real files, and a GPU if your plan has one. Colab has no API, so the connection runs the other way — you paste a worker into the notebook and it fetches work from here."
+                  : machine.online
+                    ? `${machine.platform ?? machine.version ?? "Python"} · ${sinceLabel(
+                        machine.lastSeenAt,
+                      )} · ${machine.jobsRun} run${machine.jobsRun === 1 ? "" : "s"}. Python runs go here first and fall back to the sandbox if the notebook closes.`
+                    : `${sinceLabel(
+                        machine.lastSeenAt,
+                      )}. Run the cell in Colab again and this goes back to online.`}
+              </p>
+
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {machine ? (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => setShowCell((open) => !open)}
+                    >
+                      {showCell ? "Hide cell" : "Show cell"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => void connectColab()}
+                      disabled={machineBusy}
+                      title="Replace the token so an old notebook can no longer fetch work"
+                    >
+                      New token
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => void removeMachine()}
+                      disabled={machineBusy}
+                    >
+                      Remove
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    className="h-6 px-2 text-[10px]"
+                    onClick={() => void connectColab()}
+                    disabled={machineBusy}
+                  >
+                    {machineBusy && <Loader2 className="mr-1 size-3 animate-spin" />}
+                    Connect Colab
+                  </Button>
+                )}
+              </div>
+
+              {showCell && cell && (
+                <div className="mt-2">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-muted-foreground">
+                      Paste into a Colab cell, run it, keep the tab open.
+                    </span>
+                    <button
+                      onClick={() => void copyCell()}
+                      className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {cellCopied ? (
+                        <Check className="size-3 text-emerald-500" />
+                      ) : (
+                        <Copy className="size-3" />
+                      )}
+                      {cellCopied ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                  <pre className="max-h-40 overflow-auto rounded border bg-muted/40 p-2 text-[10px] leading-snug">
+                    {cell}
+                  </pre>
+                </div>
+              )}
+
+              {machineError && (
+                <p className="mt-1 flex gap-1.5 text-[10px] text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                  <span>{machineError}</span>
+                </p>
+              )}
             </div>
 
             {!engines ? (

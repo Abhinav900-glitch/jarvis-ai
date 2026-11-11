@@ -413,6 +413,8 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
           type: "object",
           properties: {
             path: strArg("Workspace-relative path, e.g. main.py or src/check.js"),
+            // Runs the same way as run_code: the user's machine first when it is
+            // awake, so a file that needs pip's newest wheel still runs.
             stdin: strArg("Optional text piped to standard input"),
             packages: listArg(
               "Package names to install before the run, in the language's own manager: pip for Python (\"python-pptx\"), npm for Node (\"pptxgenjs\"). Required for any import that is not in the standard library.",
@@ -427,7 +429,7 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
       function: {
         name: "run_code",
         description:
-          "Runs a snippet in a fresh sandbox and returns stdout, stderr and the exit code. Use it to check your work rather than assuming a change is correct. Files up to 12 MB that a Python program writes come back as download links for the user, which is how a real .pptx or .xlsx gets delivered instead of being described.",
+          "Runs a snippet and returns stdout, stderr and the exit code. Use it to check your work rather than assuming a change is correct. It runs on the user's own connected machine when there is one, otherwise in a sandbox — do not claim which. Files up to 12 MB that a Python program writes come back as download links for the user, which is how a real .pptx or .xlsx gets delivered instead of being described.",
         parameters: {
           type: "object",
           properties: {
