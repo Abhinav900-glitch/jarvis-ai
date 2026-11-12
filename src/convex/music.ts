@@ -1,10 +1,11 @@
 // ---------------------------------------------------------------------------
 // Music generation.
 //
-// A text model can describe a song; this makes one. Four providers are wired
+// A text model can describe a song; this makes one. Five providers are wired
 // up and tried in the order the deployment actually has keys for:
 //
-//   Lyria 3.5 (Gemini)  GEMINI_API_KEY        one call, JSON with base64 audio
+//   Lyria 3.5 (Gemini)  AI_STUDIO_API_KEY    one call, JSON with base64 audio
+//   MusicCreator AI     MUSIC_CREATOR_AI_API_KEY  task id, then poll for an mp3
 //   ElevenLabs Music    ELEVENLABS_API_KEY    mp3 bytes straight back
 //   Loudly              LOUDLY_AI_API_KEY     a song object with an mp3 URL
 //   Stable Audio (fal)  FAL_AI_API            a CDN URL to download
@@ -25,6 +26,7 @@ import { FAL_KEY_ENVS, readEnv } from "./imageProviders";
 
 type ProviderId =
   | "lyria"
+  | "musiccreator"
   | "elevenlabs"
   | "loudly"
   | "fal"
@@ -40,6 +42,11 @@ const PROVIDERS: readonly {
     id: "lyria",
     label: "Lyria 3.5 (Gemini)",
     keys: ["AI_STUDIO_API_KEY", "GEMINI_API_KEY"],
+  },
+  {
+    id: "musiccreator",
+    label: "MusicCreator AI",
+    keys: ["MUSIC_CREATOR_AI_API_KEY", "MUSICCREATOR_API_KEY"],
   },
   {
     id: "elevenlabs",
@@ -210,7 +217,114 @@ async function lyriaTrack(prompt: string): Promise<Uint8Array> {
   throw new Error(lastError || "returned no audio");
 }
 
-/** Provider 2 — ElevenLabs Music. Returns mp3 bytes; needs a paid plan. */
+/**
+ * Provider 2 — MusicCreator AI.
+ *
+ * Async by design: POST a task, then poll its status until a track URL shows
+ * up. The published reference documents the endpoints and the example body but
+ * not the response schema, so fields are read by walking the JSON for a task
+ * id, a status string and an audio URL rather than pinning one shape.
+ */
+async function musicCreatorTrack(
+  prompt: string,
+  instrumental: boolean,
+): Promise<Uint8Array> {
+  const key = readEnv(["MUSIC_CREATOR_AI_API_KEY", "MUSICCREATOR_API_KEY"]);
+  if (!key) throw new Error("no MUSIC_CREATOR_AI_API_KEY set");
+
+  const base = "https://www.musiccreator.ai/openapi/v1";
+  const headers = {
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/json",
+  };
+
+  const created = await fetch(`${base}/music/generate`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: "V2_5",
+      mode: "simple",
+      prompt,
+      instrumental,
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+
+  const createdText = await created.text().catch(() => "");
+  let createdJson: unknown = null;
+  try {
+    createdJson = JSON.parse(createdText);
+  } catch {
+    createdJson = null;
+  }
+
+  if (!created.ok) {
+    console.error("MusicCreator error", created.status, createdText.slice(0, 300));
+    const message = findString(createdJson, ["message", "error", "msg"]);
+    throw new Error(
+      created.status === 401 || created.status === 403
+        ? "key rejected"
+        : (message ?? `request failed (${created.status})`),
+    );
+  }
+
+  // Some responses finish synchronously; take the file if it is already there.
+  const ready = findAudioUrl(createdJson);
+  if (ready) return await downloadAudio(ready);
+
+  const taskId =
+    findString(createdJson, ["taskId", "task_id"]) ??
+    createdText.match(/"task_?[Ii]d"\s*:\s*"([^"]+)"/)?.[1] ??
+    null;
+  if (!taskId) {
+    throw new Error(`no task in the response (${createdText.slice(0, 120)})`);
+  }
+
+  // Songs usually land in 1–2 minutes. Poll for a little over two, then stop:
+  // an action that never returns is worse than one that reports the wait.
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+
+    let poll = await fetch(`${base}/music/tasks/status`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ taskId }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch(() => null);
+    if (!poll || poll.status === 404 || poll.status === 405) {
+      poll = await fetch(
+        `${base}/music/tasks/status?taskId=${encodeURIComponent(taskId)}`,
+        { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(30_000) },
+      ).catch(() => null);
+    }
+    if (!poll) continue;
+
+    const text = await poll.text().catch(() => "");
+    if (!poll.ok) {
+      console.error("MusicCreator status error", poll.status, text.slice(0, 200));
+      continue;
+    }
+
+    let json: unknown = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      continue;
+    }
+
+    const status = findString(json, ["status", "taskStatus", "task_status", "state"])?.toLowerCase();
+    const audio = findAudioUrl(json);
+    if (audio) return await downloadAudio(audio);
+    if (status && /fail|error|cancel|reject/.test(status)) {
+      const reason = findString(json, ["errorMessage", "message", "msg", "error"]);
+      throw new Error(reason ?? `task ${status}`);
+    }
+  }
+
+  throw new Error("the song is still composing — try again in a minute");
+}
+
+/** Provider 3 — ElevenLabs Music. Returns mp3 bytes; needs a paid plan. */
 async function elevenLabsTrack(
   prompt: string,
   seconds: number,
@@ -435,6 +549,51 @@ async function falTrack(prompt: string, seconds: number): Promise<Uint8Array> {
   return await downloadAudio(url);
 }
 
+/** First non-empty string stored under one of `keys`, at any depth. */
+function findString(
+  node: unknown,
+  keys: readonly string[],
+  depth = 0,
+): string | null {
+  if (depth > 6 || node === null || typeof node !== "object") return null;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = findString(item, keys, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = node as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number") return String(value);
+  }
+  for (const value of Object.values(record)) {
+    if (value && typeof value === "object") {
+      const found = findString(value, keys, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/** The first URL in the payload that points at an audio file. */
+function findAudioUrl(node: unknown, depth = 0): string | null {
+  if (depth > 8 || node === null) return null;
+  if (typeof node === "string") {
+    return /^https?:\/\/\S+\.(mp3|wav|flac|m4a|ogg|opus)(\?|$)/i.test(node)
+      ? node
+      : null;
+  }
+  if (typeof node !== "object") return null;
+  for (const value of Object.values(node as Record<string, unknown>)) {
+    const found = findAudioUrl(value, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
 async function makeTrack(
   provider: ProviderId,
   prompt: string,
@@ -444,6 +603,8 @@ async function makeTrack(
   switch (provider) {
     case "lyria":
       return await lyriaTrack(prompt);
+    case "musiccreator":
+      return await musicCreatorTrack(prompt, instrumental);
     case "elevenlabs":
       return await elevenLabsTrack(prompt, seconds, instrumental);
     case "loudly":
@@ -504,6 +665,7 @@ export const generate = action({
       v.union(
         v.literal("auto"),
         v.literal("lyria"),
+        v.literal("musiccreator"),
         v.literal("elevenlabs"),
         v.literal("loudly"),
         v.literal("fal"),
