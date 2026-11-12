@@ -36,7 +36,11 @@ const PROVIDERS: readonly {
   /** Env var names that turn this provider on; the first non-empty one wins. */
   keys: readonly string[];
 }[] = [
-  { id: "lyria", label: "Lyria 3.5 (Gemini)", keys: ["GEMINI_API_KEY"] },
+  {
+    id: "lyria",
+    label: "Lyria 3.5 (Gemini)",
+    keys: ["AI_STUDIO_API_KEY", "GEMINI_API_KEY"],
+  },
   {
     id: "elevenlabs",
     label: "ElevenLabs Music",
@@ -148,48 +152,62 @@ async function downloadAudio(url: string, headers: Record<string, string> = {}) 
 
 /** Provider 1 — Lyria 3.5 through the Gemini API's Interactions endpoint. */
 async function lyriaTrack(prompt: string): Promise<Uint8Array> {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new Error("no GEMINI_API_KEY set");
+  // The Keys tab stores the AI Studio key under its own name; GEMINI_API_KEY
+  // may hold a different (or older) Google credential.
+  const key = readEnv(["AI_STUDIO_API_KEY", "GEMINI_API_KEY"]);
+  if (!key) throw new Error("no AI_STUDIO_API_KEY set");
 
-  const res = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/interactions",
-    {
-      method: "POST",
-      headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "lyria-3.5",
-        input: prompt,
-        response_format: { type: "audio" },
-      }),
-      signal: AbortSignal.timeout(180_000),
-    },
-  );
+  // The full song model first, then the documented 30 s clip. A free-tier key
+  // can be allowed zero requests/day on one and not the other, so both are
+  // worth trying before reporting that the quota is spent.
+  const models = ["lyria-3.5", "lyria-3-clip-preview"];
+  let lastError = "";
 
-  const raw = await res.text();
-  if (!res.ok) {
-    console.error("Lyria error", res.status, raw.slice(0, 300));
-    throw new Error(
-      res.status === 401 || res.status === 403
-        ? `key rejected (${res.status})`
-        : res.status === 429
-          ? "rate limited or out of quota"
-          : `request failed (${res.status})`,
+  for (const model of models) {
+    const res = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/interactions",
+      {
+        method: "POST",
+        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          input: prompt,
+          response_format: { type: "audio" },
+        }),
+        signal: AbortSignal.timeout(180_000),
+      },
     );
+
+    const raw = await res.text();
+    if (!res.ok) {
+      console.error("Lyria error", model, res.status, raw.slice(0, 300));
+      // The API explains itself in `error.message` (quota per day, tier, ...).
+      const message = raw.match(/"message"\s*:\s*"([^"]{1,180})"/)?.[1];
+      lastError =
+        res.status === 401 || res.status === 403
+          ? `key rejected (${res.status})`
+          : (message ??
+            (res.status === 429
+              ? "rate limited or out of quota"
+              : `request failed (${res.status})`));
+      // Only a model this key cannot use is worth retrying on the other one.
+      if (res.status === 404 || res.status === 429) continue;
+      throw new Error(lastError);
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      throw new Error("unreadable response");
+    }
+
+    const bytes = extractBase64Audio(payload);
+    if (bytes) return bytes;
+    lastError = raw.match(/"message"\s*:\s*"([^"]{1,160})"/)?.[1] ?? "returned no audio";
   }
 
-  let payload: unknown;
-  try {
-    payload = JSON.parse(raw);
-  } catch {
-    throw new Error("unreadable response");
-  }
-
-  const bytes = extractBase64Audio(payload);
-  if (!bytes) {
-    const message = raw.match(/"message"\s*:\s*"([^"]{1,160})"/)?.[1];
-    throw new Error(message ?? "returned no audio");
-  }
-  return bytes;
+  throw new Error(lastError || "returned no audio");
 }
 
 /** Provider 2 — ElevenLabs Music. Returns mp3 bytes; needs a paid plan. */
