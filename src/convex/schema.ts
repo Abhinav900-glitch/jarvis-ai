@@ -585,9 +585,18 @@ const schema = defineSchema(
       mime: v.string(),
       size: v.number(),
       storageId: v.id("_storage"),
-      /** Where it came from, so the panel can label it honestly. */
+      /**
+       * Where it came from, so the panel can label it honestly. `music` is a
+       * track Jarvis generated: it lands here rather than in a table of its
+       * own so it shares the quota and the delete button.
+       */
       source: v.optional(
-        v.union(v.literal("upload"), v.literal("run"), v.literal("image")),
+        v.union(
+          v.literal("upload"),
+          v.literal("run"),
+          v.literal("image"),
+          v.literal("music"),
+        ),
       ),
       /** Absent means unfiled — at the top level, not in a missing folder. */
       folderId: v.optional(v.id("cloudFolders")),

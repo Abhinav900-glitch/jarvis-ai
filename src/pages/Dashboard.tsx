@@ -48,6 +48,7 @@ import {
   User,
   Volume2,
   AudioLines,
+  Music,
   VolumeX,
   Wand2,
   Waves,
@@ -181,6 +182,7 @@ import { Radio, ExternalLink } from "lucide-react";
 import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
 import { CloudPanel } from "@/components/cloud-panel";
+import { MusicPanel } from "@/components/music-panel";
 import { ExportPanel } from "@/components/export-panel";
 import { useCamera } from "@/hooks/use-camera";
 import { useLiveTranslation } from "@/hooks/use-live-translation";
@@ -1385,6 +1387,7 @@ export default function Dashboard() {
   // --- Feature panels: memory, export, camera, live translation ---
   const [showMemory, setShowMemory] = useState(false);
   const [showCloud, setShowCloud] = useState(false);
+  const [showMusic, setShowMusic] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
@@ -2518,9 +2521,10 @@ export default function Dashboard() {
   // the URL so a refresh starts with the panel closed.
   const handedOffPanel = searchParams.get("panel");
   const [panelTaken, setPanelTaken] = useState(false);
-  if (handedOffPanel === "cloud" && !panelTaken) {
+  if (handedOffPanel !== null && !panelTaken) {
     setPanelTaken(true);
-    setShowCloud(true);
+    if (handedOffPanel === "cloud") setShowCloud(true);
+    else if (handedOffPanel === "music") setShowMusic(true);
   }
   useEffect(() => {
     if (handedOffPanel === null) return;
@@ -5475,6 +5479,14 @@ export default function Dashboard() {
         run: () => setShowCloud(true),
       },
       {
+        id: "music",
+        label: "Music — compose a track from a prompt",
+        group: "Configure",
+        keywords: "song audio generate lyria elevenlabs loudly replicate instrumental",
+        icon: <Music className="size-4" />,
+        run: () => setShowMusic(true),
+      },
+      {
         id: "code",
         label: "Code runner",
         group: "Configure",
@@ -5869,6 +5881,13 @@ export default function Dashboard() {
                     <Cloud className="size-4" />
                     Your cloud
                     {showCloud ? (
+                      <Check className="ml-auto size-4" />
+                    ) : null}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowMusic((v) => !v)}>
+                    <Music className="size-4" />
+                    Music
+                    {showMusic ? (
                       <Check className="ml-auto size-4" />
                     ) : null}
                   </DropdownMenuItem>
@@ -7338,6 +7357,11 @@ export default function Dashboard() {
             {/* ---- Cloud panel: the user's own storage ---- */}
             <AnimatePresence>
               {showCloud && <CloudPanel onClose={() => setShowCloud(false)} />}
+            </AnimatePresence>
+
+            {/* ---- Music panel: generated tracks, kept in the cloud ---- */}
+            <AnimatePresence>
+              {showMusic && <MusicPanel onClose={() => setShowMusic(false)} />}
             </AnimatePresence>
 
             {/* ---- AeroTransformGen overview: runs + workspace ---- */}

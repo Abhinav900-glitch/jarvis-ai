@@ -46,6 +46,7 @@ const SOURCE_LABEL: Record<string, string> = {
   upload: "upload",
   run: "from a run",
   image: "image",
+  music: "music",
 };
 
 export function CloudPanel({ onClose }: { onClose: () => void }) {

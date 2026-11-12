@@ -149,7 +149,12 @@ export const save = mutation({
     mime: v.string(),
     size: v.number(),
     source: v.optional(
-      v.union(v.literal("upload"), v.literal("run"), v.literal("image")),
+      v.union(
+        v.literal("upload"),
+        v.literal("run"),
+        v.literal("image"),
+        v.literal("music"),
+      ),
     ),
     folderId: v.optional(v.id("cloudFolders")),
   },
