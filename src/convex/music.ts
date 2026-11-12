@@ -7,6 +7,7 @@
 //   Lyria 3.5 (Gemini)  GEMINI_API_KEY        one call, JSON with base64 audio
 //   ElevenLabs Music    ELEVENLABS_API_KEY    mp3 bytes straight back
 //   Loudly              LOUDLY_AI_API_KEY     a song object with an mp3 URL
+//   Stable Audio (fal)  FAL_AI_API            a CDN URL to download
 //   Replicate MusicGen  REPLICATE_API_TOKEN   30 s clips, URL output
 //
 // Every track is written into the user's cloud (same 512 MB quota as an
@@ -20,19 +21,34 @@ import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { action, query } from "./_generated/server";
 import { api } from "./_generated/api";
+import { FAL_KEY_ENVS, readEnv } from "./imageProviders";
 
-type ProviderId = "lyria" | "elevenlabs" | "loudly" | "replicate";
+type ProviderId =
+  | "lyria"
+  | "elevenlabs"
+  | "loudly"
+  | "fal"
+  | "replicate";
 
 const PROVIDERS: readonly {
   id: ProviderId;
   label: string;
-  /** The env var whose presence turns this provider on. */
-  key: string;
+  /** Env var names that turn this provider on; the first non-empty one wins. */
+  keys: readonly string[];
 }[] = [
-  { id: "lyria", label: "Lyria 3.5 (Gemini)", key: "GEMINI_API_KEY" },
-  { id: "elevenlabs", label: "ElevenLabs Music", key: "ELEVENLABS_API_KEY" },
-  { id: "loudly", label: "Loudly", key: "LOUDLY_AI_API_KEY" },
-  { id: "replicate", label: "Replicate MusicGen", key: "REPLICATE_API_TOKEN" },
+  { id: "lyria", label: "Lyria 3.5 (Gemini)", keys: ["GEMINI_API_KEY"] },
+  {
+    id: "elevenlabs",
+    label: "ElevenLabs Music",
+    keys: ["ELEVENLABS_API_KEY"],
+  },
+  { id: "loudly", label: "Loudly", keys: ["LOUDLY_AI_API_KEY"] },
+  { id: "fal", label: "Stable Audio (fal.ai)", keys: FAL_KEY_ENVS },
+  {
+    id: "replicate",
+    label: "Replicate MusicGen",
+    keys: ["REPLICATE_API_TOKEN"],
+  },
 ];
 
 /** A track shorter than this is a sound effect, not a song. */
@@ -246,7 +262,8 @@ async function loudlyTrack(prompt: string, seconds: number): Promise<Uint8Array>
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     console.error("Loudly error", res.status, text.slice(0, 300));
-    throw new Error(`request failed (${res.status})`);
+    const reason = text.match(/"error_description"\s*:\s*"([^"]{1,160})"/)?.[1];
+    throw new Error(reason ?? `request failed (${res.status})`);
   }
 
   const data = (await res.json()) as Record<string, unknown>;
@@ -343,6 +360,63 @@ async function replicateTrack(prompt: string, seconds: number): Promise<Uint8Arr
   return await downloadAudio(out);
 }
 
+/**
+ * Provider 5 — Stable Audio 3 Medium on fal.ai.
+ *
+ * This is where the Hugging Face token lands. hf-inference serves no
+ * text-to-audio model — the router answers 400 "Model not supported by
+ * provider hf-inference" for MusicGen — and the only live inference mapping
+ * for a music model in the HF catalog is fal-ai, which this reaches directly
+ * with the account's own fal key.
+ */
+async function falTrack(prompt: string, seconds: number): Promise<Uint8Array> {
+  const key = readEnv(FAL_KEY_ENVS);
+  if (!key) throw new Error("no FAL_AI_API set");
+
+  const res = await fetch(
+    "https://fal.run/fal-ai/stable-audio-3/medium/text-to-audio",
+    {
+      method: "POST",
+      headers: {
+        // fal's own scheme, not Bearer — sending Bearer returns 401.
+        authorization: `Key ${key}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt,
+        // The endpoint takes 1–380 s; ours is already narrower.
+        duration: Math.min(380, Math.max(1, Math.round(seconds))),
+        output_format: "mp3",
+        bitrate: "192k",
+      }),
+      signal: AbortSignal.timeout(180_000),
+    },
+  );
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    console.error("fal music error", res.status, text.slice(0, 300));
+    // fal explains billing problems in `detail` ("Exhausted balance"), which
+    // is far more useful than the status code.
+    const detail = text.match(/"detail"\s*:\s*"([^"]{1,160})"/)?.[1];
+    throw new Error(
+      detail ??
+        (res.status === 401 || res.status === 403
+          ? "key rejected"
+          : res.status === 402
+            ? "out of fal credits"
+            : `request failed (${res.status})`),
+    );
+  }
+
+  const data = (await res.json().catch(() => null)) as {
+    audio?: { url?: string };
+  } | null;
+  const url = data?.audio?.url;
+  if (!url) throw new Error("no audio in the response");
+  return await downloadAudio(url);
+}
+
 async function makeTrack(
   provider: ProviderId,
   prompt: string,
@@ -356,6 +430,8 @@ async function makeTrack(
       return await elevenLabsTrack(prompt, seconds, instrumental);
     case "loudly":
       return await loudlyTrack(prompt, seconds);
+    case "fal":
+      return await falTrack(prompt, seconds);
     case "replicate":
       return await replicateTrack(prompt, seconds);
   }
@@ -395,7 +471,7 @@ export const providers = query({
     return PROVIDERS.map((provider) => ({
       id: provider.id,
       label: provider.label,
-      available: Boolean(process.env[provider.key]),
+      available: readEnv(provider.keys) !== null,
     }));
   },
 });
@@ -412,6 +488,7 @@ export const generate = action({
         v.literal("lyria"),
         v.literal("elevenlabs"),
         v.literal("loudly"),
+        v.literal("fal"),
         v.literal("replicate"),
       ),
     ),
@@ -449,8 +526,8 @@ export const generate = action({
     const failures: string[] = [];
 
     for (const candidate of candidates) {
-      if (!process.env[candidate.key]) {
-        failures.push(`${candidate.label}: no ${candidate.key}`);
+      if (!readEnv(candidate.keys)) {
+        failures.push(`${candidate.label}: no ${candidate.keys.join(" / ")}`);
         continue;
       }
       try {
