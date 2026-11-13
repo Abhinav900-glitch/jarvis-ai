@@ -240,6 +240,10 @@ async function minimaxTrack(
   if (!key) throw new Error("no MINIMAX_AI_API_KEY set");
 
   const models = ["music-3.0-free", "music-2.6-free", "music-3.0"];
+  type MiniMaxReply = {
+    data?: { audio?: string; status?: number };
+    base_resp?: { status_code?: number; status_msg?: string };
+  };
   let lastError = "";
 
   for (const model of models) {
@@ -263,12 +267,9 @@ async function minimaxTrack(
     });
 
     const text = await res.text().catch(() => "");
-    let json: {
-      data?: { audio?: string; status?: number };
-      base_resp?: { status_code?: number; status_msg?: string };
-    } | null = null;
+    let json: MiniMaxReply | null = null;
     try {
-      json = JSON.parse(text) as typeof json;
+      json = JSON.parse(text) as MiniMaxReply;
     } catch {
       json = null;
     }
