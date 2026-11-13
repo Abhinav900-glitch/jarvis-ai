@@ -5,6 +5,7 @@
 // up and tried in the order the deployment actually has keys for:
 //
 //   Lyria 3.5 (Gemini)  AI_STUDIO_API_KEY    one call, JSON with base64 audio
+//   MiniMax Music       MINIMAX_AI_API_KEY   JSON with a URL or hex audio
 //   MusicCreator AI     MUSIC_CREATOR_AI_API_KEY  task id, then poll for an mp3
 //   ElevenLabs Music    ELEVENLABS_API_KEY    mp3 bytes straight back
 //   Loudly              LOUDLY_AI_API_KEY     a song object with an mp3 URL
@@ -26,6 +27,7 @@ import { FAL_KEY_ENVS, readEnv } from "./imageProviders";
 
 type ProviderId =
   | "lyria"
+  | "minimax"
   | "musiccreator"
   | "elevenlabs"
   | "loudly"
@@ -42,6 +44,11 @@ const PROVIDERS: readonly {
     id: "lyria",
     label: "Lyria 3.5 (Gemini)",
     keys: ["AI_STUDIO_API_KEY", "GEMINI_API_KEY"],
+  },
+  {
+    id: "minimax",
+    label: "MiniMax Music",
+    keys: ["MINIMAX_AI_API_KEY", "MINIMAX_API_KEY"],
   },
   {
     id: "musiccreator",
@@ -215,6 +222,92 @@ async function lyriaTrack(prompt: string): Promise<Uint8Array> {
   }
 
   throw new Error(lastError || "returned no audio");
+}
+
+/**
+ * MiniMax Music — text-to-music in one call. The two `-free` models are tried
+ * first (3 RPM, no balance needed); `music-3.0` is the paid fallback.
+ *
+ * The reply carries the track either as a 24-hour URL (`output_format: "url"`)
+ * or hex-encoded bytes, so both are accepted. `base_resp.status_code` is the
+ * real error channel — an HTTP 200 with a non-zero code is still a failure.
+ */
+async function minimaxTrack(
+  prompt: string,
+  instrumental: boolean,
+): Promise<Uint8Array> {
+  const key = readEnv(["MINIMAX_AI_API_KEY", "MINIMAX_API_KEY"]);
+  if (!key) throw new Error("no MINIMAX_AI_API_KEY set");
+
+  const models = ["music-3.0-free", "music-2.6-free", "music-3.0"];
+  let lastError = "";
+
+  for (const model of models) {
+    const res = await fetch("https://api.minimax.io/v1/music_generation", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        prompt,
+        is_instrumental: instrumental,
+        // Vocals need words; let MiniMax write them from the description when
+        // the user has not supplied any.
+        ...(instrumental ? {} : { lyrics_optimizer: true }),
+        output_format: "url",
+        audio_setting: { format: "mp3", sample_rate: 44100, bitrate: 128000 },
+      }),
+      signal: AbortSignal.timeout(180_000),
+    });
+
+    const text = await res.text().catch(() => "");
+    let json: {
+      data?: { audio?: string; status?: number };
+      base_resp?: { status_code?: number; status_msg?: string };
+    } | null = null;
+    try {
+      json = JSON.parse(text) as typeof json;
+    } catch {
+      json = null;
+    }
+
+    if (!res.ok) {
+      console.error("MiniMax error", model, res.status, text.slice(0, 300));
+      lastError =
+        res.status === 401 || res.status === 403
+          ? "key rejected"
+          : (json?.base_resp?.status_msg ?? `request failed (${res.status})`);
+      if (res.status === 404 || res.status === 429) continue;
+      throw new Error(lastError);
+    }
+
+    const code = json?.base_resp?.status_code;
+    if (typeof code === "number" && code !== 0) {
+      lastError = json?.base_resp?.status_msg ?? `error ${code}`;
+      console.error("MiniMax error", model, code, lastError);
+      // A model this account cannot use is worth trying the next one for; a
+      // balance/region refusal is not.
+      if (/model|not (found|supported|available)/i.test(lastError)) continue;
+      throw new Error(lastError);
+    }
+
+    const audio = json?.data?.audio;
+    if (typeof audio === "string" && /^https?:\/\//.test(audio)) {
+      return await downloadAudio(audio);
+    }
+    if (typeof audio === "string" && audio.length > 1000 && /^[0-9a-f]+$/i.test(audio)) {
+      const bytes = new Uint8Array(audio.length / 2);
+      for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(audio.slice(i * 2, i * 2 + 2), 16);
+      }
+      if (looksLikeAudio(bytes)) return bytes;
+    }
+    lastError = "returned no audio";
+  }
+
+  throw new Error(lastError || "no audio");
 }
 
 /**
@@ -603,6 +696,8 @@ async function makeTrack(
   switch (provider) {
     case "lyria":
       return await lyriaTrack(prompt);
+    case "minimax":
+      return await minimaxTrack(prompt, instrumental);
     case "musiccreator":
       return await musicCreatorTrack(prompt, instrumental);
     case "elevenlabs":
@@ -665,6 +760,7 @@ export const generate = action({
       v.union(
         v.literal("auto"),
         v.literal("lyria"),
+        v.literal("minimax"),
         v.literal("musiccreator"),
         v.literal("elevenlabs"),
         v.literal("loudly"),
