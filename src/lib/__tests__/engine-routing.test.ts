@@ -20,35 +20,35 @@ describe("inferTask", () => {
   });
 
   test("build-and-fix requests route to the code profile", () => {
-    expect(inferTask("write a TypeScript function that debounces a call")).toBe(
+    expect(inferTask("write a TypeScript function that debounces a call", false)).toBe(
       "code",
     );
-    expect(inferTask("why does this React component re-render twice?")).toBe(
+    expect(inferTask("why does this React component re-render twice?", false)).toBe(
       "code",
     );
-    expect(inferTask("I get a syntax error in my python script")).toBe("code");
+    expect(inferTask("I get a syntax error in my python script", false)).toBe("code");
   });
 
   test("translation wins when a code request also asks for one", () => {
-    expect(inferTask("translate the comment in this function into Hindi")).toBe(
+    expect(inferTask("translate the comment in this function into Hindi", false)).toBe(
       "translate",
     );
   });
 
   test("summaries stop being plain chat", () => {
-    expect(inferTask("tl;dr this contract for me")).toBe("summarize");
-    expect(inferTask("summarise the key points")).toBe("summarize");
+    expect(inferTask("tl;dr this contract for me", false)).toBe("summarize");
+    expect(inferTask("summarise the key points", false)).toBe("summarize");
   });
 
   test("the older profiles still win where they should", () => {
-    expect(inferTask("derive the integral of x squared")).toBe("reason");
-    expect(inferTask("latest news about the market")).toBe("research");
-    expect(inferTask("hello there")).toBe("chat");
+    expect(inferTask("derive the integral of x squared", false)).toBe("reason");
+    expect(inferTask("latest news about the market", false)).toBe("research");
+    expect(inferTask("hello there", false)).toBe("chat");
   });
 
   test("ordinary questions are not mistaken for code", () => {
     // "api" and "test" alone were deliberately left out of the code tokens.
-    expect(inferTask("what is the weather api for London?")).toBe("chat");
+    expect(inferTask("what is the weather api for London?", false)).toBe("chat");
   });
 });
 
