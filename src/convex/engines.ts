@@ -33,6 +33,8 @@ export type EngineTask =
   | "reason"
   | "research"
   | "summarize"
+  | "code"
+  | "translate"
   | "title"
   | "live";
 
@@ -1048,9 +1050,49 @@ const WEIGHTS: Record<EngineTask, { quality: number; speed: number; reasoning: n
   reason: { quality: 0.58, speed: 0.12, reasoning: 0.3 },
   research: { quality: 0.6, speed: 0.1, reasoning: 0.3 },
   summarize: { quality: 0.58, speed: 0.42, reasoning: 0 },
+  // Code wants correctness before speed, and a model that thinks before
+  // writing is worth waiting a little for — but not as long as a proof.
+  code: { quality: 0.64, speed: 0.2, reasoning: 0.16 },
+  // Translation is mostly throughput: a strong model that answers quickly.
+  translate: { quality: 0.72, speed: 0.3, reasoning: 0 },
   title: { quality: 0.3, speed: 0.7, reasoning: 0 },
   live: { quality: 0.38, speed: 0.62, reasoning: 0 },
 };
+
+/**
+ * What each kind of turn wants from a model, in the engine's own words.
+ *
+ * `bestFor` already says what an engine is good at ("agentic work — tools, code,
+ * 1M context", "step-by-step maths"), so a small bonus for a matching phrase
+ * turns that prose into a routing signal instead of leaving it as a comment in
+ * the inspector.
+ */
+const AFFINITY: Partial<Record<EngineTask, { hint: RegExp; note: string }>> = {
+  code: {
+    hint: /\b(code|coding|program|developer|agentic|tools)\b/i,
+    note: "built for code",
+  },
+  reason: {
+    hint: /\b(maths?|math|reason|logic|step-by-step)\b/i,
+    note: "strong at reasoning",
+  },
+  research: {
+    hint: /\b(research|citations?|sources?|web|search)\b/i,
+    note: "reads the web",
+  },
+  summarize: {
+    hint: /\b(context|long|fast|summar)\b/i,
+    note: "holds long documents",
+  },
+  translate: {
+    hint: /\b(multilingual|language|translat|indic|hindi)\b/i,
+    note: "multilingual",
+  },
+  vision: { hint: /\b(vision|image|images|visual)\b/i, note: "sees images" },
+};
+
+/** How much a matching `bestFor` phrase is worth. Small: it breaks ties. */
+const AFFINITY_BONUS = 0.06;
 
 export interface RankedEngine {
   engine: EngineSpec;
@@ -1103,11 +1145,20 @@ export function rankEngines(request: RouteRequest = {}): EnginePlan {
   const preferred = request.preferEngineId ?? null;
   const wantImages = Boolean(request.hasImages);
 
+  // Roughly four characters per token. An engine whose window is smaller than
+  // the prompt cannot answer it faithfully, so it is dropped rather than
+  // ranked — a truncated question gets a confident wrong answer.
+  const promptTokens = request.promptChars
+    ? Math.ceil(request.promptChars / 4)
+    : 0;
+  const affinity = AFFINITY[task] ?? null;
+
   const scored: RankedEngine[] = [];
   for (const engine of ENGINES) {
     if (excluded && engine.id === excluded) continue;
     if (isRetired(engine.id)) continue;
     if (wantImages && !engine.vision) continue;
+    if (promptTokens > engine.context) continue;
 
     const provider = providerById(engine.provider);
 
@@ -1133,6 +1184,9 @@ export function rankEngines(request: RouteRequest = {}): EnginePlan {
       score += 0.1 * Math.min(1, engine.context / 131_072);
     }
 
+    const matchesTask = affinity ? affinity.hint.test(engine.bestFor) : false;
+    if (matchesTask) score += AFFINITY_BONUS;
+
     if (preferred && engine.id === preferred) score += 10;
     if (!smart) {
       scored.push({
@@ -1147,7 +1201,9 @@ export function rankEngines(request: RouteRequest = {}): EnginePlan {
       continue;
     }
 
-    const reasons: string[] = [engine.bestFor];
+    const reasons: string[] = [];
+    if (matchesTask && affinity) reasons.push(affinity.note);
+    reasons.push(engine.bestFor);
     if (weights.reasoning > 0 && engine.reasoning) reasons.push("reasons before answering");
     if (weights.speed >= 0.5 && engine.speed >= 0.85) reasons.push("answers fast");
     if (
@@ -1201,11 +1257,32 @@ export function inferTask(text: string, hasImages: boolean): EngineTask {
   if (hasImages) return "vision";
 
   const lower = text.toLowerCase();
+
+  // Translation before code: "translate this function's comment" is a
+  // translation turn even though it mentions code.
+  if (/\btranslat(e|es|ed|ing|ion)\b/.test(lower)) return "translate";
+
+  // Build-and-fix requests. Deliberately concrete tokens: "api" or "test" on
+  // their own would catch ordinary questions ("what's the weather api?").
+  const code =
+    /\b(function|code|coding|bug|debug|refactor|regex|sql|compile|stack trace|typescript|javascript|python|rust|java|react|component|css|html|endpoint|backend|frontend|unit test|test suite|git|docker|exception|syntax error)\b/.test(
+      lower,
+    );
+  if (code) return "code";
+
   const reason =
-    /\b(solve|derive|proof|integral|derivative|differentiate|equation|matrix|determinant|regression|probability|algorithm|complexity|optimi[sz]e|debug|why does|step[- ]by[- ]step|calculate|simplify|factori[sz]e)\b/.test(
+    /\b(solve|derive|proof|integral|derivative|differentiate|equation|matrix|determinant|regression|probability|algorithm|complexity|optimi[sz]e|why does|step[- ]by[- ]step|calculate|simplify|factori[sz]e)\b/.test(
       lower,
     );
   if (reason) return "reason";
+
+  // `summarize` has its own weights but nothing ever selected it before: a
+  // "tl;dr this document" turn was routed as general chat.
+  const summarize =
+    /\b(summari[sz]e|summari[sz]ed|summary|tldr|tl;dr|key (points|takeaways)|condense|recap|brief me)\b/.test(
+      lower,
+    );
+  if (summarize) return "summarize";
 
   const research =
     /\b(research|investigate|find out|compare|latest|news|what happened|state of|market|history of|why (is|are|do|does|did))\b/.test(

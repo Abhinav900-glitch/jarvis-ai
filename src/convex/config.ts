@@ -101,7 +101,17 @@ export const engineOptions = query({
   args: { task: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const task = (
-      ["chat", "vision", "reason", "research", "summarize", "title", "live"] as EngineTask[]
+      [
+        "chat",
+        "vision",
+        "reason",
+        "research",
+        "summarize",
+        "code",
+        "translate",
+        "title",
+        "live",
+      ] as EngineTask[]
     ).includes(args.task as EngineTask)
       ? (args.task as EngineTask)
       : "chat";
