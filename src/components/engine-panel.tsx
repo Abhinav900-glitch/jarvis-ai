@@ -11,6 +11,10 @@
 //   - Decision branches. Also answer with the best *different* engine, on a new
 //     branch, so the two can be compared. Off by default: it costs a second
 //     full generation per reply, which is not a cost to spend silently.
+//   - Chain routing. Walk one turn through several engines — draft, critique by
+//     a different model, then the final answer — instead of asking one model
+//     once. Off by default, and the depth picker states the number of calls so
+//     the cost is never a surprise.
 //
 // The list shows the real registry with live availability, and the router's
 // own reason for its current pick — so this panel is also the place to find out
@@ -23,6 +27,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Brain, Check, GitBranch, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { cn } from "@/lib/utils";
+import {
+  CHAIN_DEPTHS,
+  DEPTH_SPECS,
+  depthFor,
+  stagePreview,
+} from "@/convex/chain";
 
 export interface EnginePanelProps {
   open: boolean;
@@ -40,6 +50,9 @@ export function EnginePanel({ open, onClose }: EnginePanelProps) {
   const pinned = settings?.pinnedEngineId ?? null;
   const smart = settings?.smartEngine ?? true;
   const autoBranch = settings?.autoBranch ?? false;
+  const chainRouting = settings?.chainRouting ?? false;
+  const chainDepth = depthFor(settings?.chainDepth);
+  const chainSpec = DEPTH_SPECS[chainDepth];
 
   useEffect(() => {
     if (!open) return;
@@ -110,6 +123,74 @@ export function EnginePanel({ open, onClose }: EnginePanelProps) {
                   void save({ autoBranch: next });
                 }}
               />
+              <Toggle
+                label="Chain routing"
+                description="Deeper thinking across models: one engine drafts, a different one attacks the draft, then the final answer is written from both."
+                checked={chainRouting}
+                onChange={(next) => {
+                  void save({ chainRouting: next });
+                }}
+              />
+
+              {chainRouting ? (
+                <div className="space-y-2 rounded-lg border border-border/60 bg-muted/25 p-2.5">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[11px] font-medium">Chain depth</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {chainSpec.cost}
+                    </span>
+                  </div>
+                  <div className="flex gap-1">
+                    {CHAIN_DEPTHS.map((depth) => {
+                      const selected = depth === chainDepth;
+                      return (
+                        <button
+                          key={depth}
+                          type="button"
+                          onClick={() => {
+                            void save({ chainDepth: depth });
+                          }}
+                          className={cn(
+                            "flex-1 rounded-md border px-2 py-1 text-[11px] transition-colors",
+                            selected
+                              ? "border-foreground/25 bg-accent text-accent-foreground"
+                              : "border-transparent text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                          )}
+                        >
+                          {DEPTH_SPECS[depth].label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] leading-4 text-muted-foreground">
+                    {chainSpec.blurb}
+                  </p>
+                  <ol className="space-y-1">
+                    {stagePreview(chainDepth).map((stage, index) => (
+                      <li
+                        key={stage.role}
+                        className="flex gap-2 text-[10px] leading-4"
+                      >
+                        <span className="shrink-0 tabular-nums text-muted-foreground/70">
+                          {index + 1}
+                        </span>
+                        <span className="min-w-0 text-muted-foreground">
+                          <span className="font-medium text-foreground/90">
+                            {stage.label}
+                          </span>{" "}
+                          — {stage.job}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                  <p className="text-[10px] leading-4 text-muted-foreground/80">
+                    Each stage picks a provider the chain has not used yet where
+                    one is configured. Image turns, chat titles and live voice
+                    stay single-engine. The reply names the engines that ran in
+                    the answer inspector.
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             <div className="px-4 py-3">

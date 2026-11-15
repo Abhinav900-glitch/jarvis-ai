@@ -30,6 +30,20 @@ import {
   type ProviderSpec,
   type RankedEngine,
 } from "./engines";
+import {
+  bestAvailableText,
+  CHAIN_SYSTEM_PROMPT,
+  chainReason,
+  DEFAULT_CHAIN_DEPTH,
+  depthFor,
+  planChain,
+  promptFor,
+  STAGE_FIELD,
+  type ChainContext,
+  type ChainDepth,
+  type ChainPlan,
+  type ChainStageTrace,
+} from "./chain";
 import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
 import { depthDirective } from "../lib/answer-depth";
 import {
@@ -981,9 +995,11 @@ export const ask = action({
     const depth = depthDirective(args.task, args.detail);
     if (depth) systemPrompt = `${systemPrompt}${depth}`;
 
+    const hasImages = (args.imageUrls ?? []).length > 0;
+    const task = args.task ?? inferTask(args.prompt, hasImages);
     const plan = await routingFor(ctx, userId, {
-      task: args.task,
-      hasImages: (args.imageUrls ?? []).length > 0,
+      task,
+      hasImages,
       prompt: args.prompt,
     });
 
@@ -1005,6 +1021,34 @@ export const ask = action({
       }
     } catch {
       // MCP is best-effort — fall through to a plain reply.
+    }
+
+    // Chain routing: opt-in, and only when the turn is one a chain can serve.
+    // A failure at every stage falls through to the single-engine reply below,
+    // so switching it on can cost time but never the answer.
+    const chainPrefs = await chainPrefsFor(ctx, userId);
+    if (chainPrefs.enabled) {
+      const chain = planChain({
+        task,
+        depth: chainPrefs.depth,
+        hasImages,
+        promptChars: args.prompt.length,
+        enabledPlugins: chainPrefs.enabledPlugins,
+      });
+      if (chain.stages.length > 0) {
+        try {
+          return await runChain({
+            turns: [...history, { role: "user", content: userContent }],
+            systemPrompt,
+            plan: chain,
+            task,
+            promptChars: args.prompt.length,
+            enabledPlugins: chainPrefs.enabledPlugins,
+          });
+        } catch {
+          // Every stage failed: answer with one model instead.
+        }
+      }
     }
 
     return await runProviderChain(
@@ -1105,6 +1149,168 @@ async function routingFor(
     order,
     enabledPlugins,
   });
+}
+
+/**
+ * Chain routing preferences for this user, read fresh on every turn.
+ *
+ * Separate from `routingFor` because it answers a different question — not
+ * "which engine", but "does this turn get a chain at all" — and because the
+ * streaming path needs the plugin list that `routingFor` consumes internally.
+ *
+ * Best-effort like every other preference read: losing the settings read must
+ * cost the chain, not the reply, so it degrades to "off".
+ */
+async function chainPrefsFor(
+  ctx: {
+    runQuery: (
+      fn: FunctionReference<"query", "internal">,
+      args: unknown,
+    ) => Promise<unknown>;
+  },
+  userId: Id<"users">,
+): Promise<{
+  enabled: boolean;
+  depth: ChainDepth;
+  enabledPlugins: string[];
+}> {
+  try {
+    const prefs = (await ctx.runQuery(internal.workspace.enginePrefs, {
+      userId,
+    })) as {
+      chainRouting?: boolean;
+      chainDepth?: string;
+      enabledModelPlugins?: string[];
+    };
+    return {
+      enabled: prefs.chainRouting ?? false,
+      depth: depthFor(prefs.chainDepth),
+      enabledPlugins: prefs.enabledModelPlugins ?? [],
+    };
+  } catch {
+    return {
+      enabled: false,
+      depth: DEFAULT_CHAIN_DEPTH,
+      enabledPlugins: [],
+    };
+  }
+}
+
+/** The text of the most recent user turn, for the stage prompts. */
+function lastUserText(turns: ChatTurn[]): string {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    if (turn.role !== "user" || !turn.content) continue;
+    if (typeof turn.content === "string") return turn.content;
+    const text = turn.content
+      .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
+      .join("\n")
+      .trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+/**
+ * Run one turn through a chain: several engines, one answer.
+ *
+ * Each stage is a normal engine call, routed with the stage's engine pinned, so
+ * a stage still falls back across providers if its engine fails — the chain
+ * degrades to a different reviewer rather than to no answer. Every stage is a
+ * fresh, single-turn request: earlier stages are carried as quoted material in
+ * the prompt, not as conversation, which is what makes a critique read the draft
+ * as a document instead of as its own words.
+ *
+ * `budgetMs` is a wall-clock ceiling. Middle stages are skipped once 65% of it
+ * is spent; the final stage always runs, because a late critique is worth less
+ * than a finished reply. When even that fails, the best material already
+ * produced is returned rather than throwing away several generations of work.
+ */
+export async function runChain(request: {
+  turns: ChatTurn[];
+  systemPrompt: string;
+  plan: ChainPlan;
+  task: EngineTask;
+  promptChars: number;
+  enabledPlugins?: string[];
+  /** Ceiling for the whole chain. Convex actions are capped at 10 minutes. */
+  budgetMs?: number;
+}): Promise<LlmResult> {
+  const started = Date.now();
+  const budget = request.budgetMs ?? 240_000;
+  const context: ChainContext = {
+    question: lastUserText(request.turns),
+    depth: request.plan.depth,
+  };
+  const trace: ChainStageTrace[] = [];
+  const failures: string[] = [];
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let lastModel = "chain";
+
+  for (const stage of request.plan.stages) {
+    const isFinal = stage.role === "synthesize";
+    if (!isFinal && trace.length > 0 && Date.now() - started > budget * 0.65) {
+      failures.push(`${stage.label}: skipped, out of time`);
+      continue;
+    }
+
+    const stagePlan = rankEngines({
+      task: request.task,
+      promptChars: request.promptChars,
+      preferEngineId: stage.engine.id,
+      order: "smart",
+      enabledPlugins: request.enabledPlugins,
+    });
+
+    try {
+      const result = await runProviderChain(
+        [{ role: "user", content: promptFor(stage.role, context) }],
+        // The draft keeps the app's system prompt so its voice survives into the
+        // final answer; the other stages are pipeline workers, not Jarvis.
+        stage.role === "draft" ? request.systemPrompt : CHAIN_SYSTEM_PROMPT,
+        `${stage.label} stage failed.`,
+        stagePlan,
+      );
+      context[STAGE_FIELD[stage.role]] = result.text;
+      promptTokens += result.promptTokens ?? 0;
+      completionTokens += result.completionTokens ?? 0;
+      lastModel = result.model;
+      trace.push({
+        role: stage.role,
+        label: stage.label,
+        engineId: result.engineId ?? stage.engine.id,
+        model: result.model,
+        provider: result.engineId?.split("/")[0] ?? stage.provider,
+        latencyMs: result.latencyMs ?? 0,
+        chars: result.text.length,
+      });
+    } catch (err) {
+      failures.push(
+        `${stage.label}: ${err instanceof Error ? err.message : "failed"}`,
+      );
+    }
+  }
+
+  const text = bestAvailableText(context);
+  if (!text) {
+    throw new Error(
+      `Chain routing produced no answer. ${failures.join(" · ")}`.trim(),
+    );
+  }
+
+  return {
+    text,
+    model: lastModel,
+    engineId: trace[trace.length - 1]?.engineId,
+    reason: chainReason(request.plan, trace, failures),
+    latencyMs: Date.now() - started,
+    promptTokens,
+    completionTokens,
+    // A stage that never answered is a fallback in the honest sense: the answer
+    // is not the one the plan described.
+    usedFallback: trace.length !== request.plan.stages.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1514,8 +1720,9 @@ export const askStream = action({
     if (memoryContext) prompt = `${prompt}\n\n---${memoryContext}`;
 
     const hasImages = (args.imageUrls ?? []).length > 0;
+    const task = args.task ?? inferTask(args.prompt, hasImages);
     const plan = await routingFor(ctx, userId, {
-      task: args.task,
+      task,
       hasImages,
       prompt: args.prompt,
     });
@@ -1542,6 +1749,69 @@ export const askStream = action({
     } catch {
       // MCP is best-effort — a flaky or unreachable server must never block a
       // reply, so we fall through to the normal streaming path.
+    }
+
+    // Chain routing. Deliberately not streamed stage by stage: the value of a
+    // chain is the finished, reviewed answer, and showing a draft that is about
+    // to be rewritten would read as Jarvis changing its mind. The reply lands in
+    // one write when the chain finishes. Every stage failing falls through to
+    // the streaming path below, so switching this on costs time, never an
+    // answer.
+    const chainPrefs = await chainPrefsFor(ctx, userId);
+    if (chainPrefs.enabled) {
+      const chain = planChain({
+        task,
+        depth: chainPrefs.depth,
+        hasImages,
+        promptChars: args.prompt.length,
+        enabledPlugins: chainPrefs.enabledPlugins,
+      });
+      if (chain.stages.length > 0) {
+        try {
+          const result = await runChain({
+            turns: [
+              ...history,
+              { role: "user", content: buildUserContent(prompt, args.imageUrls) },
+            ],
+            systemPrompt,
+            plan: chain,
+            task,
+            promptChars: args.prompt.length,
+            enabledPlugins: chainPrefs.enabledPlugins,
+          });
+          // Stop during a chain is honoured at the end rather than per token:
+          // nothing has been written to the message yet, so a cancelled chain
+          // writes nothing instead of delivering a full answer the user just
+          // refused. The read reuses the stream's own cancellation channel, so
+          // there is no second mechanism to keep in sync.
+          const cancelCheck = await ctx.runMutation(
+            internal.chats.appendStreamDelta,
+            { messageId: args.messageId, delta: "" },
+          );
+          if (cancelCheck.cancelled) {
+            return {
+              text: "",
+              model: "none",
+              usedFallback: false,
+              truncated: true,
+            };
+          }
+          await ctx.runMutation(internal.chats.finalizeStream, {
+            messageId: args.messageId,
+            content: result.text,
+            model: result.model,
+            engineId: result.engineId,
+            decisionReason: result.reason,
+            latencyMs: result.latencyMs,
+            promptTokens: result.promptTokens,
+            completionTokens: result.completionTokens,
+            usedFallback: result.usedFallback,
+          });
+          return result;
+        } catch {
+          // No stage answered: stream a single-engine reply instead.
+        }
+      }
     }
 
     const failures: string[] = [];

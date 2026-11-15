@@ -135,6 +135,19 @@ const schema = defineSchema(
        */
       autoBranch: v.optional(v.boolean()),
       /**
+       * Run each turn through a chain of stages rather than one engine: a draft,
+       * a critique from a different model, then a final answer written from both.
+       * Off by default — a chain spends several generations on one reply.
+       */
+      chainRouting: v.optional(v.boolean()),
+      /**
+       * How far that chain goes: `quick` (2 stages), `deep` (4) or `max` (6).
+       * Missing means the default, which is `deep`.
+       */
+      chainDepth: v.optional(
+        v.union(v.literal("quick"), v.literal("deep"), v.literal("max")),
+      ),
+      /**
        * Self-hosted image endpoint (stable-diffusion.cpp / A1111 / ComfyUI API).
        * When set, it is tried before the hosted chain in `generateImage`. The
        * token is stored server-side only and never returned to the client.

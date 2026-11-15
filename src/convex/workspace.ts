@@ -524,6 +524,8 @@ export const enginePrefs = internalQuery({
     smartEngine: boolean;
     pinnedEngineId: string | null;
     enabledModelPlugins: string[];
+    chainRouting: boolean;
+    chainDepth: string | null;
   }> => {
     const settings = await ctx.db
       .query("userSettings")
@@ -533,6 +535,10 @@ export const enginePrefs = internalQuery({
       smartEngine: settings?.smartEngine ?? true,
       pinnedEngineId: settings?.pinnedEngineId ?? null,
       enabledModelPlugins: settings?.enabledModelPlugins ?? [],
+      // Off unless the user asked for it: a chain is several generations per
+      // reply, and nobody should meet that bill by accident.
+      chainRouting: settings?.chainRouting ?? false,
+      chainDepth: settings?.chainDepth ?? null,
     };
   },
 });
@@ -551,6 +557,8 @@ export const getEngineSettings = query({
       smartEngine: settings?.smartEngine ?? true,
       pinnedEngineId: settings?.pinnedEngineId ?? null,
       autoBranch: settings?.autoBranch ?? false,
+      chainRouting: settings?.chainRouting ?? false,
+      chainDepth: settings?.chainDepth ?? "deep",
     };
   },
 });
@@ -567,6 +575,10 @@ export const saveEngineSettings = mutation({
     smartEngine: v.optional(v.boolean()),
     pinnedEngineId: v.optional(v.union(v.string(), v.null())),
     autoBranch: v.optional(v.boolean()),
+    chainRouting: v.optional(v.boolean()),
+    chainDepth: v.optional(
+      v.union(v.literal("quick"), v.literal("deep"), v.literal("max")),
+    ),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -580,6 +592,8 @@ export const saveEngineSettings = mutation({
     const patch: Partial<Doc<"userSettings">> = { updatedAt: Date.now() };
     if (args.smartEngine !== undefined) patch.smartEngine = args.smartEngine;
     if (args.autoBranch !== undefined) patch.autoBranch = args.autoBranch;
+    if (args.chainRouting !== undefined) patch.chainRouting = args.chainRouting;
+    if (args.chainDepth !== undefined) patch.chainDepth = args.chainDepth;
     if (args.pinnedEngineId !== undefined) {
       // An unknown engine id would silently disable routing, so only a real id
       // from the registry is accepted — or nothing, to clear the pin.
