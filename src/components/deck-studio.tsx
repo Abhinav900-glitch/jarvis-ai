@@ -5,6 +5,7 @@ import {
   Download,
   FileJson,
   Loader2,
+  Pencil,
   Presentation,
   QrCode,
   Sparkles,
@@ -368,6 +369,13 @@ export function DeckStudio({
   const [template, setTemplate] = useState<{ storageId: Id<"_storage">; name: string } | null>(null);
   const [templateIndex, setTemplateIndex] = useState(0);
   const [templateBusy, setTemplateBusy] = useState(false);
+  const [editDraft, setEditDraft] = useState<{
+    title: string;
+    subtitle: string;
+    body: string;
+    notes: string;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [rendered, setRendered] = useState<{ url: string | null; bytes: number; slides: number } | null>(null);
   const runToken = useRef(0);
 
@@ -377,6 +385,7 @@ export function DeckStudio({
   const deleteDeck = useMutation(api.decks.remove);
   const createUpload = useMutation(api.cloud.createUpload);
   const renderTemplate = useAction(api.deckTemplate.render);
+  const editSlideAction = useMutation(api.decks.editSlide);
 
   const recent = useQuery(api.decks.list, {});
   const deck = useQuery(api.decks.get, deckId ? { deckId } : "skip");
@@ -518,6 +527,37 @@ export function DeckStudio({
       setError(err instanceof Error ? err.message : "The template render failed.");
     } finally {
       setTemplateBusy(false);
+    }
+  };
+
+  const startEdit = (slide: SlideSpec) => {
+    setEditDraft({
+      title: slide.title,
+      subtitle: slide.subtitle ?? "",
+      body: (slide.body ?? []).join("\n"),
+      notes: slide.notes ?? "",
+    });
+  };
+
+  /** Save one slide. No model call: the stored spec is what the file is built from. */
+  const saveEdit = async () => {
+    if (!deckId || !editDraft || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await editSlideAction({
+        deckId,
+        index: selected,
+        title: editDraft.title,
+        subtitle: editDraft.subtitle,
+        body: editDraft.body.split(/\n+/),
+        notes: editDraft.notes,
+      });
+      setEditDraft(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save that slide.");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -788,7 +828,10 @@ export function DeckStudio({
               {slides.map((slide, index) => (
                 <button
                   key={index}
-                  onClick={() => setSelected(index)}
+                  onClick={() => {
+                    setSelected(index);
+                    setEditDraft(null);
+                  }}
                   className={`group relative aspect-video overflow-hidden rounded-md border text-left transition-all ${
                     index === selected ? "border-primary/60 ring-1 ring-primary/30" : "border-border/60 hover:border-foreground/30"
                   }`}
@@ -798,10 +841,70 @@ export function DeckStudio({
               ))}
             </div>
 
+            {editDraft ? (
+              <div className="mt-2 rounded-lg border border-border/60 p-2">
+                <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-muted-foreground/60">
+                  <Pencil className="size-3" /> Editing slide {selected + 1}
+                </div>
+                <input
+                  value={editDraft.title}
+                  onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })}
+                  placeholder="Slide title"
+                  aria-label="Slide title"
+                  className="w-full rounded border border-border/60 bg-transparent px-1.5 py-1 text-xs outline-none focus:border-foreground/30"
+                />
+                <input
+                  value={editDraft.subtitle}
+                  onChange={(e) => setEditDraft({ ...editDraft, subtitle: e.target.value })}
+                  placeholder="Subtitle (optional)"
+                  aria-label="Slide subtitle"
+                  className="mt-1 w-full rounded border border-border/60 bg-transparent px-1.5 py-1 text-[11px] outline-none focus:border-foreground/30"
+                />
+                <textarea
+                  value={editDraft.body}
+                  onChange={(e) => setEditDraft({ ...editDraft, body: e.target.value })}
+                  rows={4}
+                  placeholder="One bullet per line — used by bullet and agenda slides"
+                  aria-label="Slide bullets"
+                  className="mt-1 w-full resize-y rounded border border-border/60 bg-transparent px-1.5 py-1 text-[11px] leading-relaxed outline-none focus:border-foreground/30"
+                />
+                <textarea
+                  value={editDraft.notes}
+                  onChange={(e) => setEditDraft({ ...editDraft, notes: e.target.value })}
+                  rows={3}
+                  placeholder="Speaker notes"
+                  aria-label="Slide notes"
+                  className="mt-1 w-full resize-y rounded border border-border/60 bg-transparent px-1.5 py-1 text-[11px] leading-relaxed outline-none focus:border-foreground/30"
+                />
+                <div className="mt-1.5 flex items-center gap-2">
+                  <button
+                    onClick={() => void saveEdit()}
+                    disabled={saving}
+                    className="inline-flex items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent disabled:opacity-40"
+                  >
+                    {saving ? <Loader2 className="size-3 animate-spin" /> : <Pencil className="size-3" />}
+                    Save slide
+                  </button>
+                  <button
+                    onClick={() => setEditDraft(null)}
+                    className="rounded px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <span className="ml-auto text-[10px] text-muted-foreground/60">the download updates</span>
+                </div>
+              </div>
+            ) : (
             <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
               <div className="rounded-lg border border-border/60 p-2">
                 <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-muted-foreground/60">
                   <ChevronRight className="size-3" /> Slide {selected + 1} · {current?.kind}
+                  <button
+                    onClick={() => current && startEdit(current)}
+                    className="ml-auto inline-flex items-center gap-1 rounded px-1 py-0.5 text-[9px] normal-case tracking-normal transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <Pencil className="size-2.5" /> Edit
+                  </button>
                 </div>
                 <p className="text-xs font-medium">{current?.title}</p>
                 {current?.subtitle ? (
@@ -822,6 +925,7 @@ export function DeckStudio({
                 </p>
               </div>
             </div>
+            )}
           </>
         ) : (
           <div className="mt-3 rounded-lg border border-dashed border-border/60 px-3 py-4 text-center">

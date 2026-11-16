@@ -31,6 +31,7 @@ import {
   type DeckBrief,
 } from "../lib/pptx/prompts";
 import { suggestTheme, themeById } from "../lib/pptx/theme";
+import { applySlideEdit } from "../lib/pptx/edit";
 
 // ---------------------------------------------------------------------------
 // Deck generation, in stages.
@@ -109,6 +110,48 @@ export const remove = mutation({
     const deck = await ctx.db.get(args.deckId);
     if (!deck || deck.userId !== userId) throw new Error("Deck not found.");
     await ctx.db.delete(args.deckId);
+  },
+});
+
+/**
+ * Edit one slide's text.
+ *
+ * The deck is a spec, not a file, so this is the whole feature: no model call,
+ * no regeneration, and the next download reflects the edit immediately. The
+ * index is checked against the stored slides rather than trusted, because a
+ * stale panel can hold an index that a concurrent deletion removed.
+ */
+export const editSlide = mutation({
+  args: {
+    deckId: v.id("decks"),
+    index: v.number(),
+    title: v.optional(v.string()),
+    kicker: v.optional(v.string()),
+    subtitle: v.optional(v.string()),
+    body: v.optional(v.array(v.string())),
+    notes: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to edit a deck.");
+    const deck = await ctx.db.get(args.deckId);
+    if (!deck || deck.userId !== userId) throw new Error("Deck not found.");
+
+    const slides = (deck.slides ?? []) as SlideSpec[];
+    if (!Number.isInteger(args.index) || args.index < 0 || args.index >= slides.length) {
+      throw new Error("That slide is no longer in the deck.");
+    }
+
+    const next = [...slides];
+    next[args.index] = applySlideEdit(slides[args.index], {
+      title: args.title,
+      kicker: args.kicker,
+      subtitle: args.subtitle,
+      body: args.body,
+      notes: args.notes,
+    });
+    await ctx.db.patch(args.deckId, { slides: next, updatedAt: Date.now() });
+    return await ctx.db.get(args.deckId);
   },
 });
 
