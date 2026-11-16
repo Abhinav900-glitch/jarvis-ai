@@ -60,6 +60,7 @@ import {
 } from "../lib/chat-digest";
 import { buildPageContext, hasReadableText } from "../lib/pdf-pages";
 import { assertSafePublicUrl } from "./urlGuard";
+import { DECK_SYSTEM_PROMPT } from "../lib/pptx/prompts";
 import {
   cleanEnhancedPrompt,
   enhancePromptRequest,
@@ -4699,6 +4700,30 @@ export const extractPdfText = action({
 // explicitly — including their instructions and active persona, so a scheduled
 // run sounds like the rest of their Jarvis.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Deck writing
+//
+// The deck pipeline needs text, not a personality: an outline is JSON, and a
+// reply in Jarvis's voice would bury it. So this is the same provider ladder
+// as a chat turn with a deck-specific system prompt, and no chat history.
+// ---------------------------------------------------------------------------
+
+export const deckTurn = internalAction({
+  args: {
+    prompt: v.string(),
+    temperature: v.optional(v.number()),
+  },
+  handler: async (_ctx, args): Promise<LlmResult> => {
+    return await runProviderChain(
+      [{ role: "user", content: args.prompt }],
+      DECK_SYSTEM_PROMPT,
+      "No AI provider could write this part of the deck.",
+      rankEngines(),
+      { temperature: args.temperature ?? 0.6 },
+    );
+  },
+});
 
 export const askForTask = internalAction({
   args: {

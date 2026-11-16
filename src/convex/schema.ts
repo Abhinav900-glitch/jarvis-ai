@@ -399,6 +399,45 @@ const schema = defineSchema(
       createdAt: v.number(),
     }).index("by_user", ["userId"]),
 
+    // ---- Decks ------------------------------------------------------------
+    // A presentation built by the app itself, stored as the spec the renderer
+    // turns into OOXML rather than as a file. That is what makes it editable:
+    // re-theming or rewriting one slide is a row update, not a regeneration.
+    //
+    // Generation is staged (outline, then batches of slides) because a 60-slide
+    // deck is many model calls: `status` and `cursor` are the resume point, so
+    // a long run survives a closed tab and continues where it stopped.
+    decks: defineTable({
+      userId: v.id("users"),
+      title: v.string(),
+      topic: v.string(),
+      theme: v.string(),
+      tone: v.optional(v.string()),
+      audience: v.optional(v.string()),
+      status: v.union(
+        v.literal("outline"),
+        v.literal("writing"),
+        v.literal("done"),
+        v.literal("failed"),
+      ),
+      /** `DeckPlan` — title, sections, and the planned slide list. */
+      plan: v.optional(v.any()),
+      /** `SlideSpec[]` written so far, in presentation order. */
+      slides: v.optional(v.any()),
+      /** How many slides the plan holds, and how many are written. */
+      total: v.number(),
+      written: v.number(),
+      /** `provider/model` that wrote the last batch, for the panel's footer. */
+      engine: v.optional(v.string()),
+      /** Batches the AI could not write, answered by the template writer. */
+      aiFailures: v.optional(v.number()),
+      error: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_time", ["userId", "createdAt"]),
+
     // Long-term memory: durable facts about the user, extracted from chat and
     // injected into future prompts. Fully user-controlled — every row can be
     // deleted from the Memory panel.
