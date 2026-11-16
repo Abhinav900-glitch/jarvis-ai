@@ -26,6 +26,7 @@ export type SlideKind =
   | "table"
   | "chart"
   | "image"
+  | "qr"
   | "closing";
 
 export const SLIDE_KINDS: SlideKind[] = [
@@ -40,6 +41,7 @@ export const SLIDE_KINDS: SlideKind[] = [
   "table",
   "chart",
   "image",
+  "qr",
   "closing",
 ];
 
@@ -85,6 +87,20 @@ export interface ColumnBlock {
   points: string[];
 }
 
+export interface QrBlock {
+  /** The link or text the code encodes. */
+  url: string;
+  /** One line above the code, e.g. "Scan to open the repo". */
+  label?: string;
+  caption?: string;
+  /**
+   * Filled in by the package builder, which renders the code to PNG just before
+   * zipping. It is deliberately not part of the authored spec: a model cannot
+   * draw a valid QR code, so only the encoder ever writes this.
+   */
+  dataUrl?: string;
+}
+
 export interface ImageBlock {
   /** A data URL. Remote URLs are not fetched: PowerPoint cannot see the app's network. */
   dataUrl?: string;
@@ -107,6 +123,7 @@ export interface SlideSpec {
   table?: TableData;
   chart?: ChartData;
   image?: ImageBlock;
+  qr?: QrBlock;
   /** Speaker notes. PowerPoint shows these in Presenter View. */
   notes?: string;
 }
@@ -333,6 +350,18 @@ function normalizeChart(value: unknown): ChartData | undefined {
   };
 }
 
+function normalizeQr(value: unknown): QrBlock | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as Record<string, unknown>;
+  const url = longText(item.url ?? item.content ?? item.data ?? item.link, 600);
+  if (!url) return undefined;
+  return {
+    url,
+    label: text(item.label ?? item.heading, 60) || undefined,
+    caption: text(item.caption ?? item.note, 120) || undefined,
+  };
+}
+
 function normalizeImage(value: unknown): ImageBlock | undefined {
   if (!value || typeof value !== "object") return undefined;
   const item = value as Record<string, unknown>;
@@ -384,6 +413,7 @@ export function normalizeSlide(raw: unknown): SlideSpec | null {
     table: normalizeTable(item.table),
     chart: normalizeChart(item.chart),
     image: normalizeImage(item.image),
+    qr: normalizeQr(item.qr),
     notes: longText(item.notes ?? item.speakerNotes, 1200) || undefined,
   };
 
@@ -406,6 +436,7 @@ export function fitSlideKind(input: SlideSpec): SlideSpec {
   if (slide.kind === "timeline" && (slide.steps ?? []).length === 0) slide.kind = "bullets";
   if (slide.kind === "quote" && !slide.quote) slide.kind = "bullets";
   if (slide.kind === "image" && !slide.image) slide.kind = "bullets";
+  if (slide.kind === "qr" && !slide.qr?.url) slide.kind = "bullets";
   return slide;
 }
 
@@ -421,6 +452,7 @@ export function hasContent(slide: SlideSpec): boolean {
       slide.table ||
       slide.chart ||
       slide.image ||
+      slide.qr?.url ||
       slide.subtitle,
   );
 }

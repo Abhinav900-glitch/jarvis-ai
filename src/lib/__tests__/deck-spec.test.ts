@@ -83,6 +83,13 @@ describe("normalizeSlide", () => {
     expect(normalizeSlide({ kind: "table", title: "Compare", table: { rows: [["1"]] } })?.kind).toBe("bullets");
   });
 
+  test("keeps a QR slide that has a link, and drops one that does not", () => {
+    const withUrl = normalizeSlide({ kind: "qr", title: "Scan", qr: { url: "https://youtu.be/x" } });
+    expect(withUrl?.kind).toBe("qr");
+    expect(withUrl?.qr?.url).toBe("https://youtu.be/x");
+    expect(normalizeSlide({ kind: "qr", title: "Scan", body: ["one"] })?.kind).toBe("bullets");
+  });
+
   test("strips markup and caps the body", () => {
     const slide = normalizeSlide({
       kind: "bullets",

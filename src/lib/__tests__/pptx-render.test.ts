@@ -8,7 +8,7 @@
 // opening the archive.
 
 import { describe, expect, test } from "bun:test";
-import { buildPptx, buildPptxParts, deckFileName } from "../pptx/render";
+import { buildPptx, buildPptxParts, deckFileName, withQrImages } from "../pptx/render";
 import type { DeckSpec, SlideSpec } from "../pptx/spec";
 
 const PNG =
@@ -163,6 +163,33 @@ describe("slide markup", () => {
     expect(xml.match(/name="Metric card"/g)).toHaveLength(2);
   });
 
+  test("a QR slide embeds the rendered code as a picture", () => {
+    const xml = fileText(
+      buildPptxParts(
+        deckOf([
+          slide({
+            kind: "qr",
+            title: "Scan",
+            qr: { url: "https://youtu.be/dQw4w9WgXcQ", dataUrl: PNG, label: "Scan to open" },
+          }),
+        ]),
+      ).files,
+      "ppt/slides/slide1.xml",
+    );
+    expect(xml).toContain("<p:pic>");
+    expect(xml).toContain("Scan to open");
+    expect(xml).toContain("https://youtu.be/dQw4w9WgXcQ");
+  });
+
+  test("a QR slide without a picture says so instead of drawing a fake code", () => {
+    const xml = fileText(
+      buildPptxParts(deckOf([slide({ kind: "qr", title: "Scan", qr: { url: "https://example.com" } })])).files,
+      "ppt/slides/slide1.xml",
+    );
+    expect(xml).not.toContain("<p:pic>");
+    expect(xml).toContain("QR unavailable");
+  });
+
   test("a table is a graphic frame with one row per data row", () => {
     const xml = fileText(
       buildPptxParts(
@@ -191,6 +218,16 @@ describe("the archive", () => {
     expect(view.getUint16(bytes.length - 12, true)).toBe(view.getUint16(bytes.length - 14, true));
     const text = new TextDecoder().decode(bytes.slice(30, 60));
     expect(text).toContain("[Content_Types].xml");
+  });
+
+  test("QR images are encoded before the archive is assembled", async () => {
+    const prepared = await withQrImages(
+      deckOf([slide({ kind: "qr", title: "Scan", qr: { url: "https://youtu.be/dQw4w9WgXcQ" } })]),
+    );
+    expect(prepared.slides[0].qr?.dataUrl?.startsWith("data:image/png;base64,")).toBe(true);
+    const bytes = await buildPptx(prepared);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect(view.getUint32(0, true)).toBe(0x04034b50);
   });
 
   test("filenames are safe and slugged", () => {

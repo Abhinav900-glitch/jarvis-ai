@@ -152,6 +152,7 @@ export const create = internalMutation({
     theme: v.string(),
     tone: v.optional(v.string()),
     audience: v.optional(v.string()),
+    qrUrl: v.optional(v.string()),
     plan: v.any(),
     total: v.number(),
     aiFailures: v.number(),
@@ -167,6 +168,7 @@ export const create = internalMutation({
       theme: args.theme,
       tone: args.tone,
       audience: args.audience,
+      qrUrl: args.qrUrl,
       plan: args.plan,
       slides: [],
       status: "writing",
@@ -205,9 +207,39 @@ export const append = internalMutation({
     if (existing.length !== args.expected) return deck;
     const next = [...existing, ...(args.slides as SlideSpec[])].slice(0, MAX_SLIDES);
     const finished = next.length >= deck.total || next.length >= MAX_SLIDES;
+
+    // The QR slide is written here, by the mutation that finishes the deck,
+    // rather than by a model or by a separate step. A model cannot compute
+    // Reed-Solomon blocks, and a separate step would have to be told the deck
+    // is not finished yet — which is exactly the state this mutation is
+    // deciding. Adding it here means the last batch and the QR code land in one
+    // write, so there is no window where the deck is "done" without it.
+    const qrUrl = deck.qrUrl?.trim();
+    const finalSlides: SlideSpec[] =
+      finished && qrUrl && next.length < MAX_SLIDES && !next.some((slide) => slide.kind === "qr")
+        ? [
+            ...next,
+            {
+              kind: "qr",
+              title: "Scan to keep this deck",
+              kicker: "One link",
+              qr: {
+                url: qrUrl,
+                label: "Scan to open the link",
+                caption: "Point a phone camera at the code — no typing, no shortlink to trust.",
+              },
+              notes:
+                "Hold this slide up. The code opens the same link on the audience's phones, so nothing has to be written down.",
+            },
+          ]
+        : next;
+
     await ctx.db.patch(args.deckId, {
-      slides: next,
-      written: next.length,
+      slides: finalSlides,
+      written: finalSlides.length,
+      // A slide added outside the plan (the QR code) still counts towards the
+      // total, so the panel never reports "9 of 8".
+      total: finished ? Math.max(deck.total, finalSlides.length) : deck.total,
       status: finished ? "done" : "writing",
       engine: args.engine ?? deck.engine,
       aiFailures: args.aiFailures,
@@ -240,6 +272,8 @@ export const start = action({
     theme: v.optional(v.string()),
     tone: v.optional(v.string()),
     audience: v.optional(v.string()),
+    /** Link or text for a closing QR slide. */
+    qrUrl: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<Doc<"decks"> | null> => {
     const userId = await getAuthUserId(ctx);
@@ -255,6 +289,7 @@ export const start = action({
       tone: args.tone?.trim().slice(0, 120) || undefined,
       audience: args.audience?.trim().slice(0, 120) || undefined,
     };
+    const qrUrl = args.qrUrl?.trim().slice(0, 600) || undefined;
 
     let plan: DeckPlan;
     let engine: string | undefined;
@@ -291,6 +326,7 @@ export const start = action({
       theme,
       tone: brief.tone,
       audience: brief.audience,
+      qrUrl,
       plan,
       total: plan.slides.length,
       aiFailures,
@@ -322,7 +358,8 @@ export const step = action({
 
     if (written.length >= total) {
       // Nothing left to write: an already-complete deck that never got its
-      // status flipped is finished here rather than looping forever.
+      // status flipped is finished here rather than looping forever. (The QR
+      // slide, when the deck has one, is appended by `append`.)
       return await ctx.runMutation(internal.decks.finish, {
         deckId: args.deckId,
         userId,

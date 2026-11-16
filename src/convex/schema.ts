@@ -414,6 +414,8 @@ const schema = defineSchema(
       theme: v.string(),
       tone: v.optional(v.string()),
       audience: v.optional(v.string()),
+      /** A link the deck ends with as a scannable QR code, when one was given. */
+      qrUrl: v.optional(v.string()),
       status: v.union(
         v.literal("outline"),
         v.literal("writing"),

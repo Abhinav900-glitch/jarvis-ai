@@ -271,6 +271,24 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 8192,
     timeoutMs: 90_000,
   },
+  // Aion Labs — OpenAI-compatible, bearer key, text only. Its models are a
+  // GLM-based multi-model system (3.0/3.5) and DeepSeek variants (2.0/3.0 Mini),
+  // with a dedicated roleplay fine-tune. No `reasoning_effort` knob is sent:
+  // the catalogue advertises it per model, and sending it to the RP model is
+  // rejected, so the reasoning models are allowed to think on their own.
+  {
+    id: "aionlabs",
+    label: "Aion Labs",
+    url: "https://api.aionlabs.ai/v1/chat/completions",
+    keyEnv: ["AION_LABS_API_KEY", "AION_API_KEY"],
+    missing: "AION_LABS_API_KEY not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    textOnly: true,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    timeoutMs: 90_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -1126,6 +1144,83 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.82,
     context: 400_000,
     bestFor: "a fast answer over a very long prompt",
+  },
+
+  // --- Aion Labs -----------------------------------------------------------
+  // Roster read from the provider's own `/v1/models`, which is public. Only the
+  // ids it lists are registered: inventing a plausible model name is how a
+  // provider's whole account gets marked exhausted by a 400.
+  {
+    id: "aionlabs/aion-3.5",
+    provider: "aionlabs",
+    modelId: "aion-labs/aion-3.5",
+    label: "Aion 3.5",
+    vision: false,
+    reasoning: true,
+    quality: 0.92,
+    speed: 0.68,
+    context: 262_144,
+    bestFor: "a long, carefully argued answer",
+  },
+  {
+    id: "aionlabs/aion-3.5-mini",
+    provider: "aionlabs",
+    modelId: "aion-labs/aion-3.5-mini",
+    label: "Aion 3.5 Mini",
+    vision: false,
+    reasoning: true,
+    quality: 0.81,
+    speed: 0.86,
+    context: 262_144,
+    bestFor: "a quick answer over a 262k-token prompt",
+  },
+  {
+    id: "aionlabs/aion-3.0",
+    provider: "aionlabs",
+    modelId: "aion-labs/aion-3.0",
+    label: "Aion 3.0",
+    vision: false,
+    reasoning: true,
+    quality: 0.88,
+    speed: 0.66,
+    context: 131_072,
+    bestFor: "structured writing and narrative argument",
+  },
+  {
+    id: "aionlabs/aion-3.0-mini",
+    provider: "aionlabs",
+    modelId: "aion-labs/aion-3.0-mini",
+    label: "Aion 3.0 Mini",
+    vision: false,
+    reasoning: false,
+    quality: 0.78,
+    speed: 0.87,
+    context: 131_072,
+    bestFor: "cheap drafts and rewrites",
+  },
+  {
+    id: "aionlabs/aion-2.0",
+    provider: "aionlabs",
+    modelId: "aion-labs/aion-2.0",
+    label: "Aion 2.0",
+    vision: false,
+    reasoning: true,
+    quality: 0.8,
+    speed: 0.72,
+    context: 131_072,
+    bestFor: "expressive long-form prose",
+  },
+  {
+    id: "aionlabs/aion-rp",
+    provider: "aionlabs",
+    modelId: "aion-labs/aion-rp-llama-3.1-8b",
+    label: "Aion RP 8B",
+    vision: false,
+    reasoning: false,
+    quality: 0.55,
+    speed: 0.95,
+    context: 16_384,
+    bestFor: "roleplay and character voice",
   },
 ];
 

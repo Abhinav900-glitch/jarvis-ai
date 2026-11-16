@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   ChevronRight,
@@ -6,6 +6,7 @@ import {
   FileJson,
   Loader2,
   Presentation,
+  QrCode,
   Sparkles,
   Square,
   Trash2,
@@ -18,6 +19,8 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { buildPptx, deckFileName } from "@/lib/pptx/render";
 import { themeById, themeList, suggestTheme, type ThemeId } from "@/lib/pptx/theme";
 import type { DeckSpec, SlideSpec } from "@/lib/pptx/spec";
+import { qrMatrix } from "@/lib/qr/qr";
+import { qrDataUrl } from "@/lib/qr/png";
 
 // ---------------------------------------------------------------------------
 // Deck Studio.
@@ -34,6 +37,56 @@ import type { DeckSpec, SlideSpec } from "@/lib/pptx/spec";
 // ---------------------------------------------------------------------------
 
 const COUNTS = [10, 14, 20, 30, 50];
+
+/**
+ * A QR code drawn on a canvas.
+ *
+ * A grid of divs would be thousands of nodes for a version-10 code, and a data
+ * URL would mean re-encoding on every render; a canvas draws it once per text
+ * change and stays crisp at any size.
+ */
+function QrPreview({
+  text,
+  size = 112,
+  dark = "#000000",
+  light = "#FFFFFF",
+}: {
+  text: string;
+  size?: number;
+  dark?: string;
+  light?: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const modules = useMemo(() => {
+    try {
+      return qrMatrix(text).modules;
+    } catch {
+      return null;
+    }
+  }, [text]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.fillStyle = light;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    if (!modules) return;
+    const margin = 2;
+    const count = modules.length + margin * 2;
+    const scale = canvas.width / count;
+    context.fillStyle = dark;
+    for (let y = 0; y < modules.length; y += 1) {
+      for (let x = 0; x < modules.length; x += 1) {
+        if (!modules[y][x]) continue;
+        context.fillRect((x + margin) * scale, (y + margin) * scale, Math.ceil(scale), Math.ceil(scale));
+      }
+    }
+  }, [modules, dark, light]);
+
+  return <canvas ref={canvasRef} width={size} height={size} className="rounded-sm" aria-label="QR code preview" />;
+}
 
 function SlideThumb({ slide, themeId, index }: { slide: SlideSpec; themeId: string; index: number }) {
   const t = themeById(themeId);
@@ -215,6 +268,20 @@ function SlideThumb({ slide, themeId, index }: { slide: SlideSpec; themeId: stri
     );
   }
 
+  if (slide.kind === "qr") {
+    return frame(
+      <>
+        <div className="text-[10px] font-semibold leading-tight">{slide.title}</div>
+        <div className="mt-1 flex flex-1 items-center justify-center">
+          <QrPreview text={slide.qr?.url ?? "https://example.com"} size={80} light={`#${t.panel}`} dark={`#${t.ink}`} />
+        </div>
+        <div className="line-clamp-1 text-[6px]" style={{ color: `#${t.muted}` }}>
+          {slide.qr?.label ?? slide.qr?.url}
+        </div>
+      </>
+    );
+  }
+
   if (slide.kind === "image") {
     return frame(
       <>
@@ -295,6 +362,9 @@ export function DeckStudio({
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
+  const [qrUrl, setQrUrl] = useState("");
+  const [qrPng, setQrPng] = useState<string | null>(null);
+  const [qrBusy, setQrBusy] = useState(false);
   const runToken = useRef(0);
 
   const startDeck = useAction(api.decks.start);
@@ -346,6 +416,7 @@ export function DeckStudio({
         theme,
         ...(tone.trim() ? { tone: tone.trim() } : {}),
         ...(audience.trim() ? { audience: audience.trim() } : {}),
+        ...(qrUrl.trim() ? { qrUrl: qrUrl.trim() } : {}),
       });
       if (!created) throw new Error("The deck could not be created.");
       setDeckId(created._id);
@@ -377,6 +448,32 @@ export function DeckStudio({
   const stop = () => {
     runToken.current += 1;
     setBusy(false);
+  };
+
+  /** Standalone PNG, for a poster, another deck, or a chat message. */
+  const makeQrPng = async () => {
+    const text = qrUrl.trim();
+    if (!text || qrBusy) return;
+    setQrBusy(true);
+    setError(null);
+    try {
+      setQrPng(await qrDataUrl(text, { scale: 10, margin: 4 }));
+    } catch (err) {
+      setQrPng(null);
+      setError(err instanceof Error ? err.message : "Could not encode that link.");
+    } finally {
+      setQrBusy(false);
+    }
+  };
+
+  const downloadQr = () => {
+    if (!qrPng) return;
+    const anchor = document.createElement("a");
+    anchor.href = qrPng;
+    anchor.download = "qr-code.png";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
   };
 
   const download = async () => {
@@ -513,6 +610,52 @@ export function DeckStudio({
               className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50"
             />
           </div>
+
+          <div className="mt-2 flex items-center gap-2">
+            <QrCode className="size-3.5 shrink-0 text-muted-foreground" />
+            <input
+              value={qrUrl}
+              onChange={(e) => {
+                setQrUrl(e.target.value);
+                setQrPng(null);
+              }}
+              maxLength={600}
+              placeholder="QR link (optional) — YouTube, repo, website"
+              aria-label="Link for a QR code"
+              className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50"
+            />
+            <button
+              onClick={() => void makeQrPng()}
+              disabled={qrBusy || !qrUrl.trim()}
+              title="Encode this link as a PNG"
+              className="inline-flex items-center gap-1 rounded border px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+            >
+              {qrBusy ? <Loader2 className="size-3 animate-spin" /> : <QrCode className="size-3" />}
+              PNG
+            </button>
+          </div>
+
+          {qrPng ? (
+            <div className="mt-2 flex items-center gap-2 rounded border border-border/60 p-2">
+              <img
+                src={qrPng}
+                alt="QR code"
+                className="size-20 rounded border border-border/60 bg-white p-1"
+              />
+              <div className="min-w-0">
+                <p className="text-[10px] text-muted-foreground">
+                  Encoded in the browser — the link is never sent to a QR service. Add it to the deck by
+                  keeping the field filled when you build.
+                </p>
+                <button
+                  onClick={downloadQr}
+                  className="mt-1 inline-flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent"
+                >
+                  <Download className="size-3" /> Download PNG
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-2 flex items-center gap-2">
             <button

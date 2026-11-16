@@ -19,6 +19,7 @@
 // ---------------------------------------------------------------------------
 
 import { themeById, type DeckTheme } from "./theme";
+import { qrDataUrl } from "../qr/png";
 import type {
   ChartData,
   DeckSpec,
@@ -976,6 +977,81 @@ function imageLayout(w: SlideWriter, shapes: string[]): void {
   }
 }
 
+function qrLayout(w: SlideWriter, shapes: string[]): void {
+  const { theme } = w;
+  const qr = w.slide.qr;
+  if (!qr) return;
+  const top = header(w, shapes);
+  const rId = qr.dataUrl ? w.addImage(qr.dataUrl) : null;
+
+  const size = 244;
+  const card: Box = { x: 72, y: top + 4, w: size + 40, h: size + 40 };
+  shapes.push(textShape(w.nextId++, "QR card", card, [], { fill: theme.panel, line: theme.line, radius: 14 }, theme));
+
+  if (rId) {
+    shapes.push(pictureFrame(w.nextId++, "QR code", { x: card.x + 20, y: card.y + 20, w: size, h: size }, rId, qr.url));
+  } else {
+    shapes.push(
+      textShape(
+        w.nextId++,
+        "QR unavailable",
+        { x: card.x + 20, y: card.y + 20, w: size, h: size },
+        [{ runs: [{ text: "QR unavailable", size: 11, color: theme.muted }], size: 11, align: "ctr" }],
+        { anchor: "ctr", line: theme.line, radius: 8 },
+        theme,
+      ),
+    );
+  }
+
+  const textX = card.x + card.w + 34;
+  const width = SLIDE_W - 64 - textX;
+  let y = top + 10;
+  shapes.push(
+    textShape(
+      w.nextId++,
+      "QR label",
+      { x: textX, y, w: width, h: 30 },
+      [
+        {
+          runs: richRuns(qr.label ?? "Scan to open", { size: 19, bold: true, color: theme.ink }),
+          size: 19,
+          bold: true,
+          lineSpacing: 1.02,
+        },
+      ],
+      { anchor: "t" },
+      theme,
+    ),
+  );
+  y += 40;
+
+  if (qr.caption) {
+    shapes.push(
+      textShape(
+        w.nextId++,
+        "QR caption",
+        { x: textX, y, w: width, h: 70 },
+        [{ runs: richRuns(qr.caption, { size: 12, color: theme.muted }), size: 12, lineSpacing: 1.12 }],
+        { anchor: "t" },
+        theme,
+      ),
+    );
+    y += 76;
+  }
+
+  shapes.push(shape(w.nextId++, "QR rule", { x: textX, y, w: 34, h: 3 }, "rect", { fill: theme.accent }));
+  shapes.push(
+    textShape(
+      w.nextId++,
+      "QR url",
+      { x: textX, y: y + 12, w: width, h: 70 },
+      [{ runs: [{ text: qr.url, size: 10.5, color: theme.accent, font: "Consolas" }], size: 10.5, lineSpacing: 1.1 }],
+      { anchor: "t" },
+      theme,
+    ),
+  );
+}
+
 function coverLayout(w: SlideWriter, shapes: string[]): void {
   const { theme, deck } = w;
   const slide = w.slide;
@@ -1160,6 +1236,10 @@ function buildSlide(deck: DeckSpec, slide: SlideSpec, index: number, theme: Deck
       break;
     case "image":
       imageLayout(writer, shapes);
+      footer(writer, shapes);
+      break;
+    case "qr":
+      qrLayout(writer, shapes);
       footer(writer, shapes);
       break;
     case "closing":
@@ -1380,9 +1460,35 @@ export function buildPptxParts(deck: DeckSpec): PptxPackage {
   return { files, width, height };
 }
 
+/**
+ * Render every QR slide to a PNG part.
+ *
+ * Encoding is async (it deflates the image), while part assembly is not, so
+ * this runs first and attaches a data URL the writer can embed synchronously.
+ * The colours are fixed black-on-white rather than themed: a QR code tinted to
+ * match a dark slide is prettier and scans worse, and the code has to survive
+ * being photographed off a projector.
+ */
+export async function withQrImages(deck: DeckSpec): Promise<DeckSpec> {
+  const slides = await Promise.all(
+    deck.slides.map(async (slide) => {
+      if (slide.kind !== "qr" || !slide.qr || slide.qr.dataUrl) return slide;
+      try {
+        const dataUrl = await qrDataUrl(slide.qr.url, { scale: 10, margin: 4 });
+        return { ...slide, qr: { ...slide.qr, dataUrl } };
+      } catch {
+        // A link that cannot be encoded (far too long) leaves the placeholder
+        // frame rather than failing the whole download.
+        return slide;
+      }
+    }),
+  );
+  return { ...deck, slides };
+}
+
 /** Build the .pptx bytes. */
 export async function buildPptx(deck: DeckSpec): Promise<Uint8Array> {
-  const { files } = buildPptxParts(deck);
+  const { files } = buildPptxParts(await withQrImages(deck));
   const encoder = new TextEncoder();
   const entries: ZipEntry[] = [];
   // [Content_Types].xml must be first: some readers look for it before they
