@@ -244,11 +244,11 @@ export const PROVIDERS: ProviderSpec[] = [
     keyEnv: ["COHERE_AI_API_KEY", "COHERE_API_KEY"],
     missing: "COHERE_AI_API_KEY not configured",
     plugins: HTTP_PROVIDER,
+    // Proven on 2026-11-16: Cohere's compatibility endpoint takes
+    // `image_url: { url }` and rejects a bare string, which is exactly the
+    // shape every other provider in this table uses — so no special case.
     imageUrlAsString: false,
-    // `command-a-vision` and `aya-vision` exist, but image parts on this
-    // endpoint were not verified, so no Cohere engine is registered as a vision
-    // engine and an image turn never routes here.
-    textOnly: true,
+    textOnly: false,
     reasoningEffort: false,
     maxTokens: 8192,
     timeoutMs: 60_000,
@@ -971,10 +971,9 @@ export const ENGINES: EngineSpec[] = [
   // --- Cohere (compatibility endpoint) ------------------------------------
   // Registered from a live probe on 2026-11-16: `/v1/models` for the context
   // windows, then one real completion per model for availability and latency.
-  // `command-a-vision-07-2025` and `c4ai-aya-vision-32b` are deliberately
-  // absent — their image support on this endpoint was not verified, and a
-  // vision engine the router cannot actually send an image to is worse than no
-  // vision engine at all.
+  // The two vision models were proven separately by sending a solid crimson
+  // 16x16 PNG in the app's own `image_url: { url }` shape: both answered "Red"
+  // in under half a second, so they are registered as vision engines.
   {
     id: "cohere/command-a-plus",
     provider: "cohere",
@@ -1060,6 +1059,32 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.94,
     context: 132_000,
     bestFor: "a quick, cheap reply",
+  },
+  {
+    id: "cohere/command-a-vision",
+    provider: "cohere",
+    modelId: "command-a-vision-07-2025",
+    label: "Command A Vision",
+    vision: true,
+    reasoning: false,
+    quality: 0.84,
+    speed: 0.9,
+    context: 128_000,
+    bestFor: "reading an image and answering about it quickly",
+  },
+  {
+    id: "cohere/aya-vision-32b",
+    provider: "cohere",
+    modelId: "c4ai-aya-vision-32b",
+    label: "Aya Vision 32B",
+    vision: true,
+    reasoning: false,
+    quality: 0.72,
+    speed: 0.9,
+    // A 16k window: enough for an image plus a question, not for a long
+    // document with pictures in it.
+    context: 16_384,
+    bestFor: "image questions in 23 languages",
   },
   {
     id: "cohere/aya-expanse-32b",
