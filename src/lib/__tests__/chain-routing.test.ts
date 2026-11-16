@@ -230,6 +230,8 @@ describe("chain description", () => {
       provider: "groq",
       latencyMs: 900,
       chars: 400,
+      plannedEngineId: "googleai/gemini-3.5-flash",
+      planned: "Gemini 3.5 Flash",
     },
     {
       role: "synthesize",
@@ -239,6 +241,8 @@ describe("chain description", () => {
       provider: "mistral",
       latencyMs: 1200,
       chars: 600,
+      plannedEngineId: "mistral/ministral-14b",
+      planned: "Ministral 14B",
     },
   ];
 
@@ -248,6 +252,13 @@ describe("chain description", () => {
     expect(reason).toContain("Quick chain (2 providers)");
     expect(reason).toContain("Draft groq/GPT-OSS 20B");
     expect(reason).toContain("Final mistral/Ministral 14B");
+  });
+
+  test("names the engine a stage fell back from", () => {
+    const reason = chainReason(plan, [trace[0]]);
+    expect(reason).toContain(
+      "Draft Gemini 3.5 Flash → groq/GPT-OSS 20B (planned engine failed)",
+    );
   });
 
   test("reports a skipped stage instead of hiding it", () => {

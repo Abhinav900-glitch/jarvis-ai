@@ -232,6 +232,45 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 8192,
     timeoutMs: 60_000,
   },
+  // Cohere's compatibility surface, not its native `/v2/chat`: the engine
+  // registry speaks OpenAI chat completions to every provider so there is one
+  // request builder and one response parser, and Cohere publishes an endpoint
+  // that accepts exactly that shape. Probed live on 2026-11-16 — a real
+  // completion per registered model, not just a catalogue listing.
+  {
+    id: "cohere",
+    label: "Cohere",
+    url: "https://api.cohere.ai/compatibility/v1/chat/completions",
+    keyEnv: ["COHERE_AI_API_KEY", "COHERE_API_KEY"],
+    missing: "COHERE_AI_API_KEY not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    // `command-a-vision` and `aya-vision` exist, but image parts on this
+    // endpoint were not verified, so no Cohere engine is registered as a vision
+    // engine and an image turn never routes here.
+    textOnly: true,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    timeoutMs: 60_000,
+  },
+  // A Gonka broker gateway. Brokers resell network inference behind an
+  // OpenAI-compatible endpoint; this is the key's broker
+  // (proxy.gonkabroker.com), whose `/v1/models` is the only roster that matters
+  // for it — another broker would differ. Text only: none of the models this
+  // key serves take images.
+  {
+    id: "gonka",
+    label: "Gonka (broker)",
+    url: "https://proxy.gonkabroker.com/v1/chat/completions",
+    keyEnv: ["GONKA_BROKER_API_KEY", "GONKA_API_KEY"],
+    missing: "GONKA_BROKER_API_KEY not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    textOnly: true,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    timeoutMs: 90_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -927,6 +966,141 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.66,
     context: 131_072,
     bestFor: "reading an image on the NIM catalogue",
+  },
+
+  // --- Cohere (compatibility endpoint) ------------------------------------
+  // Registered from a live probe on 2026-11-16: `/v1/models` for the context
+  // windows, then one real completion per model for availability and latency.
+  // `command-a-vision-07-2025` and `c4ai-aya-vision-32b` are deliberately
+  // absent — their image support on this endpoint was not verified, and a
+  // vision engine the router cannot actually send an image to is worse than no
+  // vision engine at all.
+  {
+    id: "cohere/command-a-plus",
+    provider: "cohere",
+    modelId: "command-a-plus-05-2026",
+    label: "Command A Plus",
+    vision: false,
+    reasoning: false,
+    quality: 0.88,
+    speed: 0.78,
+    context: 436_000,
+    bestFor: "long documents and tool use on Cohere's newest flagship",
+  },
+  {
+    id: "cohere/command-a",
+    provider: "cohere",
+    modelId: "command-a-03-2025",
+    label: "Command A",
+    vision: false,
+    reasoning: false,
+    quality: 0.86,
+    speed: 0.86,
+    context: 288_000,
+    bestFor: "fast grounded answers with citations",
+  },
+  {
+    id: "cohere/command-a-reasoning",
+    provider: "cohere",
+    modelId: "command-a-reasoning-08-2025",
+    label: "Command A Reasoning",
+    vision: false,
+    reasoning: true,
+    quality: 0.87,
+    speed: 0.62,
+    context: 288_768,
+    bestFor: "step-by-step reasoning and multi-part problems",
+  },
+  {
+    id: "cohere/command-a-translate",
+    provider: "cohere",
+    modelId: "command-a-translate-08-2025",
+    label: "Command A Translate",
+    vision: false,
+    reasoning: false,
+    // A translation specialist with a small window: excellent at its job,
+    // and the router must not hand it a long document to read first.
+    quality: 0.82,
+    speed: 0.86,
+    context: 8_992,
+    bestFor: "translation between languages",
+  },
+  {
+    id: "cohere/command-r-plus",
+    provider: "cohere",
+    modelId: "command-r-plus-08-2024",
+    label: "Command R+",
+    vision: false,
+    reasoning: false,
+    quality: 0.78,
+    speed: 0.74,
+    context: 128_000,
+    bestFor: "retrieval-heavy answers over supplied documents",
+  },
+  {
+    id: "cohere/command-r",
+    provider: "cohere",
+    modelId: "command-r-08-2024",
+    label: "Command R",
+    vision: false,
+    reasoning: false,
+    quality: 0.72,
+    speed: 0.5,
+    context: 128_000,
+    bestFor: "grounded answers when the fast models are throttled",
+  },
+  {
+    id: "cohere/command-r7b",
+    provider: "cohere",
+    modelId: "command-r7b-12-2024",
+    label: "Command R7B",
+    vision: false,
+    reasoning: false,
+    quality: 0.6,
+    speed: 0.94,
+    context: 132_000,
+    bestFor: "a quick, cheap reply",
+  },
+  {
+    id: "cohere/aya-expanse-32b",
+    provider: "cohere",
+    modelId: "c4ai-aya-expanse-32b",
+    label: "Aya Expanse 32B",
+    vision: false,
+    reasoning: false,
+    quality: 0.75,
+    speed: 0.8,
+    context: 128_000,
+    bestFor: "multilingual answers across 23 languages",
+  },
+
+  // --- Gonka (broker gateway) ---------------------------------------------
+  // Two of the three text models this key serves are registered. `zai-org/GLM-5.3-Flash`
+  // answered 200 but returned no content within 200 tokens (it spends them
+  // thinking), so it is not registered until a real visible answer is seen.
+  {
+    id: "gonka/minimax-m2.7",
+    provider: "gonka",
+    modelId: "MiniMaxAI/MiniMax-M2.7",
+    label: "MiniMax M2.7",
+    vision: false,
+    reasoning: true,
+    quality: 0.86,
+    speed: 0.7,
+    context: 204_800,
+    bestFor: "long-context reasoning from MiniMax",
+  },
+  {
+    id: "gonka/deepseek-v4-flash",
+    provider: "gonka",
+    modelId: "deepseek-ai/DeepSeek-V4-Flash-0731",
+    label: "DeepSeek V4 Flash",
+    vision: false,
+    reasoning: false,
+    quality: 0.83,
+    speed: 0.82,
+    context: 400_000,
+    bestFor: "a fast answer over a very long prompt",
   },
 ];
 

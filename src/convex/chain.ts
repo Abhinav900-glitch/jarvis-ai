@@ -531,13 +531,17 @@ export const STAGE_FIELD = {
 export interface ChainStageTrace {
   role: ChainRole;
   label: string;
-  /** `provider/engine` for the stage that answered, which may differ from the plan. */
+  /** `provider/engine` for the stage that actually answered. */
   engineId: string;
   /** Human label, e.g. `Groq / GPT-OSS 20B`. */
   model: string;
   provider: string;
   latencyMs: number;
   chars: number;
+  /** The engine the planner chose for this stage. */
+  plannedEngineId: string;
+  /** Its human label, for the substitution note. */
+  planned: string;
 }
 
 /**
@@ -560,7 +564,18 @@ export function chainReason(
   const head = `${DEPTH_SPECS[plan.depth].label} chain (${providers.size} ${
     providers.size === 1 ? "provider" : "providers"
   }): ${parts.join(" → ")}`;
-  return failures.length > 0 ? `${head} · skipped: ${failures.join(" · ")}` : head;
+  // A stage that fell back changes what the chain actually was, so it is named
+  // rather than silently reported as the planned engine. On a deployment where
+  // several providers reject requests this is the line that explains why every
+  // stage came from the same model.
+  const replaced = trace
+    .filter((stage) => stage.plannedEngineId !== stage.engineId)
+    .map(
+      (stage) =>
+        `${stage.label} ${stage.planned} → ${stage.model} (planned engine failed)`,
+    );
+  const notes = [...replaced, ...failures.map((failure) => `skipped ${failure}`)];
+  return notes.length > 0 ? `${head} · ${notes.join(" · ")}` : head;
 }
 
 /**

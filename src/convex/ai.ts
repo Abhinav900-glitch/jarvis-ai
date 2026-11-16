@@ -1284,6 +1284,8 @@ export async function runChain(request: {
         provider: result.engineId?.split("/")[0] ?? stage.provider,
         latencyMs: result.latencyMs ?? 0,
         chars: result.text.length,
+        plannedEngineId: stage.engine.id,
+        planned: stage.engine.label,
       });
     } catch (err) {
       failures.push(
