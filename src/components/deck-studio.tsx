@@ -365,12 +365,18 @@ export function DeckStudio({
   const [qrUrl, setQrUrl] = useState("");
   const [qrPng, setQrPng] = useState<string | null>(null);
   const [qrBusy, setQrBusy] = useState(false);
+  const [template, setTemplate] = useState<{ storageId: Id<"_storage">; name: string } | null>(null);
+  const [templateIndex, setTemplateIndex] = useState(0);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [rendered, setRendered] = useState<{ url: string | null; bytes: number; slides: number } | null>(null);
   const runToken = useRef(0);
 
   const startDeck = useAction(api.decks.start);
   const stepDeck = useAction(api.decks.step);
   const retheme = useMutation(api.decks.retheme);
   const deleteDeck = useMutation(api.decks.remove);
+  const createUpload = useMutation(api.cloud.createUpload);
+  const renderTemplate = useAction(api.deckTemplate.render);
 
   const recent = useQuery(api.decks.list, {});
   const deck = useQuery(api.decks.get, deckId ? { deckId } : "skip");
@@ -463,6 +469,55 @@ export function DeckStudio({
       setError(err instanceof Error ? err.message : "Could not encode that link.");
     } finally {
       setQrBusy(false);
+    }
+  };
+
+  /** Upload a .pptx template straight to storage, then remember its id. */
+  const uploadTemplate = async (file: File) => {
+    if (templateBusy) return;
+    if (!/\.pptx$/i.test(file.name)) {
+      setError("Pick a .pptx file — that is what the template API accepts.");
+      return;
+    }
+    setTemplateBusy(true);
+    setError(null);
+    setRendered(null);
+    try {
+      const url = await createUpload({});
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        },
+        body: file,
+      });
+      if (!response.ok) throw new Error("The upload failed.");
+      const body = (await response.json()) as { storageId?: Id<"_storage"> };
+      if (!body.storageId) throw new Error("The upload returned no file id.");
+      setTemplate({ storageId: body.storageId, name: file.name });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload the template.");
+    } finally {
+      setTemplateBusy(false);
+    }
+  };
+
+  const renderInto = async () => {
+    if (!deckId || !template || templateBusy) return;
+    setTemplateBusy(true);
+    setError(null);
+    try {
+      const result = await renderTemplate({
+        deckId,
+        templateStorageId: template.storageId,
+        templateName: template.name,
+        slideIndex: templateIndex,
+      });
+      setRendered({ url: result.url, bytes: result.bytes, slides: result.slides });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The template render failed.");
+    } finally {
+      setTemplateBusy(false);
     }
   };
 
@@ -777,6 +832,75 @@ export function DeckStudio({
             </p>
           </div>
         )}
+
+        {/* Brand template — PowerPoint Generator API */}
+        {deck && slides.length > 0 ? (
+          <div className="mt-3 rounded-lg border border-border/60 p-2">
+            <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-muted-foreground/60">
+              <FileJson className="size-3" /> Brand template · PowerPoint Generator
+            </div>
+            <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+              Pour this deck into your own .pptx. Put {`{{title}}`}, {`{{body_1}}`} … in the template&apos;s text
+              boxes; one template slide is repeated for every slide here, so the layout stays yours.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                id="deck-template-file"
+                type="file"
+                accept=".pptx"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) void uploadTemplate(file);
+                }}
+              />
+              <label
+                htmlFor="deck-template-file"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 text-[10px] transition-colors hover:bg-accent"
+              >
+                {templateBusy ? <Loader2 className="size-3 animate-spin" /> : <Presentation className="size-3" />}
+                {template ? template.name.slice(0, 28) : "Choose .pptx"}
+              </label>
+              <label className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                layout
+                <input
+                  type="number"
+                  min={0}
+                  max={50}
+                  value={templateIndex}
+                  onChange={(e) => setTemplateIndex(Math.max(0, Number(e.target.value) || 0))}
+                  className="w-12 rounded border border-border/60 bg-transparent px-1 py-0.5 text-[10px] outline-none"
+                  aria-label="Template slide index"
+                />
+              </label>
+              <button
+                onClick={() => void renderInto()}
+                disabled={!template || templateBusy || !finished}
+                className="inline-flex items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent disabled:opacity-40"
+              >
+                {templateBusy ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
+                Render into template
+              </button>
+              {rendered?.url ? (
+                <a
+                  href={rendered.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[10px] underline underline-offset-2 hover:text-foreground"
+                >
+                  Download {rendered.slides} slides · {Math.round(rendered.bytes / 1024)} KB
+                </a>
+              ) : null}
+            </div>
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[10px] text-muted-foreground/70">Tags the template can use</summary>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                {`{{title}} {{kicker}} {{subtitle}} {{body}} {{body_1}}–{{body_6}} {{notes}} {{index}} {{total}} {{number}} {{kind}} {{quote}} {{quote_author}} {{qr_url}} {{qr_label}} {{metric_1_value}} {{metric_1_label}} … {{cell_r_c}} — plus deck-level {{deck_title}} {{deck_subtitle}} {{deck_author}} {{deck_footer}} {{deck_slides}}.`}
+              </p>
+            </details>
+          </div>
+        ) : null}
 
         {/* Recent decks */}
         {recent && recent.length > 0 ? (
