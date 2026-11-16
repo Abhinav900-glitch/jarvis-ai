@@ -23,6 +23,7 @@ import {
   Globe,
   ImagePlus,
   Languages,
+  Layers,
   Loader2,
   Link2,
   Mic,
@@ -183,6 +184,7 @@ import { CalculatorPanel } from "@/components/calculator-panel";
 import { MemoryPanel } from "@/components/memory-panel";
 import { CloudPanel } from "@/components/cloud-panel";
 import { MusicPanel } from "@/components/music-panel";
+import { DeckStudio } from "@/components/deck-studio";
 import { ExportPanel } from "@/components/export-panel";
 import { useCamera } from "@/hooks/use-camera";
 import { useLiveTranslation } from "@/hooks/use-live-translation";
@@ -1388,6 +1390,7 @@ export default function Dashboard() {
   const [showMemory, setShowMemory] = useState(false);
   const [showCloud, setShowCloud] = useState(false);
   const [showMusic, setShowMusic] = useState(false);
+  const [showDeck, setShowDeck] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
@@ -7364,6 +7367,13 @@ export default function Dashboard() {
               {showMusic && <MusicPanel onClose={() => setShowMusic(false)} />}
             </AnimatePresence>
 
+            {/* ---- Deck studio: an AI-written presentation, exported here ---- */}
+            <AnimatePresence>
+              {showDeck && (
+                <DeckStudio initialTopic={input} onClose={() => setShowDeck(false)} />
+              )}
+            </AnimatePresence>
+
             {/* ---- AeroTransformGen overview: runs + workspace ---- */}
             <AnimatePresence>
               {showAeroOverview ? (
@@ -7936,6 +7946,17 @@ export default function Dashboard() {
                           <span className="flex flex-col">
                             <span>{slidesBusy ? "Building slides…" : "Make slides"}</span>
                             <span className="text-[10px] text-muted-foreground">Gamma · Presentations.AI</span>
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => setShowDeck(true)}
+                        >
+                          <Layers className="size-3.5" />
+                          <span className="flex flex-col">
+                            <span>Deck studio</span>
+                            <span className="text-[10px] text-muted-foreground">
+                              AI-written .pptx · charts, tables, notes
+                            </span>
                           </span>
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setSummarizeInput("https://")}>

@@ -161,7 +161,7 @@ export function fallbackNotes(slide: SlideSpec, topic: string): string {
         ? "This is a transition: one sentence on why this part comes now."
         : slide.kind === "closing"
           ? "End on the decision, not on a summary."
-          : `Say what "${slide.title}" means before reading anything on the slide.`;
+          : `Say what "${slide.title}" means for ${topic} before reading anything on the slide.`;
   const detail = slide.body?.length
     ? `Point at: ${slide.body[0].replace(/\*\*/g, "").slice(0, 120)}.`
     : "Give one concrete example, then move on.";

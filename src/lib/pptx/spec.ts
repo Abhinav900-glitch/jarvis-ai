@@ -141,15 +141,24 @@ export interface DeckPlan {
 export const MAX_SLIDES = 80;
 export const MIN_SLIDES = 8;
 
+/**
+ * Strip the markdown a model reaches for even when told not to.
+ *
+ * Only paired emphasis is removed, so `3*4` and a lone asterisk survive — the
+ * point is to drop `**bold**` styling that PowerPoint would print literally.
+ */
+const plain = (value: string): string =>
+  value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*\n]+)\*/g, "$1");
+
 const text = (value: unknown, max: number): string => {
   if (typeof value === "number") return String(value).slice(0, max);
   if (typeof value !== "string") return "";
-  return value.replace(/\s+/g, " ").trim().slice(0, max);
+  return plain(value).replace(/\s+/g, " ").trim().slice(0, max);
 };
 
 const longText = (value: unknown, max: number): string => {
   if (typeof value !== "string") return "";
-  return value.replace(/[ \t]+/g, " ").trim().slice(0, max);
+  return plain(value).replace(/[ \t]+/g, " ").trim().slice(0, max);
 };
 
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -201,7 +210,7 @@ export function extractJson(raw: string): unknown {
 
 function normalizeMetrics(value: unknown): Metric[] {
   return list(value)
-    .map((raw) => {
+    .map((raw): Metric | null => {
       if (raw && typeof raw === "object") {
         const item = raw as Record<string, unknown>;
         const metric = {
@@ -222,7 +231,7 @@ function normalizeMetrics(value: unknown): Metric[] {
 
 function normalizeSteps(value: unknown): TimelineStep[] {
   return list(value)
-    .map((raw) => {
+    .map((raw): TimelineStep | null => {
       if (!raw || typeof raw !== "object") return null;
       const item = raw as Record<string, unknown>;
       const step = {
@@ -238,7 +247,7 @@ function normalizeSteps(value: unknown): TimelineStep[] {
 
 function normalizeColumns(value: unknown): ColumnBlock[] {
   return list(value)
-    .map((raw) => {
+    .map((raw): ColumnBlock | null => {
       if (!raw || typeof raw !== "object") return null;
       const item = raw as Record<string, unknown>;
       const heading = text(item.heading ?? item.title, 60);
@@ -378,19 +387,60 @@ export function normalizeSlide(raw: unknown): SlideSpec | null {
     notes: longText(item.notes ?? item.speakerNotes, 1200) || undefined,
   };
 
-  // A kind the content cannot support falls back to the shape it can: an empty
-  // table frame is a design bug the user would have to fix by hand.
+  return fitSlideKind(slide);
+}
+
+/**
+ * A kind the content cannot support falls back to the shape it can.
+ *
+ * An empty table frame or a chart with no series is a hole in the design that
+ * the user would have to fix by hand, so the slide becomes a bullet slide —
+ * the layout that can hold almost anything — instead.
+ */
+export function fitSlideKind(input: SlideSpec): SlideSpec {
+  const slide: SlideSpec = { ...input };
   if (slide.kind === "table" && !slide.table) slide.kind = "bullets";
   if (slide.kind === "chart" && !slide.chart) slide.kind = "bullets";
-  if (slide.kind === "columns" && slide.columns.length === 0) slide.kind = "bullets";
-  if (slide.kind === "stats" && slide.metrics.length === 0) slide.kind = "bullets";
-  if (slide.kind === "timeline" && slide.steps.length === 0) slide.kind = "bullets";
+  if (slide.kind === "columns" && (slide.columns ?? []).length === 0) slide.kind = "bullets";
+  if (slide.kind === "stats" && (slide.metrics ?? []).length === 0) slide.kind = "bullets";
+  if (slide.kind === "timeline" && (slide.steps ?? []).length === 0) slide.kind = "bullets";
   if (slide.kind === "quote" && !slide.quote) slide.kind = "bullets";
   if (slide.kind === "image" && !slide.image) slide.kind = "bullets";
-  if (slide.kind === "bullets" && slide.body.length === 0 && !slide.subtitle) {
-    slide.body = [];
-  }
   return slide;
+}
+
+/** True when a slide has something to draw beyond its title. */
+export function hasContent(slide: SlideSpec): boolean {
+  if (["cover", "closing", "section", "agenda"].includes(slide.kind)) return true;
+  return Boolean(
+    (slide.body ?? []).length ||
+      (slide.columns ?? []).length ||
+      slide.quote ||
+      (slide.metrics ?? []).length ||
+      (slide.steps ?? []).length ||
+      slide.table ||
+      slide.chart ||
+      slide.image ||
+      slide.subtitle,
+  );
+}
+
+/** The model's `{ slides: [...] }` envelope, or a bare array, as slides. */
+export function normalizeSlides(raw: unknown): SlideSpec[] {
+  const body =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  const items = Array.isArray(body.slides)
+    ? body.slides
+    : Array.isArray(body.cards)
+      ? body.cards
+      : Array.isArray(raw)
+        ? raw
+        : [];
+  return items
+    .map(normalizeSlide)
+    .filter((slide): slide is SlideSpec => slide !== null);
 }
 
 /** Coerce a whole authored deck, keeping the caller's theme and ratio. */
@@ -415,7 +465,7 @@ export function normalizeDeck(raw: unknown, theme = "obsidian"): DeckSpec {
 export function normalizePlan(raw: unknown, fallbackTitle: string, count: number): DeckPlan {
   const item = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const sections = list(item.sections)
-    .map((raw) => {
+    .map((raw): { title: string; intent?: string } | null => {
       if (typeof raw === "string") return { title: text(raw, 60) };
       if (!raw || typeof raw !== "object") return null;
       const s = raw as Record<string, unknown>;
@@ -426,7 +476,7 @@ export function normalizePlan(raw: unknown, fallbackTitle: string, count: number
     .slice(0, 10);
 
   const slides = list(item.slides ?? item.outline)
-    .map((raw) => {
+    .map((raw): DeckPlanSlide | null => {
       if (!raw || typeof raw !== "object") return null;
       const s = raw as Record<string, unknown>;
       const title = text(s.title ?? s.heading, 140);
@@ -517,7 +567,19 @@ export function fallbackPlan(topic: string, count: number): DeckPlan {
     }
   });
   slides.push({ kind: "closing", title: "Thank you", purpose: "Close and invite questions" });
-  return { title: short, subtitle: `A working deck on ${clean}`, sections, slides: slides.slice(0, wanted) };
+
+  // Trim from the middle: a deck that loses its closing is a deck that stops
+  // mid-sentence, and the cover is the slide the outline was built around.
+  const trimmed =
+    slides.length > wanted
+      ? [slides[0], ...slides.slice(1, Math.max(1, wanted - 1)), slides[slides.length - 1]]
+      : slides;
+  return {
+    title: short,
+    subtitle: `A working deck on ${clean}`,
+    sections,
+    slides: trimmed.slice(0, wanted),
+  };
 }
 
 /** Deterministic slide content for one planned slide. */

@@ -39,6 +39,11 @@ const NS_PKG = "http://schemas.openxmlformats.org/package/2006/relationships";
 
 const XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
 
+// XML 1.0 forbids most control characters outright; a model occasionally emits
+// one, and PowerPoint reports the whole file as corrupt if it does.
+// eslint-disable-next-line no-control-regex -- the range is the point
+const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g;
+
 const esc = (value: string): string =>
   value
     .replace(/&/g, "&amp;")
@@ -46,9 +51,7 @@ const esc = (value: string): string =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;")
-    // XML 1.0 forbids most control characters outright; a model occasionally
-    // emits one, and PowerPoint reports the whole file as corrupt if it does.
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
+    .replace(CONTROL_CHARS, "");
 
 const hex = (value: string | undefined, fallback: string): string => {
   const clean = (value ?? "").replace(/[^0-9a-fA-F]/g, "").toUpperCase();
@@ -92,6 +95,7 @@ interface Para {
   size?: number;
   color?: string;
   bold?: boolean;
+  italic?: boolean;
   font?: string;
   spaceBefore?: number;
   spaceAfter?: number;
@@ -139,17 +143,6 @@ function richRuns(text: string, base: Omit<Run, "text"> = {}): Run[] {
   if (last < text.length) runs.push({ ...base, text: text.slice(last) });
   return runs.length ? runs : [{ ...base, text }];
 }
-
-const para = (text: string, style: Omit<Para, "runs"> = {}): Para => ({
-  runs: richRuns(text, {
-    size: style.size,
-    color: style.color,
-    bold: style.bold,
-    font: style.font,
-    spacing: undefined,
-  }),
-  ...style,
-});
 
 function runsXml(runs: Run[], p: Para, theme: DeckTheme): string {
   return runs
@@ -449,7 +442,9 @@ function motif(w: SlideWriter, shapes: string[], box: Box): void {
 function header(w: SlideWriter, shapes: string[], opts: { withRule?: boolean } = {}): number {
   const { theme, slide } = w;
   const top = 54;
-  const kicker = slide.kicker?.trim();
+  // The same rule the pipeline applies: an eyebrow is a label, so a sentence
+  // saved into it is hidden rather than printed at 10pt across the slide.
+  const kicker = slide.kicker?.trim().length && slide.kicker.trim().length <= 48 ? slide.kicker.trim() : undefined;
   let y = top;
   if (kicker) {
     shapes.push(
@@ -643,13 +638,37 @@ function sectionLayout(w: SlideWriter, shapes: string[]): void {
       ),
     );
   }
+
+  // A writer often puts the section's argument in `body` even on a divider.
+  // Rendering it keeps that copy in the deck instead of dropping it.
+  const points = (w.slide.body ?? []).slice(0, 3);
+  if (points.length) {
+    const paras: Para[] = points.map((point, i) => ({
+      runs: richRuns(point, { size: 11.5, color: theme.muted }),
+      size: 11.5,
+      bullet: "–",
+      bulletColor: theme.accent,
+      spaceBefore: i === 0 ? 0 : 6,
+      lineSpacing: 1.06,
+    }));
+    shapes.push(
+      textShape(
+        w.nextId++,
+        "Section points",
+        { x: 84, y: w.slide.subtitle ? 404 : 360, w: 640, h: 78 },
+        paras,
+        { anchor: "t" },
+        theme,
+      ),
+    );
+  }
 }
 
 function columnsLayout(w: SlideWriter, shapes: string[]): void {
   const { theme } = w;
   const top = header(w, shapes);
   const bottom = w.height - 64;
-  const columns = w.slide.columns.slice(0, 2);
+  const columns = (w.slide.columns ?? []).slice(0, 2);
   const gap = 18;
   const width = columns.length === 1 ? 560 : (SLIDE_W - 128 - gap) / 2;
   columns.forEach((column, i) => {
@@ -723,7 +742,7 @@ function statsLayout(w: SlideWriter, shapes: string[]): void {
   const { theme } = w;
   const top = header(w, shapes);
   const bottom = w.height - 64;
-  const metrics = w.slide.metrics.slice(0, 4);
+  const metrics = (w.slide.metrics ?? []).slice(0, 4);
   const gap = 16;
   const width = (SLIDE_W - 128 - gap * (metrics.length - 1)) / metrics.length;
   const height = Math.min(210, bottom - top);
@@ -771,7 +790,7 @@ function statsLayout(w: SlideWriter, shapes: string[]): void {
 function timelineLayout(w: SlideWriter, shapes: string[]): void {
   const { theme } = w;
   const top = header(w, shapes);
-  const steps = w.slide.steps.slice(0, 6);
+  const steps = (w.slide.steps ?? []).slice(0, 6);
   const rows = steps.length > 4 ? 2 : 1;
   const perRow = rows === 1 ? steps.length : Math.ceil(steps.length / 2);
   const rowHeight = Math.min(200, (w.height - 74 - top) / rows);
@@ -1033,7 +1052,6 @@ function coverLayout(w: SlideWriter, shapes: string[]): void {
 
 function closingLayout(w: SlideWriter, shapes: string[]): void {
   const { theme } = w;
-  const height = w.height;
   shapes.push(shape(w.nextId++, "Closing ring", { x: SLIDE_W / 2 - 170, y: 96, w: 340, h: 340 }, "ellipse", { line: theme.accent, lineWidth: 0.75, lineAlpha: 24 }));
   shapes.push(
     textShape(

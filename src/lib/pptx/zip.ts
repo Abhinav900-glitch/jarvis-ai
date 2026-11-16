@@ -46,11 +46,17 @@ async function deflateRaw(bytes: Uint8Array): Promise<Uint8Array | null> {
   try {
     const stream = new Ctor("deflate-raw");
     const writer = stream.writable.getWriter();
-    // Deliberately not awaited before `close()`: a large part can fill the
-    // transformed stream's queue, and awaiting the write first deadlocks.
-    void writer.write(bytes);
-    void writer.close();
-    const buffer = await new Response(stream.readable).arrayBuffer();
+    // A fresh view over a fresh buffer: a Uint8Array can in principle span a
+    // SharedArrayBuffer, which `BufferSource` does not accept.
+    const chunk = new Uint8Array(bytes.byteLength);
+    chunk.set(bytes);
+    // Start reading before writing. A large part is larger than the transform
+    // stream's queue, so awaiting the write first would deadlock: the writer
+    // waits for the (not yet reading) reader to drain.
+    const collected = new Response(stream.readable).arrayBuffer();
+    await writer.write(chunk);
+    await writer.close();
+    const buffer = await collected;
     const out = new Uint8Array(buffer);
     // Storing is smaller for tiny parts, and never larger than the input plus
     // a few bytes, so an unhelpful deflate is simply not used.

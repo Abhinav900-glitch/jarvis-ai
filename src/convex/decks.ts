@@ -8,7 +8,7 @@ import {
   query,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   MAX_SLIDES,
   MIN_SLIDES,
@@ -16,13 +16,13 @@ import {
   fallbackPlan,
   fallbackSlide,
   fitSlideKind,
+  hasContent,
   normalizePlan,
   normalizeSlides,
   type DeckPlan,
   type SlideSpec,
 } from "../lib/pptx/spec";
 import {
-  DECK_SYSTEM_PROMPT,
   alignPlan,
   deckTitleFor,
   fallbackNotes,
@@ -48,13 +48,12 @@ import { suggestTheme, themeById } from "../lib/pptx/theme";
 /** Slides per model call. Small enough to stay inside a token limit. */
 const BATCH = 3;
 
-const briefOf = (deck: {
-  topic: string;
-  tone?: string | null;
-  audience?: string | null;
-}): DeckBrief => ({
+const briefOf = (
+  deck: { topic: string; tone?: string | null; audience?: string | null },
+  slideCount: number,
+): DeckBrief => ({
   topic: deck.topic,
-  slideCount: 0,
+  slideCount,
   tone: deck.tone ?? undefined,
   audience: deck.audience ?? undefined,
 });
@@ -242,7 +241,7 @@ export const start = action({
     tone: v.optional(v.string()),
     audience: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<Doc<"decks"> | null> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to build a deck.");
 
@@ -305,7 +304,7 @@ export const start = action({
 
 export const step = action({
   args: { deckId: v.id("decks") },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<Doc<"decks"> | null> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to build a deck.");
 
@@ -319,7 +318,7 @@ export const step = action({
     const plan = (deck.plan ?? { slides: [] }) as DeckPlan;
     const written = (deck.slides ?? []) as SlideSpec[];
     const total = plan.slides.length;
-    const brief = { ...briefOf(deck), slideCount: total };
+    const brief = briefOf(deck, total);
 
     if (written.length >= total) {
       // Nothing left to write: an already-complete deck that never got its
@@ -357,11 +356,17 @@ export const step = action({
         // changes the kind is corrected, and the content it did produce is
         // kept where it still fits.
         const fitted = fitSlideKind({ ...candidate, kind: planned.kind });
+        if (!hasContent(fitted)) {
+          aiFailures += 1;
+          return ensureNotes(fallbackSlide(planned, deck.topic, written.length + i), deck.topic);
+        }
         return ensureNotes(
           {
             ...fitted,
             title: fitted.title || planned.title,
-            kicker: fitted.kicker ?? planned.purpose ?? undefined,
+            // An eyebrow is a label, not a sentence: a long "purpose" from the
+            // plan would render as a paragraph above the title.
+            kicker: fitted.kicker && fitted.kicker.length <= 48 ? fitted.kicker : undefined,
           },
           deck.topic,
         );
@@ -393,6 +398,3 @@ function ensureNotes(slide: SlideSpec, topic: string): SlideSpec {
     ? slide
     : { ...slide, notes: fallbackNotes(slide, topic) };
 }
-
-// Re-exported so the panel and the tests share one prompt string.
-export { DECK_SYSTEM_PROMPT };
