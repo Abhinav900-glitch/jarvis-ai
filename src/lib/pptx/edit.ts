@@ -26,6 +26,23 @@ export interface SlideEdit {
 /** Kinds whose layout actually draws `body`. */
 export const BODY_KINDS: SlideSpec["kind"][] = ["bullets", "agenda", "section"];
 
+/**
+ * Accept a model's rewritten slide, or nothing.
+ *
+ * A rewrite is only usable if it keeps the layout's own content. Returning
+ * null rather than a hollow slide is the safety check: the caller keeps the
+ * existing slide instead of replacing a chart with a title and no data.
+ */
+export function coerceSlideRewrite(raw: unknown, previous: SlideSpec): SlideSpec | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const next = normalizeSlide({ ...(raw as Record<string, unknown>), kind: previous.kind });
+  if (!next) return null;
+  if (previous.chart && !next.chart) return null;
+  if (previous.table && !next.table) return null;
+  if (previous.qr?.url && !next.qr?.url) return null;
+  return next;
+}
+
 export function applySlideEdit(slide: SlideSpec, edit: SlideEdit): SlideSpec {
   const merged: Record<string, unknown> = { ...slide };
 

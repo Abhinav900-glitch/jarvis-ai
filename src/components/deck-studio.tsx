@@ -376,6 +376,8 @@ export function DeckStudio({
     notes: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [rewriteHint, setRewriteHint] = useState("");
+  const [rewriting, setRewriting] = useState(false);
   const [rendered, setRendered] = useState<{ url: string | null; bytes: number; slides: number } | null>(null);
   const runToken = useRef(0);
 
@@ -386,6 +388,7 @@ export function DeckStudio({
   const createUpload = useMutation(api.cloud.createUpload);
   const renderTemplate = useAction(api.deckTemplate.render);
   const editSlideAction = useMutation(api.decks.editSlide);
+  const rewriteSlideAction = useAction(api.decks.rewrite);
 
   const recent = useQuery(api.decks.list, {});
   const deck = useQuery(api.decks.get, deckId ? { deckId } : "skip");
@@ -558,6 +561,30 @@ export function DeckStudio({
       setError(err instanceof Error ? err.message : "Could not save that slide.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** Rewrite this slide with the model, keeping its layout and its data. */
+  const rewriteCurrent = async () => {
+    if (!deckId || rewriting) return;
+    if (!editDraft) {
+      const slide = slides[selected];
+      if (slide) startEdit(slide);
+    }
+    setRewriting(true);
+    setError(null);
+    try {
+      await rewriteSlideAction({
+        deckId,
+        index: selected,
+        instruction: rewriteHint.trim() || undefined,
+      });
+      setRewriteHint("");
+      setEditDraft(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not rewrite that slide.");
+    } finally {
+      setRewriting(false);
     }
   };
 
@@ -876,6 +903,26 @@ export function DeckStudio({
                   aria-label="Slide notes"
                   className="mt-1 w-full resize-y rounded border border-border/60 bg-transparent px-1.5 py-1 text-[11px] leading-relaxed outline-none focus:border-foreground/30"
                 />
+                <div className="mt-1 flex items-center gap-1.5">
+                  <input
+                    value={rewriteHint}
+                    onChange={(e) => setRewriteHint(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void rewriteCurrent();
+                    }}
+                    placeholder="Ask AI to change it: shorter, add a number, less corporate…"
+                    aria-label="Instruction for the AI rewrite"
+                    className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-1.5 py-1 text-[11px] outline-none focus:border-foreground/30"
+                  />
+                  <button
+                    onClick={() => void rewriteCurrent()}
+                    disabled={rewriting || saving}
+                    className="inline-flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent disabled:opacity-40"
+                  >
+                    {rewriting ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+                    {rewriting ? "Rewriting…" : "Rewrite"}
+                  </button>
+                </div>
                 <div className="mt-1.5 flex items-center gap-2">
                   <button
                     onClick={() => void saveEdit()}

@@ -27,11 +27,12 @@ import {
   deckTitleFor,
   fallbackNotes,
   outlinePrompt,
+  rewriteSlidePrompt,
   slidesPrompt,
   type DeckBrief,
 } from "../lib/pptx/prompts";
 import { suggestTheme, themeById } from "../lib/pptx/theme";
-import { applySlideEdit } from "../lib/pptx/edit";
+import { applySlideEdit, coerceSlideRewrite } from "../lib/pptx/edit";
 
 // ---------------------------------------------------------------------------
 // Deck generation, in stages.
@@ -152,6 +153,87 @@ export const editSlide = mutation({
     });
     await ctx.db.patch(args.deckId, { slides: next, updatedAt: Date.now() });
     return await ctx.db.get(args.deckId);
+  },
+});
+
+/**
+ * Swap one slide for a rewritten version.
+ *
+ * Internal because the rewrite comes from the model: a client must not be able
+ * to post arbitrary slide JSON over a deck it owns, which would bypass the
+ * normalisation every other write goes through.
+ */
+export const replaceSlide = internalMutation({
+  args: { deckId: v.id("decks"), index: v.number(), slide: v.any() },
+  handler: async (ctx, args) => {
+    const deck = await ctx.db.get(args.deckId);
+    if (!deck) throw new Error("Deck not found.");
+    const slides = [...((deck.slides ?? []) as SlideSpec[])];
+    if (!Number.isInteger(args.index) || args.index < 0 || args.index >= slides.length) {
+      throw new Error("That slide is no longer in the deck.");
+    }
+    slides[args.index] = args.slide as SlideSpec;
+    await ctx.db.patch(args.deckId, { slides, updatedAt: Date.now() });
+  },
+});
+
+/**
+ * Rewrite one slide with the model.
+ *
+ * A failed rewrite is a no-op, never a half-empty slide: the new version is
+ * only written after it survives `coerceSlideRewrite`. That check also keeps
+ * the slide's kind, so asking for a shorter title cannot turn a chart into a
+ * bullet list and lose the data behind it.
+ */
+export const rewrite = action({
+  args: {
+    deckId: v.id("decks"),
+    index: v.number(),
+    /** Free-text steer: "shorter", "add a number", "less corporate". */
+    instruction: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<{ deck: Doc<"decks"> | null; engine?: string }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to rewrite a slide.");
+    const deck = await ctx.runQuery(internal.decks.load, { deckId: args.deckId, userId });
+    if (!deck) throw new Error("Deck not found.");
+
+    const slides = (deck.slides ?? []) as SlideSpec[];
+    if (!Number.isInteger(args.index) || args.index < 0 || args.index >= slides.length) {
+      throw new Error("That slide is no longer in the deck.");
+    }
+    const current = slides[args.index];
+
+    let result;
+    try {
+      result = await ctx.runAction(internal.ai.deckTurn, {
+        prompt: rewriteSlidePrompt({
+          deckTitle: deck.title,
+          total: slides.length,
+          index: args.index,
+          slide: current,
+          instruction: args.instruction?.trim().slice(0, 300) || undefined,
+        }),
+        temperature: 0.7,
+      });
+    } catch {
+      throw new Error("No AI provider could rewrite this slide. It was left unchanged.");
+    }
+
+    const next = coerceSlideRewrite(extractJson(result.text), current);
+    if (!next) {
+      throw new Error("That rewrite came back unusable, so the slide was left as it was. Try a different instruction.");
+    }
+
+    await ctx.runMutation(internal.decks.replaceSlide, {
+      deckId: args.deckId,
+      index: args.index,
+      slide: next,
+    });
+    return {
+      deck: await ctx.runQuery(internal.decks.load, { deckId: args.deckId, userId }),
+      engine: result.engineId,
+    };
   },
 });
 

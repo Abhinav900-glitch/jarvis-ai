@@ -47,6 +47,32 @@ export interface DeckBrief {
   audience?: string;
 }
 
+/**
+ * Ask for one slide again.
+ *
+ * The current slide is included as JSON so the model edits this deck's voice,
+ * not a generic one, and the kind is pinned: a rewrite of a chart slide that
+ * comes back as bullets would be a different slide, not a rewrite.
+ */
+export function rewriteSlidePrompt(args: {
+  deckTitle: string;
+  total: number;
+  index: number;
+  slide: SlideSpec;
+  instruction?: string;
+}): string {
+  const instruction = args.instruction?.trim();
+  return [
+    `Rewrite slide ${args.index + 1} of ${args.total} in the deck "${args.deckTitle}".`,
+    instruction
+      ? `The author asked for: ${instruction}`
+      : "Tighten it: shorter title, sharper bullets, no filler or throat-clearing.",
+    `Current slide JSON:\n${JSON.stringify(args.slide)}`,
+    `Return exactly one JSON object using the same keys and the same "kind" ("${args.slide.kind}"). Keep everything that kind needs: a chart keeps its chart, a table keeps its table, a QR slide keeps its url.`,
+    "Match the language and voice of the rest of the deck. Plain text only — no markdown, no code fences, no commentary.",
+  ].join("\n\n");
+}
+
 export function outlinePrompt(brief: DeckBrief): string {
   const tone = brief.tone?.trim() || "clear and confident";
   const audience = brief.audience?.trim() || "an informed general audience";

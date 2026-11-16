@@ -6,7 +6,8 @@
 // a table, a QR link) that an edit to the text must not quietly destroy.
 
 import { describe, expect, test } from "bun:test";
-import { applySlideEdit } from "../pptx/edit";
+import { applySlideEdit, coerceSlideRewrite } from "../pptx/edit";
+import { rewriteSlidePrompt } from "../pptx/prompts";
 import type { SlideSpec } from "../pptx/spec";
 
 const bullets: SlideSpec = {
@@ -83,6 +84,53 @@ describe("applySlideEdit", () => {
     const edited = applySlideEdit(quote, { title: "One line, framed" });
     expect(edited.quote?.text).toBe("One line");
     expect(edited.quote?.attribution).toBe("Someone");
+  });
+
+  test("a rewrite cannot drop the chart, table or QR the layout is built on", () => {
+    const chart: SlideSpec = {
+      kind: "chart",
+      title: "Growth",
+      chart: { kind: "line", categories: ["Q1"], series: [{ name: "A", values: [1] }] },
+    };
+    expect(coerceSlideRewrite({ kind: "chart", title: "Growth, again" }, chart)).toBeNull();
+    expect(
+      coerceSlideRewrite({ title: "Growth, again", chart: chart.chart }, chart)?.chart,
+    ).toEqual(chart.chart);
+
+    const qr: SlideSpec = { kind: "qr", title: "Scan", qr: { url: "https://example.com" } };
+    expect(coerceSlideRewrite({ title: "Scan it" }, qr)).toBeNull();
+  });
+
+  test("a rewrite keeps the slide's kind, so it edits rather than replaces", () => {
+    const rewritten = coerceSlideRewrite({ kind: "bullets", title: "Shorter", body: ["**One**"] }, bullets);
+    expect(rewritten?.kind).toBe("bullets");
+    expect(rewritten?.body).toEqual(["One"]);
+  });
+
+  test("junk or an empty object is refused", () => {
+    expect(coerceSlideRewrite(null, bullets)).toBeNull();
+    expect(coerceSlideRewrite("a slide, honestly", bullets)).toBeNull();
+    expect(coerceSlideRewrite({}, bullets)).toBeNull();
+  });
+
+  test("the rewrite prompt carries the slide, its kind and the instruction", () => {
+    const prompt = rewriteSlidePrompt({
+      deckTitle: "Quarterly review",
+      total: 12,
+      index: 3,
+      slide: bullets,
+      instruction: "add a number",
+    });
+    expect(prompt).toContain("slide 4 of 12");
+    expect(prompt).toContain("Quarterly review");
+    expect(prompt).toContain("add a number");
+    expect(prompt).toContain('"bullets"');
+    expect(prompt).toContain("Costs flat");
+  });
+
+  test("without an instruction the prompt still asks for a tighter slide", () => {
+    const prompt = rewriteSlidePrompt({ deckTitle: "D", total: 2, index: 0, slide: bullets });
+    expect(prompt).toContain("Tighten it");
   });
 
   test("editing a slide with no body leaves the layout's own content alone", () => {
