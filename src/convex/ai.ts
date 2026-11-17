@@ -61,6 +61,7 @@ import {
 import { buildPageContext, hasReadableText } from "../lib/pdf-pages";
 import { assertSafePublicUrl } from "./urlGuard";
 import { DECK_SYSTEM_PROMPT } from "../lib/pptx/prompts";
+import { CODE_SYSTEM_PROMPT } from "../lib/genhack/prompts";
 import {
   cleanEnhancedPrompt,
   enhancePromptRequest,
@@ -4708,6 +4709,23 @@ export const extractPdfText = action({
 // reply in Jarvis's voice would bury it. So this is the same provider ladder
 // as a chat turn with a deck-specific system prompt, and no chat history.
 // ---------------------------------------------------------------------------
+
+/** One file for GenHack; the project itself is planned offline. */
+export const codeTurn = internalAction({
+  args: {
+    prompt: v.string(),
+    temperature: v.optional(v.number()),
+  },
+  handler: async (_ctx, args): Promise<LlmResult> => {
+    return await runProviderChain(
+      [{ role: "user", content: args.prompt }],
+      CODE_SYSTEM_PROMPT,
+      "No AI provider could write this file.",
+      rankEngines(),
+      { temperature: args.temperature ?? 0.3 },
+    );
+  },
+});
 
 export const deckTurn = internalAction({
   args: {
