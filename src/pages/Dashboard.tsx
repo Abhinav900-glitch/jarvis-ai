@@ -7,6 +7,7 @@ import {
   ArrowUp,
   Blocks,
   Box,
+  Eye,
   Brain,
   Calculator,
   Camera,
@@ -186,6 +187,7 @@ import { MemoryPanel } from "@/components/memory-panel";
 import { CloudPanel } from "@/components/cloud-panel";
 import { MusicPanel } from "@/components/music-panel";
 import { DeckStudio } from "@/components/deck-studio";
+import { SlideViewer } from "@/components/slide-viewer";
 import { ExportPanel } from "@/components/export-panel";
 import { useCamera } from "@/hooks/use-camera";
 import { useLiveTranslation } from "@/hooks/use-live-translation";
@@ -1392,6 +1394,7 @@ export default function Dashboard() {
   const [showCloud, setShowCloud] = useState(false);
   const [showMusic, setShowMusic] = useState(false);
   const [showDeck, setShowDeck] = useState(false);
+  const [showSlides, setShowSlides] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
@@ -7375,6 +7378,9 @@ export default function Dashboard() {
               )}
             </AnimatePresence>
 
+            {/* ---- Slide viewer: read any .pptx without PowerPoint ---- */}
+            <SlideViewer open={showSlides} onOpenChange={setShowSlides} />
+
             {/* ---- AeroTransformGen overview: runs + workspace ---- */}
             <AnimatePresence>
               {showAeroOverview ? (
@@ -7966,6 +7972,15 @@ export default function Dashboard() {
                             <span>Deck studio</span>
                             <span className="text-[10px] text-muted-foreground">
                               AI-written .pptx · charts, tables, notes
+                            </span>
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setShowSlides(true)}>
+                          <Eye className="size-3.5" />
+                          <span className="flex flex-col">
+                            <span>Slide viewer</span>
+                            <span className="text-[10px] text-muted-foreground">
+                              open any .pptx and read it here
                             </span>
                           </span>
                         </DropdownMenuItem>

@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import {
   ChevronRight,
   Download,
+  Eye,
   FileJson,
   Loader2,
   Pencil,
@@ -22,6 +23,8 @@ import { themeById, themeList, suggestTheme, type ThemeId } from "@/lib/pptx/the
 import type { DeckSpec, SlideSpec } from "@/lib/pptx/spec";
 import { qrMatrix } from "@/lib/qr/qr";
 import { qrDataUrl } from "@/lib/qr/png";
+import { SlideViewer } from "@/components/slide-viewer";
+import { disposeDeck, openDeck, type LoadedDeck } from "@/lib/pptx/read";
 
 // ---------------------------------------------------------------------------
 // Deck Studio.
@@ -361,6 +364,11 @@ export function DeckStudio({
   const [deckId, setDeckId] = useState<Id<"decks"> | null>(null);
   const [busy, setBusy] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  // The viewer gets the real packaged bytes, so the preview is the download.
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerDeck, setViewerDeck] = useState<LoadedDeck | null>(null);
+  const [viewerName, setViewerName] = useState("");
+  const [viewing, setViewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
   const [qrUrl, setQrUrl] = useState("");
@@ -621,6 +629,23 @@ export function DeckStudio({
     }
   };
 
+  const openViewer = async () => {
+    if (!spec || viewing || slides.length === 0) return;
+    setViewing(true);
+    try {
+      const bytes = await buildPptx(spec);
+      const loaded = await openDeck(bytes);
+      if (viewerDeck) disposeDeck(viewerDeck);
+      setViewerDeck(loaded);
+      setViewerName(deckFileName(spec.title));
+      setViewerOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not build the file to view.");
+    } finally {
+      setViewing(false);
+    }
+  };
+
   const current = slides[Math.min(selected, Math.max(0, slides.length - 1))];
   const activeTheme = deck ? themeById(deck.theme) : themeById(theme);
 
@@ -797,14 +822,25 @@ export function DeckStudio({
               </button>
             ) : null}
             {deck && slides.length > 0 ? (
-              <button
-                onClick={() => void download()}
-                disabled={downloading}
-                className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-40"
-              >
-                {downloading ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
-                {downloading ? "Packaging…" : "Download .pptx"}
-              </button>
+              <>
+                <button
+                  onClick={() => void openViewer()}
+                  disabled={viewing}
+                  title="Read the packaged .pptx in the viewer"
+                  className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-40"
+                >
+                  {viewing ? <Loader2 className="size-3 animate-spin" /> : <Eye className="size-3" />}
+                  {viewing ? "Opening…" : "View"}
+                </button>
+                <button
+                  onClick={() => void download()}
+                  disabled={downloading}
+                  className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-40"
+                >
+                  {downloading ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
+                  {downloading ? "Packaging…" : "Download .pptx"}
+                </button>
+              </>
             ) : null}
             <span className="ml-auto text-[10px] text-muted-foreground/70">
               {slides.length} of {total || slideCount} slides
@@ -1092,6 +1128,19 @@ export function DeckStudio({
           </div>
         ) : null}
       </div>
+
+      <SlideViewer
+        open={viewerOpen}
+        onOpenChange={(next) => {
+          setViewerOpen(next);
+          if (!next && viewerDeck) {
+            disposeDeck(viewerDeck);
+            setViewerDeck(null);
+          }
+        }}
+        initial={viewerDeck}
+        initialName={viewerName}
+      />
     </motion.div>
   );
 }
