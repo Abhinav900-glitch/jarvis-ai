@@ -36,7 +36,15 @@ import { cn } from "@/lib/utils";
 import { findWebImageQuery } from "@/lib/web-images";
 import { composeGroundedPrompt } from "@/lib/character-look";
 import { isPageUrl } from "@/lib/page-brief";
-import { downloadImage, imageFileName } from "@/lib/download-image";
+import { downloadImage, imageFileName, saveBlob } from "@/lib/download-image";
+import {
+  EXPORT_PRESETS,
+  exportFileName,
+  renderPreset,
+  toBlob,
+  type ExportPreset,
+} from "@/lib/image-export";
+import { zipFiles } from "@/lib/pptx/zip";
 import {
   Brain,
   Check,
@@ -347,6 +355,9 @@ export function ImageStudio({
   // still there to look at. Session-only: history keeps the pick, not the set.
   const [takeList, setTakeList] = useState<HistoryEntry[]>([]);
   const [takeNote, setTakeNote] = useState<string | null>(null);
+  // Which export size is being cropped right now, or "all" for the zip.
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [exportNote, setExportNote] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
   const [avoid, setAvoid] = useState("");
   const [busy, setBusy] = useState(false);
@@ -506,6 +517,7 @@ export function ImageStudio({
       const requestAspect = override?.aspect ?? aspect;
       setBusy(true);
       setError(null);
+      setExportNote(null);
 
       // Same decision as render-time, recomputed because this closure may run
       // long after the state it was created with.
@@ -886,6 +898,72 @@ export function ImageStudio({
     },
     [history, persist],
   );
+
+  /**
+   * Crop the current picture to one export size.
+   *
+   * Local work on bytes the studio already has: no provider call, no credit,
+   * and the result is the same picture rather than a new take at a new shape.
+   */
+  const exportOne = useCallback(
+    async (preset: ExportPreset) => {
+      if (!current || exporting) return;
+      setExporting(preset.id);
+      setExportNote(null);
+      setError(null);
+      try {
+        const bytes = await renderPreset(current.url, preset);
+        saveBlob(toBlob(bytes), exportFileName(current.prompt, preset));
+        setExportNote(`${preset.label} saved — ${preset.width}×${preset.height}.`);
+      } catch (err) {
+        setExportNote(err instanceof Error ? err.message : "Couldn't crop that image.");
+      } finally {
+        setExporting(null);
+      }
+    },
+    [current, exporting],
+  );
+
+  /** All four sizes in one zip, skipping any the browser refuses to encode. */
+  const exportAll = useCallback(async () => {
+    if (!current || exporting) return;
+    setExporting("all");
+    setExportNote(null);
+    setError(null);
+    const entries: { path: string; data: Uint8Array }[] = [];
+    const skipped: string[] = [];
+    try {
+      for (const preset of EXPORT_PRESETS) {
+        try {
+          entries.push({
+            path: exportFileName(current.prompt, preset),
+            data: await renderPreset(current.url, preset),
+          });
+        } catch (err) {
+          skipped.push(preset.label);
+          console.warn("[studio] export size failed:", preset.id, err);
+        }
+      }
+      if (entries.length === 0) {
+        setExportNote(
+          "None of the sizes could be cropped — that host doesn't allow canvas reads. The download buttons on the picture still work.",
+        );
+        return;
+      }
+      const zip = await zipFiles(entries);
+      const name = imageFileName(current.url, current.prompt).replace(/\.[^.]+$/, "");
+      saveBlob(toBlob(zip, "application/zip"), `${name}-sizes.zip`);
+      setExportNote(
+        skipped.length > 0
+          ? `Saved ${entries.length} sizes in a zip; skipped ${skipped.join(", ")}.`
+          : `Saved all ${entries.length} sizes in one zip.`,
+      );
+    } catch (err) {
+      setExportNote(err instanceof Error ? err.message : "Couldn't build the zip.");
+    } finally {
+      setExporting(null);
+    }
+  }, [current, exporting]);
 
   const alsoCompare = useCallback(async () => {
     if (!current || current.kind !== "web" || busy) return;
@@ -1620,6 +1698,60 @@ export function ImageStudio({
                   <Send className="size-3.5" />
                   Use in chat
                 </Button>
+              </div>
+
+              {/* ---- Export sizes: the same picture, cut to the shapes it is
+                  actually posted in. Local canvas work, no new render. ---- */}
+              <div className="border-t border-border/70 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    Export sizes
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/80">
+                    cropped in this tab — no new render
+                  </span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {EXPORT_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => void exportOne(preset)}
+                      disabled={exporting !== null}
+                      title={`${preset.hint} — grows or trims the picture to ${preset.width}×${preset.height}`}
+                      className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {exporting === preset.id ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <Download className="size-3" />
+                      )}
+                      {preset.label}
+                      <span className="opacity-60">
+                        {preset.width}×{preset.height}
+                      </span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => void exportAll()}
+                    disabled={exporting !== null}
+                    className="inline-flex items-center gap-1 rounded-full border border-foreground/30 px-2.5 py-1 text-[11px] text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Crop every size and download them as one zip"
+                  >
+                    {exporting === "all" ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Download className="size-3" />
+                    )}
+                    All as zip
+                  </button>
+                </div>
+                {exportNote && (
+                  <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground">
+                    {exportNote}
+                  </p>
+                )}
               </div>
             </div>
           )}

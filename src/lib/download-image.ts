@@ -51,6 +51,26 @@ export function imageFileName(url: string, hint?: string, now: Date = new Date()
 export type DownloadOutcome = "saved" | "opened";
 
 /**
+ * Hand the browser a blob under a filename.
+ *
+ * The one download that works for any origin: the file is already bytes in
+ * this tab, so no `download` attribute has to survive a cross-origin hop.
+ */
+export function saveBlob(blob: Blob, filename: string): void {
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Safari reads the blob asynchronously after the click; revoking straight
+  // away produces an empty file there.
+  window.setTimeout(() => URL.revokeObjectURL(href), 20_000);
+}
+
+/**
  * Save the image behind `url`. Browser-only, so it is called from click
  * handlers rather than during render.
  */
@@ -64,17 +84,7 @@ export async function downloadImage(
     const blob = await res.blob();
     if (blob.size === 0) throw new Error("empty image");
 
-    const href = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = href;
-    link.download = filename;
-    link.rel = "noopener";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    // Safari reads the blob asynchronously after the click; revoking straight
-    // away produces an empty file there.
-    window.setTimeout(() => URL.revokeObjectURL(href), 20_000);
+    saveBlob(blob, filename);
     return "saved";
   } catch {
     // No CORS, no bytes. Open the picture itself — never the page it is on.
