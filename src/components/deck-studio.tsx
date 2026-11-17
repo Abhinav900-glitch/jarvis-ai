@@ -23,8 +23,8 @@ import { themeById, themeList, suggestTheme, type ThemeId } from "@/lib/pptx/the
 import type { DeckSpec, SlideSpec } from "@/lib/pptx/spec";
 import { qrMatrix } from "@/lib/qr/qr";
 import { qrDataUrl } from "@/lib/qr/png";
-import { SlideViewer } from "@/components/slide-viewer";
-import { disposeDeck, openDeck, type LoadedDeck } from "@/lib/pptx/read";
+import { FileViewer } from "@/components/file-viewer";
+import { disposeOpenedFile, openOfficeFile, type OpenedFile } from "@/lib/office/read";
 
 // ---------------------------------------------------------------------------
 // Deck Studio.
@@ -366,8 +366,7 @@ export function DeckStudio({
   const [downloading, setDownloading] = useState(false);
   // The viewer gets the real packaged bytes, so the preview is the download.
   const [viewerOpen, setViewerOpen] = useState(false);
-  const [viewerDeck, setViewerDeck] = useState<LoadedDeck | null>(null);
-  const [viewerName, setViewerName] = useState("");
+  const [viewerFile, setViewerFile] = useState<OpenedFile | null>(null);
   const [viewing, setViewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
@@ -634,10 +633,9 @@ export function DeckStudio({
     setViewing(true);
     try {
       const bytes = await buildPptx(spec);
-      const loaded = await openDeck(bytes);
-      if (viewerDeck) disposeDeck(viewerDeck);
-      setViewerDeck(loaded);
-      setViewerName(deckFileName(spec.title));
+      const opened = await openOfficeFile(deckFileName(spec.title), bytes);
+      if (viewerFile) disposeOpenedFile(viewerFile);
+      setViewerFile(opened);
       setViewerOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not build the file to view.");
@@ -1129,17 +1127,16 @@ export function DeckStudio({
         ) : null}
       </div>
 
-      <SlideViewer
+      <FileViewer
         open={viewerOpen}
         onOpenChange={(next) => {
           setViewerOpen(next);
-          if (!next && viewerDeck) {
-            disposeDeck(viewerDeck);
-            setViewerDeck(null);
+          if (!next && viewerFile) {
+            disposeOpenedFile(viewerFile);
+            setViewerFile(null);
           }
         }}
-        initial={viewerDeck}
-        initialName={viewerName}
+        initial={viewerFile}
       />
     </motion.div>
   );

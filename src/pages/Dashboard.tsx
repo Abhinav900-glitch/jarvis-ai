@@ -187,7 +187,7 @@ import { MemoryPanel } from "@/components/memory-panel";
 import { CloudPanel } from "@/components/cloud-panel";
 import { MusicPanel } from "@/components/music-panel";
 import { DeckStudio } from "@/components/deck-studio";
-import { SlideViewer } from "@/components/slide-viewer";
+import { FileViewer } from "@/components/file-viewer";
 import { ExportPanel } from "@/components/export-panel";
 import { useCamera } from "@/hooks/use-camera";
 import { useLiveTranslation } from "@/hooks/use-live-translation";
@@ -7378,8 +7378,8 @@ export default function Dashboard() {
               )}
             </AnimatePresence>
 
-            {/* ---- Slide viewer: read any .pptx without PowerPoint ---- */}
-            <SlideViewer open={showSlides} onOpenChange={setShowSlides} />
+            {/* ---- File viewer: .pptx, .xlsx, .docx, .csv — no Office needed ---- */}
+            <FileViewer open={showSlides} onOpenChange={setShowSlides} />
 
             {/* ---- AeroTransformGen overview: runs + workspace ---- */}
             <AnimatePresence>
@@ -7978,9 +7978,9 @@ export default function Dashboard() {
                         <DropdownMenuItem onClick={() => setShowSlides(true)}>
                           <Eye className="size-3.5" />
                           <span className="flex flex-col">
-                            <span>Slide viewer</span>
+                            <span>File viewer</span>
                             <span className="text-[10px] text-muted-foreground">
-                              open any .pptx and read it here
+                              .pptx, .xlsx, .docx, .csv — read here
                             </span>
                           </span>
                         </DropdownMenuItem>
