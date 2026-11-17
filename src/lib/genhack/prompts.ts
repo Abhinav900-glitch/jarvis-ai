@@ -7,8 +7,6 @@
 // exports, same relative imports.
 // ---------------------------------------------------------------------------
 
-import type { GenFile } from "./types";
-
 export const CODE_SYSTEM_PROMPT = [
   "You are a senior engineer finishing one file in an existing project.",
   "You output the complete file, nothing else: no prose, no code fences, no",
@@ -17,6 +15,22 @@ export const CODE_SYSTEM_PROMPT = [
   "unless the file's own body requires changing them. Prefer clear, ordinary",
   "code over cleverness, and stay in the language of the file.",
 ].join(" ");
+
+/**
+ * Models wrap code in fences even when told not to. This unwraps a fenced
+ * reply, and keeps the body of an unclosed fence rather than throwing the file
+ * away — the checker is the judge of whether it is complete.
+ */
+export function stripCodeFences(text: string): string {
+  const trimmed = (text ?? "").trim();
+  const closed = trimmed.match(/^```[a-zA-Z0-9+#-]*\n([\s\S]*?)\n```$/);
+  if (closed) return closed[1];
+  if (trimmed.startsWith("```")) {
+    const firstBreak = trimmed.indexOf("\n");
+    if (firstBreak !== -1) return trimmed.slice(firstBreak + 1).replace(/\n?```\s*$/, "");
+  }
+  return trimmed;
+}
 
 export interface FileRewriteRequest {
   project: string;

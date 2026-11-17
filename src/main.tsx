@@ -26,6 +26,7 @@ const CloudinaryCallback = lazy(
 );
 const CanvaCallback = lazy(() => import("./pages/CanvaCallback.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
+const GenHack = lazy(() => import("./pages/GenHack.tsx"));
 // The embeddable surface other sites load in an iframe. Lazy like the rest,
 // but unlike the rest it is reachable without being signed in first — the
 // route below wraps it in RequireAuth, which bounces to /auth inside the
@@ -169,6 +170,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <CanvaCallback />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/genhack"
+                element={
+                  <RequireAuth>
+                    <GenHack />
                   </RequireAuth>
                 }
               />

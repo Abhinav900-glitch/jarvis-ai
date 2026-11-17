@@ -440,6 +440,53 @@ const schema = defineSchema(
       .index("by_user", ["userId"])
       .index("by_user_time", ["userId", "createdAt"]),
 
+    // ---------------------------------------------------------------------
+    // GenHack: a project written file by file, entirely offline.
+    //
+    // The plan and the files are separate tables on purpose. A 120-file
+    // project would approach the 1 MB document limit if every file lived on
+    // the project row, and writing one file at a time is the whole feature.
+    // ---------------------------------------------------------------------
+    genhackProjects: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      title: v.string(),
+      brief: v.string(),
+      stack: v.union(v.literal("react"), v.literal("node"), v.literal("python")),
+      targetFiles: v.number(),
+      /** Every path the plan will write, in the order it writes them. */
+      paths: v.array(v.string()),
+      total: v.number(),
+      written: v.number(),
+      /** Lines the finished project will hold, and how many exist so far. */
+      totalLines: v.number(),
+      writtenLines: v.number(),
+      status: v.union(v.literal("writing"), v.literal("done")),
+      /** Whether the model may upgrade files as they are written. */
+      aiAssist: v.boolean(),
+      aiFiles: v.number(),
+      engine: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_user_time", ["userId", "createdAt"]),
+
+    genhackFiles: defineTable({
+      projectId: v.id("genhackProjects"),
+      userId: v.id("users"),
+      path: v.string(),
+      language: v.string(),
+      role: v.string(),
+      content: v.string(),
+      /** `template` came from the offline generator; `ai` was upgraded. */
+      source: v.union(v.literal("template"), v.literal("ai")),
+      /** Position in the project, which is also its write order. */
+      order: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_project_order", ["projectId", "order"])
+      .index("by_project_path", ["projectId", "path"]),
+
     // Long-term memory: durable facts about the user, extracted from chat and
     // injected into future prompts. Fully user-controlled — every row can be
     // deleted from the Memory panel.

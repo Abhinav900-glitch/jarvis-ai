@@ -246,10 +246,21 @@ const RESOLVE_SUFFIXES = [
   "/mod.rs",
 ];
 
-/** Every relative import must name a file this project actually has. */
-export function checkImports(files: { path: string; content: string }[]): FileIssue[] {
+/**
+ * Every relative import must name a file this project actually has.
+ *
+ * `expected` is the plan's full path list. A project is written in batches, so
+ * an early file legitimately imports a file that exists in the plan but not on
+ * disk yet — that is pending, not broken, and reporting it as an error would
+ * make every in-progress project look wrong.
+ */
+export function checkImports(
+  files: { path: string; content: string }[],
+  expected: Iterable<string> = [],
+): FileIssue[] {
   const issues: FileIssue[] = [];
   const known = new Set(files.map((file) => file.path));
+  const planned = new Set(expected);
 
   for (const file of files) {
     // Stylesheets and assets are legitimate import targets but never import
@@ -271,7 +282,8 @@ export function checkImports(files: { path: string; content: string }[]): FileIs
         seen.add(key);
         const base = joinPath(dir, spec);
         const resolved = RESOLVE_SUFFIXES.some((suffix) => known.has(base + suffix));
-        if (!resolved) {
+        const pending = RESOLVE_SUFFIXES.some((suffix) => planned.has(base + suffix));
+        if (!resolved && !pending) {
           issues.push({
             path: file.path,
             line,
@@ -312,7 +324,10 @@ export function countLines(files: { content: string }[]): number {
 }
 
 /** The whole project: per-file checks, then the import graph. */
-export function checkProject(files: { path: string; content: string }[]): CheckResult {
+export function checkProject(
+  files: { path: string; content: string }[],
+  options: { expected?: Iterable<string> } = {},
+): CheckResult {
   const issues: FileIssue[] = [];
   const seen = new Set<string>();
 
@@ -324,7 +339,7 @@ export function checkProject(files: { path: string; content: string }[]): CheckR
     seen.add(file.path);
     issues.push(...checkFile(file.path, file.content));
   }
-  issues.push(...checkImports(files));
+  issues.push(...checkImports(files, options.expected ?? []));
 
   return {
     issues,

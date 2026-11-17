@@ -35,8 +35,6 @@ const pkg = (ctx: BuildContext) =>
   );
 
 function scaffold(ctx: BuildContext): GenFile[] {
-  const primary = ctx.entities[0];
-  const P = pascal(primary.key);
   const brief = ctx.brief.replace(/[{}]/g, "").slice(0, 300);
   const registers = ctx.entities.map((entity) => "import { register" + pascal(entity.key) + " } from \"./modules/" + entity.key + "\";");
   const calls = ctx.entities.map((entity) => "  register" + pascal(entity.key) + "(router);");

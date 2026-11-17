@@ -24,6 +24,7 @@ import {
   ImagePlus,
   Languages,
   Layers,
+  Terminal,
   Loader2,
   Link2,
   Mic,
@@ -7946,6 +7947,15 @@ export default function Dashboard() {
                           <span className="flex flex-col">
                             <span>{slidesBusy ? "Building slides…" : "Make slides"}</span>
                             <span className="text-[10px] text-muted-foreground">Gamma · Presentations.AI</span>
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => navigate("/genhack")}>
+                          <Terminal className="size-3.5" />
+                          <span className="flex flex-col">
+                            <span>GenHack</span>
+                            <span className="text-[10px] text-muted-foreground">
+                              100+ files, offline, checked
+                            </span>
                           </span>
                         </DropdownMenuItem>
                         <DropdownMenuItem
