@@ -221,6 +221,13 @@ const ASPECTS: { id: StudioAspect; label: string; hint: string }[] = [
 ];
 
 /**
+ * How many pictures one press may draw. Four is the useful ceiling: enough to
+ * choose from, few enough that the results still fit on screen and the cost of
+ * a press stays predictable.
+ */
+const TAKE_COUNTS = [1, 2, 4] as const;
+
+/**
  * How far a variation may drift. The numbers are the generators' own
  * `strength` dial — low keeps the source, high redraws it — so the labels
  * describe the effect rather than exposing a slider nobody can calibrate.
@@ -335,6 +342,11 @@ export function ImageStudio({
   const [styleId, setStyleId] = useState("none");
   const [model, setModel] = useState<StudioModel>("default");
   const [aspect, setAspect] = useState<StudioAspect>("1:1");
+  const [takes, setTakes] = useState(1);
+  // Every picture from the last press, so the ones that were not picked are
+  // still there to look at. Session-only: history keeps the pick, not the set.
+  const [takeList, setTakeList] = useState<HistoryEntry[]>([]);
+  const [takeNote, setTakeNote] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
   const [avoid, setAvoid] = useState("");
   const [busy, setBusy] = useState(false);
@@ -509,6 +521,10 @@ export function ImageStudio({
 
       try {
         if (target === "web") {
+          // The web path never produces takes; leaving the last set on screen
+          // would suggest the photos below came from the same press.
+          setTakeList([]);
+          setTakeNote(null);
           const term = query ?? basePrompt;
           const found = await search({ query: term, decide: true });
           if (found.images.length === 0) {
@@ -648,16 +664,40 @@ export function ImageStudio({
           grounded = `${grounded}\n\nVariation of the reference image: keep its subject, framing and palette; change what the prompt names.`;
         }
 
-        const result = await generate({
+        const request = {
           prompt: grounded,
           model: requestModel,
           aspectRatio: requestAspect,
           sourceImage: usedSource?.url,
           strength: usedSource?.strength,
-        });
-        const entry: HistoryEntry = {
-          kind: "ai",
-          ...result,
+        };
+        // Takes run side by side rather than one after another: the same prompt
+        // four times in sequence is four waits, and the first picture would be
+        // on screen long before the last one arrived.
+        const wanted = Math.max(1, takes);
+        setTakeNote(null);
+        setTakeList([]);
+        const settled = await Promise.allSettled(
+          Array.from({ length: wanted }, () => generate(request)),
+        );
+        const results = settled.flatMap((outcome) =>
+          outcome.status === "fulfilled" ? [outcome.value] : [],
+        );
+        if (results.length === 0) {
+          const failure = settled.find((outcome) => outcome.status === "rejected");
+          throw failure && failure.status === "rejected"
+            ? failure.reason
+            : new Error("Image generation failed.");
+        }
+        // A take that failed must not throw away the ones that worked, so the
+        // shortfall is reported beside the pictures instead of as an error.
+        if (results.length < wanted) {
+          setTakeNote(
+            `${wanted - results.length} of ${wanted} takes didn't come back — keeping the ${results.length} that did.`,
+          );
+        }
+        const shared = {
+          kind: "ai" as const,
           prompt: basePrompt,
           model: requestModel,
           aspect: requestAspect,
@@ -666,10 +706,18 @@ export function ImageStudio({
           reference: usedReference,
           page: usedPage ?? undefined,
           base: usedSource ?? undefined,
-          at: Date.now(),
         };
+        const entries: HistoryEntry[] = results.map((result) => ({
+          ...shared,
+          ...result,
+          at: Date.now(),
+        }));
+        const entry = entries[0];
+        setTakeList(entries);
         setCurrent(entry);
         setPreview(null);
+        // Only the pick enters history: four takes per press would push the
+        // rest of the recent list out of its twelve slots in three presses.
         persist([entry, ...history.filter((h) => h.url !== entry.url)]);
       } catch (err) {
         // The chain throws every stage's reason joined by newlines; keeping
@@ -697,6 +745,7 @@ export function ImageStudio({
       search,
       source,
       style.id,
+      takes,
       webQuery,
     ],
   );
@@ -827,6 +876,15 @@ export function ImageStudio({
       void downloadImage(url, imageFileName(url, hint ?? current?.prompt));
     },
     [current],
+  );
+
+  /** Promote one take from the last press into the result and history. */
+  const chooseTake = useCallback(
+    (entry: HistoryEntry) => {
+      setCurrent(entry);
+      persist([entry, ...history.filter((h) => h.url !== entry.url)]);
+    },
+    [history, persist],
   );
 
   const alsoCompare = useCallback(async () => {
@@ -1139,6 +1197,37 @@ export function ImageStudio({
               </div>
             )}
 
+            {resolved === "ai" && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Takes
+                </span>
+                <div className="flex gap-1">
+                  {TAKE_COUNTS.map((count) => (
+                    <button
+                      key={count}
+                      type="button"
+                      onClick={() => setTakes(count)}
+                      aria-pressed={takes === count}
+                      title={
+                        count === 1
+                          ? "One picture per press"
+                          : `Draw ${count} takes at once and keep the best`
+                      }
+                      className={cn(
+                        "h-8 flex-1 rounded-md border px-3 text-xs transition-colors sm:flex-none",
+                        takes === count
+                          ? "border-foreground/40 bg-accent text-foreground"
+                          : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                      )}
+                    >
+                      {count}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <Button
               onClick={() => void run()}
               disabled={busy || (!prompt.trim() && !source)}
@@ -1379,6 +1468,64 @@ export function ImageStudio({
           {/* ---- Result: AI render ---- */}
           {current && current.kind === "ai" && (
             <div className="overflow-hidden rounded-lg border border-border/70">
+              {takeList.length > 1 && (
+                <div className="border-b border-border/70 bg-muted/25 p-1.5">
+                  <div className="mb-1 flex items-center justify-between gap-2 px-0.5">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                      Takes — {takeList.length}
+                    </span>
+                    <span className="truncate text-[10px] text-muted-foreground/80">
+                      {takeNote ?? "tap one to keep it"}
+                    </span>
+                  </div>
+                  <div className="flex gap-1.5">
+                    {takeList.map((take, index) => {
+                      const picked = take.url === current.url;
+                      return (
+                        <div
+                          key={take.url + index}
+                          className={cn(
+                            "relative flex-1 overflow-hidden rounded-md border",
+                            picked ? "border-primary/70" : "border-border/70",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => chooseTake(take)}
+                            className="block w-full"
+                            aria-pressed={picked}
+                            title={picked ? "This is the one being shown" : "Keep this take"}
+                          >
+                            <img
+                              src={take.url}
+                              alt={`Take ${index + 1}`}
+                              loading="lazy"
+                              className="aspect-square w-full object-cover"
+                            />
+                          </button>
+                          <span className="pointer-events-none absolute left-1 top-1 rounded bg-black/65 px-1 py-0.5 text-[9px] font-medium text-white">
+                            {index + 1}
+                          </span>
+                          {picked ? (
+                            <span className="pointer-events-none absolute bottom-1 left-1 flex items-center gap-0.5 rounded bg-primary px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-primary-foreground">
+                              <Check className="size-2.5" />
+                              kept
+                            </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => save(take.url)}
+                            title="Download this take"
+                            className="absolute right-1 top-1 flex size-6 items-center justify-center rounded bg-black/65 text-white transition-colors hover:bg-black/85"
+                          >
+                            <Download className="size-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div
                 role="button"
                 tabIndex={0}
@@ -1632,6 +1779,8 @@ export function ImageStudio({
                       type="button"
                       onClick={() => {
                         setCurrent(h);
+                        setTakeList([]);
+                        setTakeNote(null);
                         setReference(
                           h.reference
                             ? { names: [], brief: h.reference, sources: [] }
