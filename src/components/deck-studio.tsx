@@ -994,6 +994,13 @@ export function DeckStudio({
               Pour this deck into your own .pptx. Put {`{{title}}`}, {`{{body_1}}`} … in the template&apos;s text
               boxes; one template slide is repeated for every slide here, so the layout stays yours.
             </p>
+            {/* Verified against the live service: the free plan stamps that
+                footer onto every slide. Saying so here beats letting someone
+                find it in a client-facing deck. */}
+            <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
+              The service&apos;s free plan adds a “Free version” footer to each rendered slide — that
+              comes from them, not from the template.
+            </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <input
                 id="deck-template-file"
