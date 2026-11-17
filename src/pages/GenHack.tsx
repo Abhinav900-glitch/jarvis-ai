@@ -18,14 +18,17 @@ import {
   FileCode2,
   Loader2,
   Pause,
+  Pencil,
   Play,
+  Save,
   Terminal,
   Trash2,
+  X,
   Zap,
 } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { checkProject } from "@/lib/genhack/check";
+import { checkFile, checkProject } from "@/lib/genhack/check";
 import { STACK_IDS } from "@/lib/genhack/blueprint";
 import { STACK_LABELS, type StackId } from "@/lib/genhack/types";
 import { zipFiles } from "@/lib/pptx/zip";
@@ -40,6 +43,7 @@ export default function GenHack() {
   const startProject = useAction(api.genhack.start);
   const stepProject = useAction(api.genhack.step);
   const removeProject = useMutation(api.genhack.remove);
+  const saveFile = useMutation(api.genhack.saveFile);
 
   const [selectedId, setSelectedId] = useState<Id<"genhackProjects"> | null>(null);
   const data = useQuery(api.genhack.get, selectedId ? { projectId: selectedId } : "skip");
@@ -54,6 +58,10 @@ export default function GenHack() {
   const [stepping, setStepping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openPath, setOpenPath] = useState<string | null>(null);
+  // The draft carries the path it belongs to, so switching files never applies
+  // an unsaved edit to the wrong one — no effect, no cascading render.
+  const [draft, setDraft] = useState<{ path: string; text: string } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [zipping, setZipping] = useState(false);
   const steppingRef = useRef(false);
 
@@ -92,6 +100,27 @@ export default function GenHack() {
   }, [files]);
 
   const current = files.find((file) => file.path === openPath) ?? files[0] ?? null;
+
+  const editing = draft && current && draft.path === current.path ? draft.text : null;
+
+  const draftIssues = useMemo(
+    () => (editing !== null && current ? checkFile(current.path, editing) : []),
+    [editing, current],
+  );
+
+  const saveCurrent = async () => {
+    if (!current || editing === null || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await saveFile({ fileId: current._id, content: editing });
+      setDraft(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the file.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const runStep = useCallback(async () => {
     if (!selectedId || steppingRef.current) return;
@@ -406,27 +435,93 @@ export default function GenHack() {
                     <span className="text-white/75">{current.path}</span>
                     <span className="text-white/25">{current.language}</span>
                     <span className="text-white/30">{current.role}</span>
-                    <span className="ml-auto flex items-center gap-1">
-                      {(issuesByPath.get(current.path) ?? 0) === 0 ? (
-                        <CheckCircle2 className="size-3" style={{ color: ACCENT }} />
+                    {current.edited ? <span style={{ color: ACCENT }}>edited</span> : null}
+                    <span className="ml-auto flex items-center gap-2">
+                      <span className="flex items-center gap-1">
+                        {(issuesByPath.get(current.path) ?? 0) === 0 ? (
+                          <CheckCircle2 className="size-3" style={{ color: ACCENT }} />
+                        ) : (
+                          <AlertTriangle className="size-3 text-[#ff6b6b]" />
+                        )}
+                        {issuesByPath.get(current.path) ?? 0}
+                      </span>
+                      {editing === null ? (
+                        <button
+                          onClick={() => setDraft({ path: current.path, text: current.content })}
+                          className="inline-flex items-center gap-1 rounded border border-white/15 px-2 py-1 transition-colors hover:border-white/40 hover:text-white"
+                        >
+                          <Pencil className="size-3" /> edit
+                        </button>
                       ) : (
-                        <AlertTriangle className="size-3 text-[#ff6b6b]" />
+                        <>
+                          <button
+                            onClick={() => void saveCurrent()}
+                            disabled={saving}
+                            className="inline-flex items-center gap-1 rounded px-2 py-1 font-semibold text-black transition-opacity hover:opacity-90 disabled:opacity-40"
+                            style={{ background: ACCENT }}
+                          >
+                            {saving ? <Loader2 className="size-3 animate-spin" /> : <Save className="size-3" />}
+                            save
+                          </button>
+                          <button
+                            onClick={() => setDraft(null)}
+                            className="inline-flex items-center gap-1 rounded border border-white/15 px-2 py-1 transition-colors hover:border-white/40 hover:text-white"
+                          >
+                            <X className="size-3" /> cancel
+                          </button>
+                        </>
                       )}
-                      {issuesByPath.get(current.path) ?? 0}
                     </span>
                   </div>
-                  <pre className="max-h-[62vh] overflow-auto px-3 py-2 text-[11px] leading-[1.55]">
-                    <code>
-                      {current.content.split("\n").map((line, index) => (
-                        <div key={index} className="flex">
-                          <span className="mr-3 w-8 shrink-0 select-none text-right text-white/20">
-                            {index + 1}
-                          </span>
-                          <span className="whitespace-pre-wrap break-words text-white/80">{line || " "}</span>
-                        </div>
-                      ))}
-                    </code>
-                  </pre>
+                  {editing !== null ? (
+                    <>
+                      <textarea
+                        value={editing}
+                        onChange={(event) =>
+                          setDraft((previous) =>
+                            previous ? { ...previous, text: event.target.value } : previous,
+                          )
+                        }
+                        spellCheck={false}
+                        className="block max-h-[62vh] min-h-[40vh] w-full resize-y border-b border-white/10 bg-black/40 px-3 py-2 text-[11px] leading-[1.55] text-white/85 outline-none focus:bg-black/60"
+                      />
+                      <div className="px-3 py-1.5 text-[10px]">
+                        {draftIssues.length === 0 ? (
+                          <span style={{ color: ACCENT }}>checks pass on this draft</span>
+                        ) : (
+                          <ul className="space-y-0.5">
+                            {draftIssues.slice(0, 4).map((issue, index) => (
+                              <li key={index} className="flex gap-2">
+                                <span
+                                  className="shrink-0 uppercase"
+                                  style={{ color: issue.severity === "error" ? "#ff6b6b" : "#f2a54a" }}
+                                >
+                                  {issue.severity}
+                                </span>
+                                <span className="text-white/50">
+                                  {issue.line ? "line " + issue.line + " — " : ""}
+                                  {issue.message}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <pre className="max-h-[62vh] overflow-auto px-3 py-2 text-[11px] leading-[1.55]">
+                      <code>
+                        {current.content.split("\n").map((line, index) => (
+                          <div key={index} className="flex">
+                            <span className="mr-3 w-8 shrink-0 select-none text-right text-white/20">
+                              {index + 1}
+                            </span>
+                            <span className="whitespace-pre-wrap break-words text-white/80">{line || " "}</span>
+                          </div>
+                        ))}
+                      </code>
+                    </pre>
+                  )}
                 </>
               ) : (
                 <div className="p-6 text-[11px] text-white/35">No files written yet.</div>
@@ -466,10 +561,11 @@ export default function GenHack() {
               with a checker on every file. No internet is required: the generator is local, so it keeps
               writing on its own while you are away.
             </p>
-            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {[
                 ["offline", "the plan and every template file are generated locally"],
                 ["checked", "brackets, JSON, and every relative import are verified as written"],
+                ["editable", "open any file, fix it in place, save — the checker runs on your draft"],
                 ["shipped", "download the whole tree as a zip, or keep it here"],
               ].map(([title, detail]) => (
                 <div key={title} className="border border-white/10 p-3">

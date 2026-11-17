@@ -314,6 +314,42 @@ export const step = action({
   },
 });
 
+const MAX_CONTENT = 200_000;
+
+/**
+ * Save a file the person edited by hand.
+ *
+ * The project's line total moves with the edit so the header stays truthful;
+ * the checker runs in the UI against the new content, so a file saved with a
+ * stray brace shows up broken immediately rather than on download.
+ */
+export const saveFile = mutation({
+  args: { fileId: v.id("genhackFiles"), content: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to edit a file.");
+    if (args.content.trim().length === 0) throw new Error("A file cannot be empty.");
+    if (args.content.length > MAX_CONTENT) {
+      throw new Error("That is larger than a source file should be.");
+    }
+
+    const file = await ctx.db.get(args.fileId);
+    if (!file || file.userId !== userId) throw new Error("File not found.");
+    const project = await ctx.db.get(file.projectId);
+    if (!project) throw new Error("Project not found.");
+
+    const before = file.content.split("\n").length;
+    const after = args.content.split("\n").length;
+    const now = Date.now();
+
+    await ctx.db.patch(file._id, { content: args.content, edited: true, updatedAt: now });
+    await ctx.db.patch(file.projectId, {
+      writtenLines: Math.max(0, project.writtenLines + (after - before)),
+      updatedAt: now,
+    });
+  },
+});
+
 export const remove = mutation({
   args: { projectId: v.id("genhackProjects") },
   handler: async (ctx, args) => {

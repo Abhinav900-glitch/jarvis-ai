@@ -480,6 +480,8 @@ const schema = defineSchema(
       content: v.string(),
       /** `template` came from the offline generator; `ai` was upgraded. */
       source: v.union(v.literal("template"), v.literal("ai")),
+      /** Set once a person has saved the file themself. */
+      edited: v.optional(v.boolean()),
       /** Position in the project, which is also its write order. */
       order: v.number(),
       updatedAt: v.number(),
