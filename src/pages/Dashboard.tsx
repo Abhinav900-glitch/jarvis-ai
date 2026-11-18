@@ -131,7 +131,7 @@ import { deckTopicFrom } from "@/lib/deck-request";
 import { findWebImageQuery } from "@/lib/web-images";
 import { downloadImage, imageFileName } from "@/lib/download-image";
 import { composeGroundedPrompt } from "@/lib/character-look";
-import { stripWakeWord } from "@/lib/wake-word";
+import { normalizeWakePhrase, stripWakeWord } from "@/lib/wake-word";
 import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
 import {
@@ -2389,6 +2389,28 @@ export default function Dashboard() {
     }
   }, [wakeGate]);
 
+  // The phrase the gate listens for. "Jarvis" is a fine word for a laptop and a
+  // strange one to say in a kitchen, so it is a setting rather than a constant.
+  const [wakePhrase, setWakePhrase] = useState(() => {
+    try {
+      return normalizeWakePhrase(localStorage.getItem("jarvis-wake-phrase"));
+    } catch {
+      return normalizeWakePhrase(null);
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("jarvis-wake-phrase", wakePhrase);
+    } catch {
+      /* ignore */
+    }
+  }, [wakePhrase]);
+  // How often the phrase has been heard this call, and when it last was. This
+  // is the only feedback that distinguishes "the phrase is wrong" from "the
+  // microphone is muted", so it is worth counting.
+  const [wakeCount, setWakeCount] = useState(0);
+  const [lastWakeAt, setLastWakeAt] = useState<number | null>(null);
+
   const liveTurnRef = useRef<(text: string) => Promise<void>>(async () => {});
   // Hand control for the orb. Off until asked for: it needs the camera, and
   // silently opening it during a voice call would be a surprise.
@@ -2409,8 +2431,10 @@ export default function Dashboard() {
       // Wake gate: drop the turn entirely unless it opened with the phrase.
       let text = raw;
       if (wakeGate) {
-        const wake = stripWakeWord(raw);
+        const wake = stripWakeWord(raw, wakePhrase);
         if (!wake.woke) return "";
+        setWakeCount((n) => n + 1);
+        setLastWakeAt(Date.now());
         if (wake.onlyWake) {
           // "Hey Jarvis" on its own: chime and keep listening. No transcript
           // row — an empty turn would sit in the log as a blank gap, and the
@@ -9012,7 +9036,21 @@ export default function Dashboard() {
         muted={live.muted}
         onGestureAction={handleOrbGesture}
         wakeGated={wakeGate}
-        onToggleWake={() => setWakeGate((v) => !v)}
+        onToggleWake={() => {
+          // Leaving the gate on is the moment to start counting again: a count
+          // from an earlier call says nothing about this microphone now.
+          setWakeGate((on) => {
+            if (!on) {
+              setWakeCount(0);
+              setLastWakeAt(null);
+            }
+            return !on;
+          });
+        }}
+        wakePhrase={wakePhrase}
+        onWakePhraseChange={setWakePhrase}
+        wakeCount={wakeCount}
+        lastWakeAt={lastWakeAt}
         onStop={() => {
           live.stop();
           setLiveTranscript([]);

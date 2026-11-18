@@ -33,7 +33,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownMessage } from "@/components/markdown-message";
-import { WAKE_PHRASE } from "@/lib/wake-word";
+import {
+  WAKE_PHRASE,
+  WAKE_PHRASES,
+  normalizeWakePhrase,
+} from "@/lib/wake-word";
 import type { Mood } from "@/lib/voice-mood";
 import type { GestureAction } from "@/lib/gesture-actions";
 import { UltronOrb } from "@/components/ultron-orb";
@@ -60,6 +64,12 @@ export interface JarvisHudProps {
   /** When true, turns that don't open with the wake phrase are ignored */
   wakeGated: boolean;
   onToggleWake: () => void;
+  /** The phrase the gate listens for, and a way to change it. */
+  wakePhrase?: string;
+  onWakePhraseChange?: (phrase: string) => void;
+  /** Times the phrase was heard this call, and when it last was. */
+  wakeCount?: number;
+  lastWakeAt?: number | null;
   onStop: () => void;
   /** Interrupt the spoken reply — drop straight back to listening */
   onSkip: () => void;
@@ -417,6 +427,10 @@ export function JarvisHud({
   mood,
   wakeGated,
   onToggleWake,
+  wakePhrase = WAKE_PHRASE,
+  onWakePhraseChange,
+  wakeCount = 0,
+  lastWakeAt = null,
   onStop,
   onSkip,
   energy = 0,
@@ -447,6 +461,29 @@ export function JarvisHud({
   // to create a WebGL context, and flips this back to false (revealing the CSS
   // sphere) if that fails.
   const [orbLive, setOrbLive] = useState(true);
+  // The wake-word settings, opened from the pill rather than shown all the
+  // time: this screen is a call, and a settings form in the middle of one is
+  // noise until it is asked for.
+  const [wakePrefs, setWakePrefs] = useState(false);
+  const [phraseDraft, setPhraseDraft] = useState(wakePhrase);
+  /* eslint-disable react-hooks/set-state-in-effect -- mirroring a prop into an
+     input draft; the alternative is a remount that loses the caret. */
+  useEffect(() => {
+    setPhraseDraft(wakePhrase);
+  }, [wakePhrase]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+  // A short confirmation the moment the phrase lands. Without it a wake and a
+  // missed wake look identical from the outside: both are silence.
+  const [awake, setAwake] = useState(false);
+  /* eslint-disable react-hooks/set-state-in-effect -- a prop change starts a
+     short confirmation window; there is no render-time equivalent. */
+  useEffect(() => {
+    if (lastWakeAt === null) return;
+    setAwake(true);
+    const timer = window.setTimeout(() => setAwake(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [lastWakeAt]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const [copied, setCopied] = useState(false);
 
   if (!open) return null;
@@ -534,9 +571,11 @@ export function JarvisHud({
               aria-live="polite"
               className="text-sm tracking-[0.015em] text-[var(--hud-bright)]"
             >
-              {wakeGated && (phase === "listening" || phase === "idle")
-                ? `Say “${WAKE_PHRASE}” to wake it`
-                : STATUS_LABELS[phase]}
+              {awake
+                ? "Heard you — go ahead"
+                : wakeGated && (phase === "listening" || phase === "idle")
+                  ? `Say “${wakePhrase}” to wake it`
+                  : STATUS_LABELS[phase]}
             </div>
             <div className="text-center text-xs text-[var(--hud-dim)]">
               {STATUS_HINTS[phase]}
@@ -606,7 +645,7 @@ export function JarvisHud({
               onClick={onToggleWake}
               title={
                 wakeGated
-                  ? `Wake gate on — turns are ignored until you say “${WAKE_PHRASE}”`
+                  ? `Wake gate on — turns are ignored until you say “${wakePhrase}”`
                   : "Wake gate off — Jarvis answers anything it hears"
               }
               className={cn(
@@ -618,6 +657,22 @@ export function JarvisHud({
             >
               {wakeGated ? <Mic className="size-3" /> : <MicOff className="size-3" />}
               {wakeGated ? "Wake gate on" : "Wake gate off"}
+            </button>
+            <button
+              onClick={() => setWakePrefs((open) => !open)}
+              aria-expanded={wakePrefs}
+              title="Choose the phrase that wakes Jarvis"
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full border px-2.5 py-1.5 text-[11px] transition-colors",
+                wakePrefs
+                  ? "border-white/25 bg-white/[0.08] text-[var(--hud-bright)]"
+                  : "border-white/10 bg-white/[0.04] text-[var(--hud-dim)] hover:bg-white/[0.08]",
+              )}
+            >
+              “{wakePhrase}”
+              <ChevronDown
+                className={cn("size-3 transition-transform", wakePrefs && "rotate-180")}
+              />
             </button>
             {onToggleAutoRestart && (
               <Pill
@@ -713,6 +768,69 @@ export function JarvisHud({
               >
                 <SkipForward className="size-4" />
               </button>
+            )}
+            {wakePrefs && (
+              <div className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-left">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-[10px] font-semibold tracking-[0.2em] text-[var(--hud-dim)] uppercase">
+                    Wake word
+                  </span>
+                  <span className="ml-auto text-[10px] text-[var(--hud-dim)]">
+                    {!wakeGated
+                      ? "Gate is off — Jarvis answers anything it hears"
+                      : wakeCount > 0
+                        ? `Heard ${wakeCount}× this call · last ${new Date(
+                            lastWakeAt ?? Date.now(),
+                          ).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                        : "Not heard yet — say it once to test the mic"}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {WAKE_PHRASES.map((option) => {
+                    const active =
+                      normalizeWakePhrase(option).toLowerCase() ===
+                      wakePhrase.toLowerCase();
+                    return (
+                      <button
+                        key={option}
+                        onClick={() => {
+                          setPhraseDraft(option);
+                          onWakePhraseChange?.(normalizeWakePhrase(option));
+                        }}
+                        className={cn(
+                          "rounded-full border px-2.5 py-1 text-[11px] transition-colors",
+                          active
+                            ? "border-[var(--spec-6)]/50 bg-[var(--spec-6)]/15 text-[var(--spec-5)]"
+                            : "border-white/10 bg-white/[0.04] text-[var(--hud-dim)] hover:bg-white/[0.08]",
+                        )}
+                      >
+                        “{option}”
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    value={phraseDraft}
+                    onChange={(e) => setPhraseDraft(e.target.value)}
+                    onBlur={() => onWakePhraseChange?.(normalizeWakePhrase(phraseDraft))}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      onWakePhraseChange?.(normalizeWakePhrase(phraseDraft));
+                      e.currentTarget.blur();
+                    }}
+                    maxLength={32}
+                    disabled={!onWakePhraseChange}
+                    aria-label="Wake phrase"
+                    placeholder="Or type your own — short works best"
+                    className="min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] text-[var(--hud-bright)] outline-none placeholder:text-[var(--hud-dim)]/70 focus:border-white/25"
+                  />
+                  <span className="text-[10px] text-[var(--hud-dim)]">
+                    One to four words. Say it before the command.
+                  </span>
+                </div>
+              </div>
             )}
           </div>
           <p className="shrink-0 pb-1 text-center text-[10px] tracking-[0.18em] text-[var(--hud-faint)] uppercase">
