@@ -37,6 +37,7 @@ import {
   WAKE_PHRASE,
   WAKE_PHRASES,
   normalizeWakePhrase,
+  stripWakeWord,
 } from "@/lib/wake-word";
 import type { Mood } from "@/lib/voice-mood";
 import type { GestureAction } from "@/lib/gesture-actions";
@@ -466,6 +467,12 @@ export function JarvisHud({
   // noise until it is asked for.
   const [wakePrefs, setWakePrefs] = useState(false);
   const [phraseDraft, setPhraseDraft] = useState(wakePhrase);
+  // A sentence to try against the matcher. Testing the phrase itself proves
+  // nothing — the interesting question is what the user actually says.
+  const [wakeTest, setWakeTest] = useState("");
+  const wakeTestResult = wakeTest.trim()
+    ? stripWakeWord(wakeTest, wakePhrase)
+    : null;
   /* eslint-disable react-hooks/set-state-in-effect -- mirroring a prop into an
      input draft; the alternative is a remount that loses the caret. */
   useEffect(() => {
@@ -829,6 +836,41 @@ export function JarvisHud({
                   <span className="text-[10px] text-[var(--hud-dim)]">
                     One to four words. Say it before the command.
                   </span>
+                </div>
+
+                <div className="mt-2 rounded-md border border-white/10 bg-black/10 px-2 py-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] tracking-[0.18em] text-[var(--hud-dim)] uppercase">
+                      Try it
+                    </span>
+                    <input
+                      value={wakeTest}
+                      onChange={(e) => setWakeTest(e.target.value)}
+                      aria-label="Try a sentence against the wake phrase"
+                      placeholder="type what you would say…"
+                      className="min-w-0 flex-1 bg-transparent text-[11px] text-[var(--hud-bright)] outline-none placeholder:text-[var(--hud-dim)]/60"
+                    />
+                  </div>
+                  {wakeTestResult ? (
+                    <p
+                      className={cn(
+                        "mt-1 text-[10px]",
+                        wakeTestResult.woke
+                          ? "text-[var(--spec-4)]"
+                          : "text-[var(--hud-dim)]",
+                      )}
+                    >
+                      {!wakeTestResult.woke
+                        ? "Would not wake it — the phrase has to come first."
+                        : wakeTestResult.onlyWake
+                          ? "Wakes it, with no command attached."
+                          : `Wakes it — command: “${wakeTestResult.text}”`}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-[10px] text-[var(--hud-dim)]">
+                      Checked on this device, not with the microphone.
+                    </p>
+                  )}
                 </div>
               </div>
             )}

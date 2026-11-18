@@ -13,10 +13,11 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { useAction } from "convex/react";
-import { ArrowUpRight, Loader2 } from "lucide-react";
+import { ArrowUpRight, Check, Copy, Download, Loader2 } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { JarvisMark } from "@/components/jarvis-logo";
+import { downloadImage, imageFileName } from "@/lib/download-image";
 
 interface SharedPicture {
   url: string;
@@ -36,6 +37,9 @@ export default function SharedRender() {
   const { slug } = useParams<{ slug: string }>();
   const load = useAction(api.supabase.shared);
   const [state, setState] = useState<PageState>({ status: "loading" });
+  // Copying the prompt is the second thing anyone does with a share link: the
+  // picture is finished, the words that made it are the reusable part.
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -150,15 +154,51 @@ export default function SharedRender() {
                 <span className="text-[11px] text-muted-foreground">
                   Shared from Jarvis Image Studio
                 </span>
-                <a
-                  href={state.render.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border/70 px-2.5 py-1 text-xs text-foreground transition-colors hover:border-foreground/30"
-                >
-                  Open full size
-                  <ArrowUpRight className="size-3.5" />
-                </a>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {state.render.prompt ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const prompt = state.render.prompt;
+                        void navigator.clipboard
+                          .writeText(prompt)
+                          .then(() => {
+                            setCopiedPrompt(true);
+                            window.setTimeout(() => setCopiedPrompt(false), 1600);
+                          })
+                          .catch(() => {});
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border/70 px-2.5 py-1 text-xs text-foreground transition-colors hover:border-foreground/30"
+                    >
+                      {copiedPrompt ? (
+                        <Check className="size-3.5" />
+                      ) : (
+                        <Copy className="size-3.5" />
+                      )}
+                      {copiedPrompt ? "Copied" : "Copy prompt"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = state.render.url;
+                      void downloadImage(url, imageFileName(url, state.render.prompt));
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border/70 px-2.5 py-1 text-xs text-foreground transition-colors hover:border-foreground/30"
+                  >
+                    <Download className="size-3.5" />
+                    Download
+                  </button>
+                  <a
+                    href={state.render.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border/70 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+                  >
+                    Open full size
+                    <ArrowUpRight className="size-3.5" />
+                  </a>
+                </div>
               </div>
             </div>
             <p className="mt-3 text-center text-[11px] text-muted-foreground">

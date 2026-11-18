@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Lightbox } from "@/components/lightbox";
 import { JarvisMark } from "@/components/jarvis-logo";
 import { downloadImage, imageFileName } from "@/lib/download-image";
+import { cn } from "@/lib/utils";
 
 /** One stored picture, matching the shape `supabase.list` returns. */
 interface GalleryRow {
@@ -51,6 +52,10 @@ export default function Gallery() {
   const load = useAction(api.supabase.list);
   const [state, setState] = useState<GalleryState>({ status: "loading" });
   const [query, setQuery] = useState("");
+  // What kind of picture to show. "shared" is a state rather than a kind, but
+  // it is the other question people ask of an archive: what can I send?
+  const [filter, setFilter] = useState<"all" | "ai" | "web" | "shared">("all");
+  const [sort, setSort] = useState<"newest" | "oldest" | "best">("newest");
   const [preview, setPreview] = useState<number | null>(null);
   // Bumped to re-run the read, so the refresh button is one state change
   // rather than a second copy of the loader.
@@ -86,13 +91,25 @@ export default function Gallery() {
   /** Prompt, provider and reference page are all things a person remembers. */
   const shown = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return rows;
-    return rows.filter((row) =>
-      [row.prompt, row.provider, row.pageTitle]
+    const matching = rows.filter((row) => {
+      if (filter === "ai" && row.kind !== "ai") return false;
+      if (filter === "web" && row.kind !== "web") return false;
+      if (filter === "shared" && !row.shareSlug) return false;
+      if (!needle) return true;
+      return [row.prompt, row.provider, row.pageTitle]
         .filter((value): value is string => typeof value === "string")
-        .some((value) => value.toLowerCase().includes(needle)),
-    );
-  }, [query, rows]);
+        .some((value) => value.toLowerCase().includes(needle));
+    });
+    if (sort === "oldest") return [...matching].sort((a, b) => a.createdAt - b.createdAt);
+    if (sort === "best") {
+      // Unscored pictures last: a missing score is not a zero, and burying
+      // older renders below a "0" would be a lie about them.
+      return [...matching].sort(
+        (a, b) => (b.score ?? -1) - (a.score ?? -1),
+      );
+    }
+    return matching;
+  }, [filter, query, rows, sort]);
 
   const sharedCount = rows.filter((row) => row.shareSlug).length;
 
@@ -197,6 +214,47 @@ export default function Gallery() {
 
           {state.status === "ready" && rows.length > 0 && (
             <>
+              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                {(
+                  [
+                    ["all", "All", rows.length],
+                    ["ai", "AI", rows.filter((row) => row.kind === "ai").length],
+                    ["web", "Web", rows.filter((row) => row.kind === "web").length],
+                    ["shared", "Shared", sharedCount],
+                  ] as const
+                ).map(([value, label, count]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setFilter(value)}
+                    aria-pressed={filter === value}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-[11px] transition-colors",
+                      filter === value
+                        ? "border-foreground/30 bg-accent text-foreground"
+                        : "border-border/70 text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                    )}
+                  >
+                    {label}
+                    <span className="ml-1 tabular-nums opacity-60">{count}</span>
+                  </button>
+                ))}
+                <label className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  Sort
+                  <select
+                    value={sort}
+                    onChange={(e) =>
+                      setSort(e.target.value as "newest" | "oldest" | "best")
+                    }
+                    className="rounded-md border border-border/70 bg-background px-1.5 py-1 text-[11px] text-foreground outline-none focus:border-foreground/30"
+                  >
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="best">Best score</option>
+                  </select>
+                </label>
+              </div>
+
               <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
                 <span>
                   {shown.length === rows.length
@@ -215,9 +273,23 @@ export default function Gallery() {
               </div>
 
               {shown.length === 0 ? (
-                <p className="mt-10 text-center text-sm text-muted-foreground">
-                  Nothing matches “{query.trim()}”.
-                </p>
+                <div className="mt-10 text-center text-sm text-muted-foreground">
+                  <p>
+                    {query.trim()
+                      ? `Nothing matches “${query.trim()}”.`
+                      : "Nothing in this filter yet."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery("");
+                      setFilter("all");
+                    }}
+                    className="mt-2 text-xs text-foreground underline underline-offset-2 hover:no-underline"
+                  >
+                    Show everything
+                  </button>
+                </div>
               ) : (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                   {shown.map((row, index) => (
