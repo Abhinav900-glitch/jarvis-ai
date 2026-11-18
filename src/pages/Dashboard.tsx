@@ -1103,6 +1103,8 @@ export default function Dashboard() {
   const supabaseCheckAction = useAction(api.supabase.check);
   const supabaseBackupAction = useAction(api.supabase.backup);
   const supabasePullAction = useAction(api.supabase.pull);
+  const supabaseShareAction = useAction(api.supabase.share);
+  const supabaseUnshareAction = useAction(api.supabase.unshare);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
   const lookupMovieAction = useAction(api.spaceMedia.lookupMovie);
   const spacePictureAction = useAction(api.spaceMedia.spacePicture);
@@ -7530,6 +7532,8 @@ export default function Dashboard() {
               check: async () => await supabaseCheckAction({}),
               backup: async (entries) => await supabaseBackupAction({ entries }),
               pull: async () => await supabasePullAction({}),
+              share: async (entry) => await supabaseShareAction({ entry }),
+              unshare: async (slug) => await supabaseUnshareAction({ slug }),
             }}
             onUseInChat={studioUseInChat}
           />

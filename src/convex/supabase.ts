@@ -276,6 +276,46 @@ const renderInput = v.object({
   createdAt: v.number(),
 });
 
+/** The fields the studio sends, mirrored from the validator above. */
+interface RenderInput {
+  url: string;
+  prompt: string;
+  kind: string;
+  provider?: string;
+  aspect?: string;
+  score?: number;
+  refined?: boolean;
+  pinned?: boolean;
+  reference?: string;
+  pageTitle?: string;
+  createdAt: number;
+}
+
+/**
+ * One studio picture as a Postgres row.
+ *
+ * `user_id` is the Convex user id as text: this table is not read by Supabase
+ * Auth, so there is no auth.users row to point at. The unique constraint is
+ * `(user_id, image_url)`, which is what makes an upsert update rather than
+ * duplicate.
+ */
+function rowFromEntry(userId: string, entry: RenderInput): Record<string, unknown> {
+  return {
+    user_id: userId,
+    image_url: entry.url,
+    prompt: entry.prompt,
+    kind: entry.kind === "web" ? "web" : "ai",
+    provider: entry.provider ?? null,
+    aspect: entry.aspect ?? null,
+    score: entry.score ?? null,
+    refined: entry.refined ?? false,
+    pinned: entry.pinned ?? false,
+    reference: entry.reference ?? null,
+    page_title: entry.pageTitle ?? null,
+    created_at: new Date(entry.createdAt).toISOString(),
+  };
+}
+
 /** Rows are keyed by owner and picture, so backing up twice updates in place. */
 function isHttpUrl(value: string): boolean {
   try {
@@ -309,20 +349,7 @@ export const backup = action({
     const rows = args.entries
       .slice(0, BACKUP_LIMIT)
       .filter((entry) => isHttpUrl(entry.url))
-      .map((entry) => ({
-        user_id: String(userId),
-        image_url: entry.url,
-        prompt: entry.prompt,
-        kind: entry.kind === "web" ? "web" : "ai",
-        provider: entry.provider ?? null,
-        aspect: entry.aspect ?? null,
-        score: entry.score ?? null,
-        refined: entry.refined ?? false,
-        pinned: entry.pinned ?? false,
-        reference: entry.reference ?? null,
-        page_title: entry.pageTitle ?? null,
-        created_at: new Date(entry.createdAt).toISOString(),
-      }));
+      .map((entry) => rowFromEntry(String(userId), entry));
 
     const skipped = args.entries.length - rows.length;
     if (rows.length === 0) {
@@ -384,7 +411,7 @@ export const pull = action({
     }
 
     const query = [
-      `select=image_url,prompt,kind,provider,aspect,score,refined,pinned,reference,page_title,created_at`,
+      `select=image_url,prompt,kind,provider,aspect,score,refined,pinned,reference,page_title,created_at,share_slug`,
       `user_id=eq.${encodeURIComponent(String(userId))}`,
       `order=created_at.desc`,
       `limit=${PULL_LIMIT}`,
@@ -423,6 +450,9 @@ export const pull = action({
             typeof record.reference === "string" ? record.reference : undefined,
           pageTitle:
             typeof record.page_title === "string" ? record.page_title : undefined,
+          /** Present when this picture has a public link; absent when revoked. */
+          shareSlug:
+            typeof record.share_slug === "string" ? record.share_slug : undefined,
           /** Falls back to now for a row whose date the database mangled. */
           createdAt: Number.isNaN(at) ? Date.now() : at,
         },
@@ -430,5 +460,141 @@ export const pull = action({
     });
 
     return { entries, message: null };
+  },
+});
+
+/**
+ * A public link's slug: 18 hex characters, so it cannot be walked. The column
+ * is unique, and Postgres would reject a collision rather than serve the wrong
+ * picture to the wrong link — the chance is around one in 2^72.
+ */
+function newShareSlug(): string {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 18);
+}
+
+/**
+ * Publish one picture behind a link that works without signing in.
+ *
+ * The row is upserted rather than required to exist first, so sharing is one
+ * press even for a picture that was never backed up. Sharing again replaces the
+ * slug — which is also how a link that leaked gets retired.
+ */
+export const share = action({
+  args: { entry: renderInput },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { slug: null, message: "Sign in to share a picture." };
+    if (!isHttpUrl(args.entry.url)) {
+      return {
+        slug: null,
+        message:
+          "Only http(s) pictures can be shared — an inline picture has no address a link could open.",
+      };
+    }
+    const config = supabaseConfig();
+    if ("message" in config) return { slug: null, message: config.message };
+
+    const slug = newShareSlug();
+    const reply = await postgrest(
+      config.config,
+      `${TABLE}?on_conflict=user_id,image_url`,
+      {
+        method: "POST",
+        body: [
+          {
+            ...rowFromEntry(String(userId), args.entry),
+            share_slug: slug,
+            shared_at: new Date().toISOString(),
+          },
+        ],
+        prefer: "resolution=merge-duplicates,return=representation",
+      },
+    );
+    if (!reply.ok) {
+      return {
+        slug: null,
+        message: reply.tableMissing
+          ? "Sharing needs the studio_renders table — run supabase/migrations/0001_studio_renders.sql, then 0002_share_links.sql."
+          : reply.message,
+      };
+    }
+    return { slug, message: null };
+  },
+});
+
+/** Take a picture off the public internet again. */
+export const unshare = action({
+  args: { slug: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { ok: false, message: "Sign in to change a shared link." };
+    const config = supabaseConfig();
+    if ("message" in config) return { ok: false, message: config.message };
+
+    // Scoped by user_id as well as slug: a slug from another account must not
+    // be revocable by knowing it.
+    const query = `user_id=eq.${encodeURIComponent(
+      String(userId),
+    )}&share_slug=eq.${encodeURIComponent(args.slug)}`;
+    const reply = await postgrest(config.config, `${TABLE}?${query}`, {
+      method: "PATCH",
+      body: { share_slug: null, shared_at: null },
+      prefer: "return=minimal",
+    });
+    return { ok: reply.ok, message: reply.message };
+  },
+});
+
+/**
+ * The picture behind a share link — the only read this deployment exposes
+ * without a signed-in user.
+ *
+ * It selects by slug and returns the public fields only, so the secret key is
+ * used to answer one question rather than to browse the table. Nothing about
+ * the owner goes back: no user id, no email, no other rows.
+ */
+export const shared = action({
+  args: { slug: v.string() },
+  handler: async (_ctx, args) => {
+    const slug = args.slug.trim();
+    if (!slug) return { render: null, message: null };
+    const config = supabaseConfig();
+    if ("message" in config) return { render: null, message: config.message };
+
+    const query = [
+      `select=image_url,prompt,provider,page_title,score,created_at`,
+      `share_slug=eq.${encodeURIComponent(slug)}`,
+      `limit=1`,
+    ].join("&");
+    const reply = await postgrest(config.config, `${TABLE}?${query}`, {
+      method: "GET",
+    });
+    if (!reply.ok) {
+      return {
+        render: null,
+        message: reply.tableMissing
+          ? "Shared links aren't set up on this deployment yet."
+          : reply.message,
+      };
+    }
+
+    const row = reply.rows[0];
+    if (!row || typeof row !== "object") return { render: null, message: null };
+    const record = row as Record<string, unknown>;
+    const url = typeof record.image_url === "string" ? record.image_url : "";
+    if (!url) return { render: null, message: null };
+    const at = Date.parse(String(record.created_at ?? ""));
+    return {
+      render: {
+        url,
+        prompt: typeof record.prompt === "string" ? record.prompt : "",
+        provider: typeof record.provider === "string" ? record.provider : undefined,
+        pageTitle:
+          typeof record.page_title === "string" ? record.page_title : undefined,
+        score: typeof record.score === "number" ? record.score : undefined,
+        createdAt: Number.isNaN(at) ? null : at,
+      },
+      message: null,
+    };
   },
 });

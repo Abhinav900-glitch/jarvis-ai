@@ -34,6 +34,9 @@ const GenHack = lazy(() => import("./pages/GenHack.tsx"));
 const Terms = lazy(() => import("./pages/Terms.tsx"));
 const Resources = lazy(() => import("./pages/Resources.tsx"));
 const Embed = lazy(() => import("./pages/Embed.tsx"));
+// A picture someone shared. Public on purpose: the link is the whole point,
+// and the page asks a Convex action for the one row behind its slug.
+const SharedRender = lazy(() => import("./pages/SharedRender.tsx"));
 
 // Route transitions get the same mark as the boot screen rather than a text
 // "Loading..." — the first thing a user sees should already be the brand.
@@ -189,6 +192,7 @@ createRoot(document.getElementById("root")!).render(
                   </RequireAuth>
                 }
               />
+              <Route path="/s/:slug" element={<SharedRender />} />
               <Route
                 path="/terms"
                 element={<Terms />}

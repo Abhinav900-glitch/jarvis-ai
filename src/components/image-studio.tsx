@@ -73,6 +73,7 @@ import {
   Send,
   Shuffle,
   Sparkles,
+  Share2,
   Star,
   Trash2,
   Undo2,
@@ -165,6 +166,8 @@ interface HistoryEntry {
   base?: { url: string; strength: number };
   /** Pinned pictures survive the 12-entry cap. */
   pinned?: boolean;
+  /** Set when this picture has a public link (`/s/<slug>`). */
+  shareSlug?: string;
   /** The review score (0–100) this picture earned against the prompt. */
   score?: number;
   /** The reviewer's one-line verdict about this picture. */
@@ -222,6 +225,8 @@ export interface StudioCloudEntry {
 export interface StudioCloudRow extends StudioCloudEntry {
   refined: boolean;
   pinned: boolean;
+  /** Present when the row has a public link; absent when it was revoked. */
+  shareSlug?: string;
 }
 
 export interface ImageStudioProps {
@@ -299,6 +304,12 @@ export interface ImageStudioProps {
       entries: StudioCloudEntry[],
     ) => Promise<{ saved: number; skipped: number; message: string | null }>;
     pull: () => Promise<{ entries: StudioCloudRow[]; message: string | null }>;
+    /** Publish one picture behind a link that works signed out. */
+    share: (
+      entry: StudioCloudEntry,
+    ) => Promise<{ slug: string | null; message: string | null }>;
+    /** Retire that link. */
+    unshare: (slug: string) => Promise<{ ok: boolean; message: string | null }>;
   };
   /** Hands the picture to the composer as a pending attachment. */
   onUseInChat: (image: StudioResult, prompt: string) => void;
@@ -478,7 +489,13 @@ function historyFromCloud(row: StudioCloudRow): HistoryEntry {
     refined: row.refined,
     pinned: row.pinned,
     reference: row.reference,
+    shareSlug: row.shareSlug,
   };
+}
+
+/** The address a share slug opens, on whichever host the studio is served from. */
+function shareUrlFor(slug: string): string {
+  return `${window.location.origin}/s/${slug}`;
 }
 
 /** Trim and cap a free-text instruction without splitting a word in half. */
@@ -583,6 +600,11 @@ export function ImageStudio({
   const [cloudRows, setCloudRows] = useState<StudioCloudRow[]>([]);
   const [cloudBusy, setCloudBusy] = useState<"backup" | "pull" | null>(null);
   const [cloudNote, setCloudNote] = useState<string | null>(null);
+  // Sharing: one press creates the link (and copies it), the row under the
+  // picture holds the obvious next actions.
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareNote, setShareNote] = useState<string | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
   const [lookStage, setLookStage] = useState<string | null>(null);
   const [reference, setReference] = useState<{
     names: string[];
@@ -1457,6 +1479,15 @@ export function ImageStudio({
         : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
     );
 
+  /** The public address of the picture on screen, when it has one. */
+  const currentShareUrl = current?.shareSlug
+    ? shareUrlFor(current.shareSlug)
+    : null;
+  // A note about one picture must not follow the next one around.
+  useEffect(() => {
+    setShareNote(null);
+  }, [current?.url]);
+
   /**
    * What Bing is handed. Exactly what a render here would send — the style, the
    * user's instructions and exclusions, and any reference the studio resolved,
@@ -1645,6 +1676,77 @@ export function ImageStudio({
       setCloudBusy(null);
     }
   }, [history, persist]);
+
+  /**
+   * Publish the picture on screen behind a link.
+   *
+   * The link is copied straight away because that is what it is for — a share
+   * action whose result has to be selected and copied by hand is one press away
+   * from not being used.
+   */
+  const shareCurrent = useCallback(async () => {
+    const api = cloudRef.current;
+    if (!api || !current) return;
+    const entry = cloudEntryOf(current);
+    if (!entry) {
+      setShareNote(
+        "This picture is inline data, so it has no address a link could open.",
+      );
+      return;
+    }
+    setShareBusy(true);
+    setShareNote(null);
+    try {
+      const result = await api.share(entry);
+      if (!result.slug) {
+        setShareNote(result.message ?? "Couldn't create the link.");
+        return;
+      }
+      const shared: HistoryEntry = { ...current, shareSlug: result.slug };
+      setCurrent(shared);
+      persist(history.map((h) => (h.url === shared.url ? shared : h)));
+      try {
+        await navigator.clipboard.writeText(shareUrlFor(result.slug));
+        setShareCopied(true);
+        window.setTimeout(() => setShareCopied(false), 1600);
+      } catch {
+        // A denied clipboard is not a failed share: the link is on screen.
+      }
+      setShareNote("Anyone with the link can open this picture.");
+    } catch (err) {
+      setShareNote(
+        err instanceof Error ? err.message : "Couldn't reach Supabase.",
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  }, [current, history, persist]);
+
+  /** Retire the link, which is the only way back from "public". */
+  const stopSharing = useCallback(async () => {
+    const api = cloudRef.current;
+    const slug = current?.shareSlug;
+    if (!api || !current || !slug) return;
+    setShareBusy(true);
+    setShareNote(null);
+    try {
+      const result = await api.unshare(slug);
+      if (!result.ok) {
+        setShareNote(result.message ?? "Couldn't revoke the link.");
+        return;
+      }
+      const revoked: HistoryEntry = { ...current, shareSlug: undefined };
+      setCurrent(revoked);
+      persist(history.map((h) => (h.url === revoked.url ? revoked : h)));
+      setShareNote("Link revoked — it no longer opens anything.");
+    } catch (err) {
+      setShareNote(
+        err instanceof Error ? err.message : "Couldn't reach Supabase.",
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  }, [current, history, persist]);
 
   /**
    * Adopt a picture Bing drew as a take in this studio.
@@ -2752,11 +2854,77 @@ export function ImageStudio({
                     Draw instead
                   </Button>
                 ) : null}
+                {cloud?.share && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void shareCurrent()}
+                    disabled={busy || shareBusy || !cloudReady}
+                    title={
+                      current.shareSlug
+                        ? "Share again — this replaces the current link"
+                        : "Create a public link anyone can open"
+                    }
+                  >
+                    {shareBusy ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Share2 className="size-3.5" />
+                    )}
+                    Share
+                  </Button>
+                )}
                 <Button size="sm" onClick={() => save(current.url)}>
                   <Download className="size-3.5" />
                   Download
                 </Button>
               </div>
+
+              {currentShareUrl && (
+                <div className="flex flex-wrap items-center gap-2 border-t border-border/70 bg-muted/20 px-3 py-2">
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                    {currentShareUrl}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(currentShareUrl)
+                        .then(() => {
+                          setShareCopied(true);
+                          window.setTimeout(() => setShareCopied(false), 1600);
+                        })
+                        .catch(() =>
+                          setShareNote(
+                            "Couldn't copy — select the address above instead.",
+                          ),
+                        );
+                    }}
+                  >
+                    {shareCopied ? (
+                      <Check className="size-3.5" />
+                    ) : (
+                      <Copy className="size-3.5" />
+                    )}
+                    {shareCopied ? "Copied" : "Copy link"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void stopSharing()}
+                    disabled={shareBusy}
+                  >
+                    Stop sharing
+                  </Button>
+                </div>
+              )}
+
+              {shareNote && (
+                <p className="border-t border-border/70 px-3 py-2 text-[11px] leading-4 text-muted-foreground">
+                  {shareNote}
+                </p>
+              )}
             </div>
           )}
 
