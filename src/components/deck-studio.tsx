@@ -352,9 +352,16 @@ function SlideThumb({ slide, themeId, index }: { slide: SlideSpec; themeId: stri
 export function DeckStudio({
   initialTopic,
   onClose,
+  autoStart = false,
 }: {
   initialTopic: string;
   onClose: () => void;
+  /**
+   * Start writing as soon as the panel opens. Used when the panel is the
+   * fallback for a slides request that already failed elsewhere: the user asked
+   * for a deck, so making them press Build again would be asking twice.
+   */
+  autoStart?: boolean;
 }) {
   const [topic, setTopic] = useState(initialTopic.slice(0, 400));
   const [slideCount, setSlideCount] = useState(14);
@@ -474,6 +481,17 @@ export function DeckStudio({
     runToken.current += 1;
     setBusy(false);
   };
+
+  // An auto-start runs once per mount, even though `run` is a new closure each
+  // render — the ref is what makes the dependency list honest without
+  // restarting the deck every time a keystroke re-renders the panel.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!autoStart || autoStarted.current) return;
+    autoStarted.current = true;
+    void run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount
+  }, [autoStart]);
 
   /** Standalone PNG, for a poster, another deck, or a chat message. */
   const makeQrPng = async () => {

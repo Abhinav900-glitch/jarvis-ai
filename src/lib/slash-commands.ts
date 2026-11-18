@@ -223,6 +223,16 @@ const CORE_COMMANDS: SlashCommand[] = [
     example: "/studio",
   },
   {
+    name: "slides",
+    aliases: ["ppt", "pptx", "powerpoint", "deck", "presentation"],
+    group: "Create",
+    summary: "Deck studio — a real .pptx written here, charts and notes included",
+    argHint: "<topic>",
+    // Bare `/slides` opens the panel for a topic to be typed; with an argument
+    // it starts writing immediately, which is what "make me a ppt" means.
+    example: "/slides on-device AI for a product review",
+  },
+  {
     name: "find",
     aliases: ["search"],
     group: "Session",

@@ -127,6 +127,7 @@ import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
 import { findYouTubeLinks, MAX_VIDEOS_PER_TURN } from "@/lib/youtube";
+import { deckTopicFrom } from "@/lib/deck-request";
 import { findWebImageQuery } from "@/lib/web-images";
 import { downloadImage, imageFileName } from "@/lib/download-image";
 import { composeGroundedPrompt } from "@/lib/character-look";
@@ -1284,6 +1285,8 @@ export default function Dashboard() {
   /** The deck being generated from the composer text, if any. */
   const [panelSlides, setPanelSlides] = useState<DeckJob | null>(null);
   const [slidesBusy, setSlidesBusy] = useState(false);
+  /** The text the current slides job was built from, for the local fallback. */
+  const [slidesSource, setSlidesSource] = useState("");
   // Bumped on every new deck so an older poll loop stops writing results.
   const slidesPollRef = useRef(0);
   const [panelNews, setPanelNews] = useState<NewsItem[] | null>(null);
@@ -1403,6 +1406,11 @@ export default function Dashboard() {
   const [showCloud, setShowCloud] = useState(false);
   const [showMusic, setShowMusic] = useState(false);
   const [showDeck, setShowDeck] = useState(false);
+  // The seed of the deck studio's brief: `auto` means build it on open, which
+  // is how a failed provider job still ends in a downloadable .pptx.
+  const [deckSeed, setDeckSeed] = useState<{ text: string; auto: boolean } | null>(
+    null,
+  );
   const [showSlides, setShowSlides] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showStats, setShowStats] = useState(false);
@@ -3540,6 +3548,27 @@ export default function Dashboard() {
       }
     }
 
+    // Natural-language deck request: "make me a ppt on X" asks for a file, not
+    // for prose about slides. Narrow on purpose (`lib/deck-request`): a false
+    // positive would turn a normal message into a deck panel.
+    if (
+      !editingId &&
+      text &&
+      deduplicatedPendingImages.length === 0 &&
+      pendingFiles.length === 0 &&
+      !deepResearch
+    ) {
+      const topic = deckTopicFrom(text);
+      if (topic) {
+        setInput("");
+        setPanelSlides(null);
+        setSlidesSource(topic);
+        setDeckSeed({ text: topic, auto: true });
+        setShowDeck(true);
+        return;
+      }
+    }
+
     // Natural-language weather: fetch live data directly, no slash command needed
     if (
       !editingId &&
@@ -4148,6 +4177,36 @@ export default function Dashboard() {
   };
 
   /**
+   * Fall back to the deck written here, in this tab.
+   *
+   * The hosted providers make the nicer deck when they answer, but they can run
+   * out of credits, stall, or come back with a link into their own editor and no
+   * .pptx at all. Any of those used to leave a slides request with nothing to
+   * download. The local pipeline needs no third-party key for the file itself
+   * (the model writing the copy already runs this app), so it is the floor:
+   * every slides request ends in something PowerPoint can open.
+   */
+  const buildDeckLocally = (text: string, note?: string) => {
+    if (!text.trim()) return;
+    // A provider poll still in flight must not overwrite the local deck with a
+    // late "completed" a minute from now.
+    slidesPollRef.current += 1;
+    if (note) {
+      setPanelSlides({
+        provider: "none",
+        generationId: null,
+        status: "failed",
+        url: null,
+        exportUrl: null,
+        statusUrl: null,
+        error: note,
+      });
+    }
+    setDeckSeed({ text, auto: true });
+    setShowDeck(true);
+  };
+
+  /**
    * Follow a deck to completion.
    *
    * ~3 minutes at 6s: a 10-card deck takes 1-3 minutes at both providers, and a
@@ -4155,7 +4214,7 @@ export default function Dashboard() {
    * token guards against a second deck being started mid-flight — the older
    * loop exits instead of overwriting the newer deck's state.
    */
-  const pollSlides = async (job: DeckJob, token: number) => {
+  const pollSlides = async (job: DeckJob, token: number, text: string) => {
     if (job.provider === "none" || !job.generationId) return;
     for (let attempt = 0; attempt < 30; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, 6000));
@@ -4168,11 +4227,32 @@ export default function Dashboard() {
         });
         if (slidesPollRef.current !== token) return;
         setPanelSlides(next);
-        if (next.status === "completed" || next.status === "failed") return;
+        if (next.status === "failed") {
+          buildDeckLocally(
+            text,
+            `${next.error ?? "The provider failed."} Building the .pptx here instead.`,
+          );
+          return;
+        }
+        if (next.status === "completed") {
+          // A completed deck with neither a page nor an export is a dead end:
+          // there is nothing to open, so the local file is the deliverable.
+          if (next.url || next.exportUrl) return;
+          buildDeckLocally(
+            text,
+            "The provider finished without a downloadable file. Building the .pptx here instead.",
+          );
+          return;
+        }
       } catch {
         // A transient status error is not a failed deck — keep polling.
       }
     }
+    if (slidesPollRef.current !== token) return;
+    buildDeckLocally(
+      text,
+      "The provider did not finish in time. Building the .pptx here instead.",
+    );
   };
 
   /**
@@ -4193,9 +4273,24 @@ export default function Dashboard() {
     setAssistantError(null);
     try {
       const job = await createPresentationAction({ text, numCards: 10 });
+      setSlidesSource(text);
       setPanelSlides(job);
-      if (job.status !== "completed" && job.status !== "failed") {
-        void pollSlides(job, token);
+      if (job.status === "failed") {
+        buildDeckLocally(
+          text,
+          `${job.error ?? "Slide generation failed."} Building the .pptx here instead.`,
+        );
+        return;
+      }
+      if (job.status !== "completed") {
+        void pollSlides(job, token, text);
+        return;
+      }
+      if (!job.url && !job.exportUrl) {
+        buildDeckLocally(
+          text,
+          "The provider finished without a downloadable file. Building the .pptx here instead.",
+        );
       }
     } catch (err) {
       setAssistantError(
@@ -5286,6 +5381,12 @@ export default function Dashboard() {
         return;
       case "studio":
         setShowStudio(true);
+        return;
+      // `/slides`, `/ppt`, `/deck` … all land here. With a topic the deck starts
+      // writing straight away; without one the panel opens ready for a brief.
+      case "slides":
+        setDeckSeed(args ? { text: args, auto: true } : null);
+        setShowDeck(true);
         return;
       case "mcp":
         setShowMcp(true);
@@ -7383,7 +7484,14 @@ export default function Dashboard() {
             {/* ---- Deck studio: an AI-written presentation, exported here ---- */}
             <AnimatePresence>
               {showDeck && (
-                <DeckStudio initialTopic={input} onClose={() => setShowDeck(false)} />
+                <DeckStudio
+                  initialTopic={deckSeed?.text ?? input}
+                  autoStart={deckSeed?.auto ?? false}
+                  onClose={() => {
+                    setShowDeck(false);
+                    setDeckSeed(null);
+                  }}
+                />
               )}
             </AnimatePresence>
 
@@ -7606,29 +7714,30 @@ export default function Dashboard() {
                         strokeWidth={1.5}
                       />
                       <span className="whitespace-pre-line">
-                        {panelSlides.status === "completed" && panelSlides.url ? (
+                        {panelSlides.status === "completed" &&
+                        (panelSlides.url || panelSlides.exportUrl) ? (
                           <>
                             Slides ready ({panelSlides.provider}):{" "}
-                            <a
-                              href={panelSlides.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="underline underline-offset-2 hover:text-foreground"
-                            >
-                              open deck
-                            </a>
+                            {panelSlides.url ? (
+                              <a
+                                href={panelSlides.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="underline underline-offset-2 hover:text-foreground"
+                              >
+                                open deck
+                              </a>
+                            ) : null}
+                            {panelSlides.url && panelSlides.exportUrl ? " · " : null}
                             {panelSlides.exportUrl ? (
-                              <>
-                                {" · "}
-                                <a
-                                  href={panelSlides.exportUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="underline underline-offset-2 hover:text-foreground"
-                                >
-                                  download
-                                </a>
-                              </>
+                              <a
+                                href={panelSlides.exportUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="underline underline-offset-2 hover:text-foreground"
+                              >
+                                download .pptx
+                              </a>
                             ) : null}
                           </>
                         ) : panelSlides.status === "failed" || panelSlides.error ? (
@@ -7645,6 +7754,15 @@ export default function Dashboard() {
                           </>
                         )}
                       </span>
+                      {slidesSource ? (
+                        <button
+                          onClick={() => buildDeckLocally(slidesSource)}
+                          title="Write a real .pptx from this text inside Jarvis"
+                          className="ml-1 shrink-0 rounded border border-border/60 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-accent hover:text-foreground"
+                        >
+                          Build .pptx
+                        </button>
+                      ) : null}
                       <button
                         onClick={() => setPanelSlides(null)}
                         aria-label="Dismiss slides status"
@@ -7985,7 +8103,10 @@ export default function Dashboard() {
                           </span>
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          onClick={() => setShowDeck(true)}
+                          onClick={() => {
+                            setDeckSeed(null);
+                            setShowDeck(true);
+                          }}
                         >
                           <Layers className="size-3.5" />
                           <span className="flex flex-col">
