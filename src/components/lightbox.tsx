@@ -32,6 +32,7 @@ export function Lightbox({
   const [index, setIndex] = useState(Math.min(startIndex, images.length - 1));
   const [direction, setDirection] = useState(1);
   const touchStartX = useRef<number | null>(null);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
   const total = images.length;
 
   // Keep index in sync when a new gallery opens
@@ -60,14 +61,25 @@ export function Lightbox({
       if (e.key === "Escape") onClose();
       else if (e.key === "ArrowRight") goNext();
       else if (e.key === "ArrowLeft") goPrev();
+      // A long gallery is not navigated one arrow at a time.
+      else if (e.key === "Home") {
+        setDirection(-1);
+        setIndex(0);
+      } else if (e.key === "End") {
+        setDirection(1);
+        setIndex(total - 1);
+      }
     };
     document.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
+    // Move the keyboard into the dialog, so Tab and Escape act on the viewer
+    // rather than on the page behind it.
+    closeRef.current?.focus();
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = "";
     };
-  }, [open, onClose, goNext, goPrev]);
+  }, [open, onClose, goNext, goPrev, total]);
 
   const onTouchStart = (e: React.TouchEvent) => {
     touchStartX.current = e.touches[0].clientX;
@@ -101,6 +113,7 @@ export function Lightbox({
         >
           {/* Close */}
           <button
+            ref={closeRef}
             onClick={onClose}
             className="absolute top-4 right-4 z-10 flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
             title="Close (Esc)"
@@ -127,6 +140,7 @@ export function Lightbox({
           {/* Counter */}
           {total > 1 ? (
             <div
+              aria-live="polite"
               className={`absolute z-10 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white tabular-nums ${
                 onDownload ? "top-5 left-1/2 -translate-x-1/2" : "top-5 left-5"
               }`}

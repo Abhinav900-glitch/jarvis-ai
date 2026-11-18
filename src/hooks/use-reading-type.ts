@@ -15,7 +15,7 @@ import { useEffect, useState } from "react";
 // ---------------------------------------------------------------------------
 
 export type ReadingFont = "sans" | "serif" | "mono";
-export type ReadingSize = "s" | "m" | "l";
+export type ReadingSize = "s" | "m" | "l" | "xl";
 
 export interface ReadingOption<T extends string> {
   id: T;
@@ -50,6 +50,12 @@ export const READING_SIZES: ReadingOption<ReadingSize>[] = [
   { id: "s", name: "Small", label: "S", hint: "More on screen at once" },
   { id: "m", name: "Default", label: "M", hint: "The shipped size" },
   { id: "l", name: "Large", label: "L", hint: "Easier on the eyes" },
+  {
+    id: "xl",
+    name: "Extra large",
+    label: "XL",
+    hint: "Largest transcript text — read from further away",
+  },
 ];
 
 const FONT_KEY = "jarvis-reading-font";

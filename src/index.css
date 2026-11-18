@@ -377,6 +377,13 @@ body {
   font-size: 1.08em;
 }
 
+/* The one size meant for reading across a desk rather than at a screen. Kept
+   below 2em so a four-line paragraph still fits a phone. */
+[data-chat-size="xl"] .md-body {
+  font-size: 1.22em;
+  line-height: 1.72;
+}
+
 /* Headings scale with the reading size rather than staying fixed, or a large
    body with small headings stops reading as hierarchy. */
 [data-chat-font="serif"] .md-body h1,
@@ -889,6 +896,26 @@ body {
 
 .jarvis-spectrum {
   animation: jarvis-spectrum-drift 24s linear infinite;
+}
+
+/* The in-app equivalent of the media query below.
+
+   "Reduced motion" is a setting a person can choose here, not only something
+   the operating system declares, and it has to win over every animation in the
+   app. Durations collapse instead of `animation: none`, because a stopped
+   spinner reads as a frozen app while a fast one still reads as work in
+   progress — and the spinner is given its second back explicitly. */
+[data-motion="reduced"] *,
+[data-motion="reduced"] *::before,
+[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+[data-motion="reduced"] .animate-spin {
+  animation-duration: 1s !important;
+  animation-iteration-count: infinite !important;
 }
 
 /* Motion is decoration here, and every moving thing on this screen is also a

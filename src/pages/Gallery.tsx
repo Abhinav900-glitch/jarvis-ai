@@ -9,7 +9,7 @@
 // Supabase key is in the bundle and the table can stay closed to the anon key.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useAction } from "convex/react";
 import {
@@ -57,6 +57,10 @@ export default function Gallery() {
   const [filter, setFilter] = useState<"all" | "ai" | "web" | "shared">("all");
   const [sort, setSort] = useState<"newest" | "oldest" | "best">("newest");
   const [preview, setPreview] = useState<number | null>(null);
+  // Keyboard navigation needs the grid to know its own shape: Up and Down move
+  // by a row, and a row is however many columns the current breakpoint drew.
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const tileRefs = useRef<Array<HTMLButtonElement | null>>([]);
   // Bumped to re-run the read, so the refresh button is one state change
   // rather than a second copy of the loader.
   const [reloadKey, setReloadKey] = useState(0);
@@ -112,6 +116,58 @@ export default function Gallery() {
   }, [filter, query, rows, sort]);
 
   const sharedCount = rows.filter((row) => row.shareSlug).length;
+
+  /** Columns in the rendered grid — 2 on a phone, up to 4 on a desktop. */
+  const gridColumns = () => {
+    const grid = gridRef.current;
+    if (!grid) return 1;
+    const template = getComputedStyle(grid).gridTemplateColumns;
+    return Math.max(1, template.split(" ").filter(Boolean).length);
+  };
+
+  const onGridKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const from = tileRefs.current.indexOf(event.target as HTMLButtonElement);
+    if (from < 0) return;
+    const columns = gridColumns();
+    const last = shown.length - 1;
+    let next: number;
+    switch (event.key) {
+      case "ArrowRight":
+        next = Math.min(from + 1, last);
+        break;
+      case "ArrowLeft":
+        next = Math.max(from - 1, 0);
+        break;
+      case "ArrowDown":
+        next = Math.min(from + columns, last);
+        break;
+      case "ArrowUp":
+        next = Math.max(from - columns, 0);
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = last;
+        break;
+      default:
+        return;
+    }
+    // The grid owns the arrows, so preventDefault before moving: otherwise the
+    // page scrolls at the same time as the focus ring.
+    event.preventDefault();
+    const tile = tileRefs.current[next];
+    tile?.focus();
+    tile?.scrollIntoView({ block: "nearest" });
+  };
+
+  /** Closing the viewer puts the keyboard back where it was. */
+  const closePreview = () => {
+    const index = preview;
+    setPreview(null);
+    if (index === null) return;
+    requestAnimationFrame(() => tileRefs.current[index]?.focus());
+  };
 
   return (
     <div className="hud-grid-bg flex min-h-screen flex-col bg-background text-foreground">
@@ -268,7 +324,7 @@ export default function Gallery() {
                   </span>
                 )}
                 <span className="ml-auto hidden sm:inline">
-                  Stored in Supabase — newest first
+                  ← → to move · Enter to open
                 </span>
               </div>
 
@@ -291,13 +347,21 @@ export default function Gallery() {
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                <div
+                  ref={gridRef}
+                  onKeyDown={onGridKeyDown}
+                  className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+                >
                   {shown.map((row, index) => (
                     <button
                       key={row.url}
                       type="button"
+                      ref={(element) => {
+                        tileRefs.current[index] = element;
+                      }}
                       onClick={() => setPreview(index)}
                       title={row.prompt}
+                      aria-label={`Open picture ${index + 1} of ${shown.length}: ${row.prompt || "Untitled"}`}
                       className="group relative overflow-hidden rounded-lg border border-border/70 text-left transition-colors hover:border-foreground/30"
                     >
                       <img
@@ -353,7 +417,7 @@ export default function Gallery() {
           images={shown.map((row) => row.url)}
           startIndex={preview}
           alt={shown[preview].prompt}
-          onClose={() => setPreview(null)}
+          onClose={closePreview}
           onDownload={(url) => {
             const row = shown.find((candidate) => candidate.url === url);
             void downloadImage(url, imageFileName(url, row?.prompt));

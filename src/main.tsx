@@ -5,6 +5,11 @@ import { BootSplash } from "@/components/boot-splash";
 import { JarvisMark } from "@/components/jarvis-logo";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import { applyStoredPalette } from "./hooks/use-palette";
+import {
+  applyStoredMotionPreference,
+  useMotionPreference,
+} from "./hooks/use-motion-preference";
+import { MotionConfig } from "framer-motion";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import { ConvexReactClient } from "convex/react";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
@@ -16,6 +21,7 @@ import "./index.css";
 // Paint the saved skin before the first React commit, so the shell never
 // flashes the other palette while the router lazy-loads the page.
 applyStoredPalette();
+applyStoredMotionPreference();
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
@@ -39,6 +45,22 @@ const Embed = lazy(() => import("./pages/Embed.tsx"));
 const SharedRender = lazy(() => import("./pages/SharedRender.tsx"));
 // The whole Supabase-backed archive, behind the usual sign-in gate.
 const Gallery = lazy(() => import("./pages/Gallery.tsx"));
+
+/**
+ * One motion setting for the whole tree.
+ *
+ * CSS keyframes read the `data-motion` attribute written by the same hook;
+ * this gives Framer Motion the same answer, so a spring cannot ignore a
+ * preference that a keyframe honours.
+ */
+function MotionRoot({ children }: { children: React.ReactNode }) {
+  const { preference } = useMotionPreference();
+  return (
+    <MotionConfig reducedMotion={preference === "reduced" ? "always" : "user"}>
+      {children}
+    </MotionConfig>
+  );
+}
 
 // Route transitions get the same mark as the boot screen rather than a text
 // "Loading..." — the first thing a user sees should already be the brand.
@@ -139,6 +161,7 @@ function RouteSyncer() {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
+    <MotionRoot>
     <RootErrorBoundary>
       <ToolbarErrorBoundary>
         <VlyToolbar />
@@ -218,5 +241,6 @@ createRoot(document.getElementById("root")!).render(
         <Toaster />
       </ConvexAuthProvider>
     </RootErrorBoundary>
+    </MotionRoot>
   </StrictMode>,
 );

@@ -115,6 +115,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { PALETTES, usePalette } from "@/hooks/use-palette";
+import { useMotionPreference } from "@/hooks/use-motion-preference";
 import { draftKeyFor, loadDraft, saveDraft } from "@/lib/chat-drafts";
 import { memoryExcerpt } from "@/lib/remember";
 import {
@@ -1392,6 +1393,8 @@ export default function Dashboard() {
     }
   });
   const { palette, setPalette } = usePalette();
+  const { preference: motionPreference, setPreference: setMotionPreference } =
+    useMotionPreference();
   // How the transcript is set: a reading preference, kept separate from the
   // console's palette so changing the skin never changes the prose.
   const {
@@ -6209,6 +6212,42 @@ export default function Dashboard() {
                           ) : null}
                         </DropdownMenuItem>
                       ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Zap className="size-4" />
+                      Motion
+                      <span className="ml-auto mr-1 text-[10px] opacity-60">
+                        {motionPreference === "reduced" ? "Reduced" : "System"}
+                      </span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="w-64">
+                      <DropdownMenuLabel className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                        Animation
+                      </DropdownMenuLabel>
+                      <DropdownMenuItem onClick={() => setMotionPreference("system")}>
+                        <span className="flex flex-col">
+                          <span>Follow the system</span>
+                          <span className="text-[10px] leading-3 text-muted-foreground">
+                            Respect the operating system&apos;s reduced-motion setting
+                          </span>
+                        </span>
+                        {motionPreference === "system" ? (
+                          <Check className="ml-auto size-4 text-primary" />
+                        ) : null}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setMotionPreference("reduced")}>
+                        <span className="flex flex-col">
+                          <span>Reduce motion</span>
+                          <span className="text-[10px] leading-3 text-muted-foreground">
+                            Stop ambient animation — transitions snap, the orb holds still
+                          </span>
+                        </span>
+                        {motionPreference === "reduced" ? (
+                          <Check className="ml-auto size-4 text-primary" />
+                        ) : null}
+                      </DropdownMenuItem>
                     </DropdownMenuSubContent>
                   </DropdownMenuSub>
                   <DropdownMenuSeparator />
