@@ -19,6 +19,11 @@
 // in-app viewer on click and are saved with the download button on the
 // picture — never by navigating to the page that hosts them, which is the
 // behaviour `<a href={pageUrl}>` gives and nobody asked for.
+//
+// The one exception is Bing Image Creator, and it is the opposite case: it has
+// no API at all, so there is nothing to call. Its prompt link opens the site
+// with the wording already in the box, and the picture it draws comes back by
+// pasting its address — a hand-off rather than a render.
 // ---------------------------------------------------------------------------
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -34,6 +39,7 @@ import { Button } from "@/components/ui/button";
 import { OwnImageServer } from "@/components/own-image-server";
 import { cn } from "@/lib/utils";
 import { findWebImageQuery } from "@/lib/web-images";
+import { bingCreatorUrl } from "@/lib/bing-image";
 import { composeGroundedPrompt } from "@/lib/character-look";
 import { JUDGE_IDEA_LIMIT } from "@/lib/image-refine";
 import { isPageUrl } from "@/lib/page-brief";
@@ -52,6 +58,7 @@ import {
   Check,
   Copy,
   Download,
+  ExternalLink,
   FileText,
   GitCompare,
   Globe,
@@ -463,6 +470,12 @@ export function ImageStudio({
   const [judging, setJudging] = useState(false);
   const [refining, setRefining] = useState(false);
   const [judgeNote, setJudgeNote] = useState<string | null>(null);
+  // Bing is a hand-off, not a leg: the link carries the prompt, and the picture
+  // is brought back by pasting its address. Session-only — a link is not
+  // history until the image it points at is.
+  const [bingOpen, setBingOpen] = useState(false);
+  const [bingLink, setBingLink] = useState("");
+  const [bingError, setBingError] = useState<string | null>(null);
   const [lookStage, setLookStage] = useState<string | null>(null);
   const [reference, setReference] = useState<{
     names: string[];
@@ -1337,6 +1350,86 @@ export function ImageStudio({
         : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
     );
 
+  /**
+   * What Bing is handed. Exactly what a render here would send — the style, the
+   * user's instructions and exclusions, and any reference the studio resolved,
+   * because a character description left behind is the one thing the other side
+   * cannot reconstruct from a name.
+   */
+  const bingPrompt = [
+    aiPrompt || prompt.trim(),
+    reference?.brief ?? "",
+    page
+      ? `Page reference (${page.title}), keep this design recognisable: ${page.brief}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  /** Open Bing Image Creator with this prompt already in its box. */
+  const openBing = useCallback(() => {
+    const url = bingCreatorUrl(bingPrompt);
+    if (!url) {
+      setBingError("Write a prompt first — otherwise the tab opens empty.");
+      return;
+    }
+    setBingError(null);
+    // The paste box appears in the same press: the next thing the user has is
+    // a picture on another tab, and the way back should not be hidden.
+    setBingOpen(true);
+    // `noopener` because the tab is another site — it must not get a handle on
+    // this window through `window.opener`.
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, [bingPrompt]);
+
+  /**
+   * Adopt a picture Bing drew as a take in this studio.
+   *
+   * Nothing is re-uploaded: the address Bing serves is public, so the entry is
+   * the URL — which keeps Download, Compare and Refine working on it exactly as
+   * they do on a render from the chain.
+   */
+  const useBingImage = useCallback(() => {
+    const value = bingLink.trim();
+    // A copied address often arrives as markdown (`![alt](url)`) or wrapped in
+    // angle brackets; unwrapping it is kinder than rejecting it.
+    const unwrapped = value
+      .replace(/^!?\[[^\]]*\]\(([^)]+)\)$/, "$1")
+      .replace(/^<|>$/g, "")
+      .trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(unwrapped);
+    } catch {
+      setBingError("That isn't a link — right-click the picture and copy its address.");
+      return;
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      setBingError("Only http(s) image links can be used here.");
+      return;
+    }
+
+    const entry: HistoryEntry = {
+      kind: "ai",
+      url: parsed.toString(),
+      prompt: prompt.trim(),
+      at: Date.now(),
+      provider: "bing",
+      aspect,
+      instructions: note(instructions) || undefined,
+      avoid: note(avoid) || undefined,
+      reference: reference?.brief,
+      page: page ?? undefined,
+    };
+    setCurrent(entry);
+    setPreview(null);
+    setTakeList([entry]);
+    setTakeNote(null);
+    setBingLink("");
+    setBingError(null);
+    persist([entry, ...history.filter((h) => h.url !== entry.url)]);
+  }, [aspect, avoid, history, instructions, page, persist, prompt, reference]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -1650,6 +1743,76 @@ export function ImageStudio({
               )}
             </Button>
           </div>
+
+          {/* ---- Bing Image Creator: a hand-off, because there is no API to
+              call. The prompt travels in the link; the picture comes back as
+              an address, and is then a take like any other. ---- */}
+          {resolved === "ai" && (
+            <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="min-w-0 flex-1 text-[11px] leading-4 text-muted-foreground">
+                  Bing Image Creator takes a better shot at long prompts, but it
+                  has no API — so this opens it on a new tab with your prompt
+                  already filled in, then paste the picture's link back here to
+                  review, refine or keep it.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={openBing}
+                  disabled={busy || !bingPrompt}
+                  title={
+                    bingPrompt
+                      ? "Open Bing Image Creator with this prompt in its box"
+                      : "Write a prompt first"
+                  }
+                >
+                  <ExternalLink className="size-3.5" />
+                  Open in Bing
+                </Button>
+              </div>
+
+              {bingOpen && (
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    value={bingLink}
+                    onChange={(e) => {
+                      setBingLink(e.target.value);
+                      setBingError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        useBingImage();
+                      }
+                    }}
+                    placeholder="Paste the image link Bing gave you"
+                    inputMode="url"
+                    autoComplete="off"
+                    spellCheck={false}
+                    // 16px on phones for the same reason as the prompt box.
+                    className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground/70 sm:text-xs"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={useBingImage}
+                    disabled={!bingLink.trim()}
+                  >
+                    Use it
+                  </Button>
+                </div>
+              )}
+
+              {bingError && (
+                <p className="mt-1.5 text-[11px] leading-4 text-destructive">
+                  {bingError}
+                </p>
+              )}
+            </div>
+          )}
 
           {resolved === "ai" && judge && (judging || refining || judgeNote) && (
             <p className="flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground">
