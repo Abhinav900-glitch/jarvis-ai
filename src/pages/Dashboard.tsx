@@ -1096,6 +1096,7 @@ export default function Dashboard() {
   const searchWebImagesAction = useAction(api.ai.searchWebImages);
   const enhanceImagePromptAction = useAction(api.ai.enhanceImagePrompt);
   const characterLookAction = useAction(api.ai.characterLook);
+  const critiqueImageAction = useAction(api.ai.critiqueImage);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
   const lookupMovieAction = useAction(api.spaceMedia.lookupMovie);
   const spacePictureAction = useAction(api.spaceMedia.spacePicture);
@@ -7515,6 +7516,9 @@ export default function Dashboard() {
               await characterLookAction({ prompt: p, refresh })
             }
             readPage={async ({ url }) => await pageBriefAction({ url })}
+            judge={async ({ prompt: p, images, refine }) =>
+              await critiqueImageAction({ prompt: p, images, refine })
+            }
             onUseInChat={studioUseInChat}
           />
 

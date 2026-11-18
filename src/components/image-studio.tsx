@@ -35,6 +35,7 @@ import { OwnImageServer } from "@/components/own-image-server";
 import { cn } from "@/lib/utils";
 import { findWebImageQuery } from "@/lib/web-images";
 import { composeGroundedPrompt } from "@/lib/character-look";
+import { JUDGE_IDEA_LIMIT } from "@/lib/image-refine";
 import { isPageUrl } from "@/lib/page-brief";
 import { downloadImage, imageFileName, saveBlob } from "@/lib/download-image";
 import {
@@ -46,15 +47,18 @@ import {
 } from "@/lib/image-export";
 import { zipFiles } from "@/lib/pptx/zip";
 import {
+  Award,
   Brain,
   Check,
   Copy,
   Download,
   FileText,
+  GitCompare,
   Globe,
   ImagePlus,
   Loader2,
   RotateCcw,
+  ScanEye,
   Search,
   RefreshCw,
   Send,
@@ -98,6 +102,19 @@ export interface StudioCandidate {
   height?: number;
 }
 
+/** What a vision review says about one or more renders of the same prompt. */
+export interface StudioReview {
+  /** One entry per reviewed image, in the order they were sent. */
+  entries: { url: string; score: number; verdict: string }[];
+  /** The strongest one, chosen by the reviewer. */
+  bestUrl: string | null;
+  /** A prompt that fixes the best render's biggest flaw, when asked for one. */
+  refinePrompt: string | null;
+  model: string | null;
+  /** Why no review came back, when none did. */
+  reason: string | null;
+}
+
 export interface StudioSearchResult {
   images: StudioCandidate[];
   /** The AI's choice. `matched: false` means it found nothing close enough. */
@@ -139,6 +156,16 @@ interface HistoryEntry {
   base?: { url: string; strength: number };
   /** Pinned pictures survive the 12-entry cap. */
   pinned?: boolean;
+  /** The review score (0–100) this picture earned against the prompt. */
+  score?: number;
+  /** The reviewer's one-line verdict about this picture. */
+  verdict?: string;
+  /** Set when this picture was drawn as a refinement of `parent`. */
+  refined?: boolean;
+  /** The picture this one refines, so before/after is one click away. */
+  parent?: string;
+  /** The prompt the refinement pass used instead of the user's wording. */
+  refinePrompt?: string;
   /**
    * Found because Generate looked on the web before drawing. Only these offer
    * "Draw instead": an ordinary web search is already what the user asked for.
@@ -206,6 +233,16 @@ export interface ImageStudioProps {
    * already has. Optional: without it the control simply is not shown.
    */
   readPage?: (input: { url: string }) => Promise<StudioPage>;
+  /**
+   * Reviews renders against the prompt: a score per picture, the best one, and
+   * optionally a prompt that fixes the best one's biggest flaw. Optional —
+   * without it the studio simply keeps the first take and offers no Refine.
+   */
+  judge?: (input: {
+    prompt: string;
+    images: string[];
+    refine?: boolean;
+  }) => Promise<StudioReview>;
   /** Hands the picture to the composer as a pending attachment. */
   onUseInChat: (image: StudioResult, prompt: string) => void;
 }
@@ -305,6 +342,18 @@ const MODES: { id: StudioMode; label: string; hint: string; icon: typeof Globe }
 const HISTORY_KEY = "jarvis-image-studio-v2";
 /** Whether named characters are researched before drawing. On unless turned off. */
 const LOOKUPS_KEY = "jarvis-image-lookups";
+/** Whether takes are reviewed so the best one is kept. On unless turned off. */
+const JUDGE_KEY = "jarvis-image-judge";
+/** Whether a render is refined once more before it is offered. On by default. */
+const REFINE_KEY = "jarvis-image-refine";
+/**
+ * How far a refinement may drift from the picture it is fixing. Low enough that
+ * it is still the same picture: a high value would redraw the subject and lose
+ * the composition the prompt was about, which is the opposite of a refinement.
+ */
+const REFINE_STRENGTH = 0.45;
+/** A render this good has nothing a refine pass would improve. */
+const GOOD_ENOUGH = 92;
 const HISTORY_LIMIT = 12;
 /** Long enough for a direction, short enough not to become a second prompt. */
 const NOTE_LIMIT = 220;
@@ -343,6 +392,7 @@ export function ImageStudio({
   enhance,
   lookup,
   readPage,
+  judge,
   onUseInChat,
 }: ImageStudioProps) {
   const [prompt, setPrompt] = useState("");
@@ -393,6 +443,26 @@ export function ImageStudio({
       return true;
     }
   });
+  // Reviewing is what makes "keep the best" a real choice, so it is on by
+  // default; the refine pass costs one more render, which the chip says out
+  // loud so turning it off is an informed decision rather than a discovery.
+  const [autoJudge, setAutoJudge] = useState(() => {
+    try {
+      return localStorage.getItem(JUDGE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const [autoRefine, setAutoRefine] = useState(() => {
+    try {
+      return localStorage.getItem(REFINE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const [judging, setJudging] = useState(false);
+  const [refining, setRefining] = useState(false);
+  const [judgeNote, setJudgeNote] = useState<string | null>(null);
   const [lookStage, setLookStage] = useState<string | null>(null);
   const [reference, setReference] = useState<{
     names: string[];
@@ -501,6 +571,144 @@ export function ImageStudio({
     return parts.join(", ");
   })();
 
+  /**
+   * Fold a review's scores onto the entries it reviewed, matched by URL.
+   * Entries the reviewer did not score are returned untouched, so a missing
+   * number never masquerades as a zero out of a hundred.
+   */
+  const annotate = useCallback(
+    (entries: HistoryEntry[], review: StudioReview): HistoryEntry[] => {
+      const byUrl = new Map(review.entries.map((entry) => [entry.url, entry]));
+      return entries.map((entry) => {
+        const found = byUrl.get(entry.url);
+        if (!found || found.score <= 0) return entry;
+        return {
+          ...entry,
+          score: found.score,
+          verdict: found.verdict || undefined,
+        };
+      });
+    },
+    [],
+  );
+
+  /**
+   * Draw one refined version of a picture: review it, then re-render from its
+   * own bytes with the reviewer's suggested prompt at a low drift.
+   *
+   * The review is the point. A refinement planned without looking is just
+   * another roll of the dice; the reviewer names the one flaw worth fixing, so
+   * the second render is aimed at something specific.
+   */
+  const refineOnce = useCallback(
+    async (
+      entry: HistoryEntry,
+      brief: string,
+    ): Promise<HistoryEntry | null> => {
+      if (!judge) return null;
+      setRefining(true);
+      setJudgeNote("Reviewing the picture…");
+      try {
+        const review = await judge({
+          prompt: brief.slice(0, JUDGE_IDEA_LIMIT),
+          images: [entry.url],
+          refine: true,
+        });
+        const fix = review.refinePrompt?.trim();
+        if (!fix || fix.length < 12) {
+          setJudgeNote(
+            review.reason ??
+              "Nothing to fix — the review had no better prompt for this picture.",
+          );
+          return null;
+        }
+        setJudgeNote("Drawing the refined version…");
+        const result = await generate({
+          prompt: fix.slice(0, 1000),
+          model: entry.model ?? model,
+          aspectRatio: entry.aspect ?? aspect,
+          sourceImage: entry.url,
+          strength: REFINE_STRENGTH,
+        });
+        // The user's wording stays on the entry, not the reviewer's: the prompt
+        // line under the picture should be the request, and `refinePrompt`
+        // records what the second render was actually aimed at.
+        const [scored] = annotate([entry], review);
+        return {
+          ...scored,
+          ...result,
+          at: Date.now(),
+          refined: true,
+          parent: entry.url,
+          refinePrompt: fix,
+          base: { url: entry.url, strength: REFINE_STRENGTH },
+        };
+      } catch (err) {
+        setJudgeNote(
+          err instanceof Error ? err.message : "Couldn't refine that picture.",
+        );
+        return null;
+      } finally {
+        setRefining(false);
+      }
+    },
+    [annotate, aspect, generate, judge, model],
+  );
+
+  /**
+   * The better of a picture and its refinement, by the reviewer's own score.
+   *
+   * Both come back: a refinement that lost is still evidence of what could be
+   * improved, and it stays beside the original so the choice is the user's a
+   * tap away rather than something the studio decided for them.
+   */
+  const pickBetter = useCallback(
+    async (
+      original: HistoryEntry,
+      refined: HistoryEntry,
+      brief: string,
+    ): Promise<{ winner: HistoryEntry; other: HistoryEntry; note: string }> => {
+      if (!judge) {
+        return { winner: refined, other: original, note: "" };
+      }
+      try {
+        const review = await judge({
+          prompt: brief.slice(0, JUDGE_IDEA_LIMIT),
+          images: [original.url, refined.url],
+        });
+        const [before, after] = annotate([original, refined], review);
+        const was = before.score ?? 0;
+        const now = after.score ?? 0;
+        if (review.entries.length < 2) {
+          return {
+            winner: refined,
+            other: original,
+            note:
+              review.reason ??
+              "Kept the refined version — the side-by-side review did not come back.",
+          };
+        }
+        const winner = now >= was ? after : before;
+        return {
+          winner,
+          other: winner === after ? before : after,
+          note:
+            now >= was
+              ? `Refined version kept — ${now}/100 against ${was}/100 before.`
+              : `The original scored higher (${was}/100 against ${now}/100), so it stays. The refined take is beside it.`,
+        };
+      } catch (err) {
+        console.warn("[studio] refinement comparison failed:", err);
+        return {
+          winner: refined,
+          other: original,
+          note: "Kept the refined version — it couldn't be compared with the original.",
+        };
+      }
+    },
+    [annotate, judge],
+  );
+
   const run = useCallback(
     async (override?: {
       prompt: string;
@@ -518,6 +726,7 @@ export function ImageStudio({
       setBusy(true);
       setError(null);
       setExportNote(null);
+      setJudgeNote(null);
 
       // Same decision as render-time, recomputed because this closure may run
       // long after the state it was created with.
@@ -724,13 +933,61 @@ export function ImageStudio({
           ...result,
           at: Date.now(),
         }));
-        const entry = entries[0];
-        setTakeList(entries);
-        setCurrent(entry);
+
+        // Reviewing the set is what turns several pictures into a best
+        // picture. A single take has nothing to be picked against, so it is
+        // only reviewed when a refinement is about to be planned from it.
+        let ordered = entries;
+        let reviewNote: string | null = null;
+        if (judge && autoJudge && ordered.length > 1) {
+          setJudging(true);
+          setJudgeNote("Reviewing the takes…");
+          try {
+            const review = await judge({
+              prompt: grounded.slice(0, JUDGE_IDEA_LIMIT),
+              images: ordered.map((item) => item.url),
+            });
+            if (review.entries.length > 0) {
+              ordered = annotate(ordered, review).sort(
+                (a, b) => (b.score ?? 0) - (a.score ?? 0),
+              );
+              reviewNote = `Best of ${ordered.length} picked${
+                review.model ? ` by ${review.model}` : ""
+              } — ${ordered[0].score ?? 0}/100. Tap a take to keep another.`;
+            } else if (review.reason) {
+              reviewNote = review.reason;
+            }
+          } catch (err) {
+            console.warn("[studio] take review failed:", err);
+          } finally {
+            setJudging(false);
+          }
+        }
+
+        // One refinement pass, then whichever of the two the reviewer prefers.
+        // Skipped when the best render already scored high enough that there
+        // is nothing to aim a second render at.
+        let keep = ordered[0];
+        let shown = ordered;
+        const bestScore = ordered[0].score ?? 0;
+        if (judge && autoRefine && bestScore < GOOD_ENOUGH) {
+          const refined = await refineOnce(keep, grounded);
+          if (refined) {
+            setJudgeNote("Comparing the original and the refined version…");
+            const picked = await pickBetter(keep, refined, grounded);
+            keep = picked.winner;
+            shown = [picked.winner, picked.other];
+            reviewNote = picked.note || reviewNote;
+          }
+        }
+
+        setTakeList(shown);
+        setCurrent(keep);
         setPreview(null);
+        setJudgeNote(reviewNote);
         // Only the pick enters history: four takes per press would push the
         // rest of the recent list out of its twelve slots in three presses.
-        persist([entry, ...history.filter((h) => h.url !== entry.url)]);
+        persist([keep, ...history.filter((h) => h.url !== keep.url)]);
       } catch (err) {
         // The chain throws every stage's reason joined by newlines; keeping
         // the text verbatim is what makes the failure diagnosable.
@@ -740,20 +997,26 @@ export function ImageStudio({
       }
     },      [
       aiPrompt,
+      annotate,
       aspect,
+      autoJudge,
+      autoRefine,
       avoid,
       busy,
       current,
       generate,
       history,
       instructions,
+      judge,
       lookup,
       lookups,
       mode,
       model,
       page,
       persist,
+      pickBetter,
       prompt,
+      refineOnce,
       search,
       source,
       style.id,
@@ -761,6 +1024,49 @@ export function ImageStudio({
       webQuery,
     ],
   );
+
+  /**
+   * The Refine button: review the picture on screen, draw one improved version
+   * from it, and keep whichever the reviewer scores higher.
+   */
+  const refineNow = useCallback(async () => {
+    if (!current || current.kind !== "ai" || !judge || busy || refining || judging) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setExportNote(null);
+    setJudgeNote(null);
+    try {
+      const brief =
+        aiPrompt || current.prompt || "A new take on the reference image";
+      const refined = await refineOnce(current, brief);
+      if (!refined) return;
+      setJudgeNote("Comparing the original and the refined version…");
+      const picked = await pickBetter(current, refined, brief);
+      setTakeList([picked.winner, picked.other]);
+      setTakeNote(null);
+      setCurrent(picked.winner);
+      setJudgeNote(picked.note);
+      persist([
+        picked.winner,
+        ...history.filter((h) => h.url !== picked.winner.url),
+      ]);
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    aiPrompt,
+    busy,
+    current,
+    history,
+    judge,
+    judging,
+    persist,
+    pickBetter,
+    refineOnce,
+    refining,
+  ]);
 
   /**
    * "a lighthouse" gets a lighthouse on white with no sky; the models are
@@ -1022,6 +1328,15 @@ export function ImageStudio({
   const triggerLabel =
     resolved === "web" ? "Search photos" : mode === "auto" ? "Generate" : "Render";
 
+  /** One look for the on/off chips above the prompt. */
+  const chipClass = (on: boolean) =>
+    cn(
+      "inline-flex w-fit items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors",
+      on
+        ? "border-foreground/40 bg-accent text-foreground"
+        : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+    );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -1040,8 +1355,10 @@ export function ImageStudio({
           </DialogTitle>
           <DialogDescription className="pr-6 text-xs sm:text-sm">
             Real photos found on the web, a picture made from scratch, or a new
-            take on one you already have. Results open in the viewer here — the
-            download button saves the file itself.
+            take on one you already have. Renders are reviewed against your
+            prompt, the best take is kept, and it can be refined once more —
+            results open in the viewer here, and the download button saves the
+            file itself.
           </DialogDescription>
         </DialogHeader>
 
@@ -1334,35 +1651,90 @@ export function ImageStudio({
             </Button>
           </div>
 
+          {resolved === "ai" && judge && (judging || refining || judgeNote) && (
+            <p className="flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground">
+              {(judging || refining) && (
+                <Loader2 className="mt-0.5 size-3 shrink-0 animate-spin" />
+              )}
+              {judging
+                ? "Reviewing the takes — scoring each one against your prompt…"
+                : refining
+                  ? "Refining — drawing one improved version from this picture…"
+                  : judgeNote}
+            </p>
+          )}
+
           {/* ---- Self-hosted endpoint (optional, collapsed) ---- */}
           <OwnImageServer />
 
           {resolved === "ai" && (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={lookups}
-              onClick={() => {
-                const next = !lookups;
-                setLookups(next);
-                try {
-                  localStorage.setItem(LOOKUPS_KEY, String(next));
-                } catch {
-                  // Private mode: the setting just lasts this visit.
-                }
-                if (!next) setReference(null);
-              }}
-              className={cn(
-                "inline-flex w-fit items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors",
-                lookups
-                  ? "border-foreground/40 bg-accent text-foreground"
-                  : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={lookups}
+                onClick={() => {
+                  const next = !lookups;
+                  setLookups(next);
+                  try {
+                    localStorage.setItem(LOOKUPS_KEY, String(next));
+                  } catch {
+                    // Private mode: the setting just lasts this visit.
+                  }
+                  if (!next) setReference(null);
+                }}
+                className={chipClass(lookups)}
+                title="Looks up each named character's design and newest form before drawing"
+              >
+                <UserRound className="size-3" />
+                Character looks {lookups ? "on" : "off"}
+              </button>
+
+              {judge && (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoJudge}
+                  onClick={() => {
+                    const next = !autoJudge;
+                    setAutoJudge(next);
+                    try {
+                      localStorage.setItem(JUDGE_KEY, String(next));
+                    } catch {
+                      // Private mode: the setting just lasts this visit.
+                    }
+                  }}
+                  className={chipClass(autoJudge)}
+                  title="After several takes, review them against the prompt and keep the best one"
+                >
+                  <ScanEye className="size-3" />
+                  Pick best {autoJudge ? "on" : "off"}
+                </button>
               )}
-              title="Looks up each named character's design and newest form before drawing"
-            >
-              <UserRound className="size-3" />
-              Character looks {lookups ? "on" : "off"}
-            </button>
+
+              {judge && (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoRefine}
+                  onClick={() => {
+                    const next = !autoRefine;
+                    setAutoRefine(next);
+                    try {
+                      localStorage.setItem(REFINE_KEY, String(next));
+                    } catch {
+                      // Private mode: the setting just lasts this visit.
+                    }
+                  }}
+                  className={chipClass(autoRefine)}
+                  title="After the render, review it, draw one improved version and keep whichever scored higher"
+                >
+                  <Wand2 className="size-3" />
+                  Auto-refine {autoRefine ? "on" : "off"}
+                  <span className="opacity-60">+1 render</span>
+                </button>
+              )}
+            </div>
           )}
 
           {/* ---- Variation source: a picture to start from. The dial decides
@@ -1550,7 +1922,9 @@ export function ImageStudio({
                 <div className="border-b border-border/70 bg-muted/25 p-1.5">
                   <div className="mb-1 flex items-center justify-between gap-2 px-0.5">
                     <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                      Takes — {takeList.length}
+                      {takeList.some((take) => take.refined || take.parent)
+                        ? "Original & refined"
+                        : `Takes — ${takeList.length}`}
                     </span>
                     <span className="truncate text-[10px] text-muted-foreground/80">
                       {takeNote ?? "tap one to keep it"}
@@ -1584,6 +1958,14 @@ export function ImageStudio({
                           <span className="pointer-events-none absolute left-1 top-1 rounded bg-black/65 px-1 py-0.5 text-[9px] font-medium text-white">
                             {index + 1}
                           </span>
+                          {take.score ? (
+                            <span
+                              className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/65 px-1 py-0.5 text-[9px] font-medium tabular-nums text-white"
+                              title={take.verdict ?? `Scored ${take.score}/100`}
+                            >
+                              {take.score}
+                            </span>
+                          ) : null}
                           {picked ? (
                             <span className="pointer-events-none absolute bottom-1 left-1 flex items-center gap-0.5 rounded bg-primary px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-primary-foreground">
                               <Check className="size-2.5" />
@@ -1622,8 +2004,15 @@ export function ImageStudio({
                   alt={current.prompt}
                   className="max-h-[min(46vh,26rem)] w-full object-contain"
                 />
-                <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white">
-                  {current.provider ?? "image"}
+                <span className="absolute left-2 top-2 flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white">
+                  {current.refined ? (
+                    <>
+                      <Wand2 className="size-2.5" />
+                      refined · {current.provider ?? "image"}
+                    </>
+                  ) : (
+                    (current.provider ?? "image")
+                  )}
                 </span>
                 {/* Download lives on the picture, upper region, always visible:
                     on a phone there is no hover to reveal it. */}
@@ -1645,10 +2034,57 @@ export function ImageStudio({
                   Grounded on {current.page.title}
                 </p>
               )}
+              {(current.score || (current.refined && current.parent)) && (
+                <div className="flex flex-wrap items-center gap-2 border-t border-border/70 px-3 py-2 text-[11px] leading-4 text-muted-foreground">
+                  {current.score ? (
+                    <span className="flex min-w-0 items-start gap-1.5">
+                      <Award className="mt-0.5 size-3 shrink-0" />
+                      <span className="min-w-0">
+                        <span className="font-medium tabular-nums text-foreground">
+                          {current.score}/100
+                        </span>{" "}
+                        {current.verdict ?? "reviewed against the prompt"}
+                      </span>
+                    </span>
+                  ) : null}
+                  {current.refined && current.parent ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreview({
+                          urls: [current.parent as string, current.url],
+                          index: 1,
+                        })
+                      }
+                      title="See the picture this one refined"
+                      className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 transition-colors hover:border-foreground/30 hover:text-foreground"
+                    >
+                      <GitCompare className="size-3" />
+                      Compare
+                    </button>
+                  ) : null}
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2 border-t border-border/70 bg-background px-3 py-2">
                 <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                   {current.prompt}
                 </span>
+                {judge ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void refineNow()}
+                    disabled={busy || refining || judging}
+                    title="Review this picture, draw one improved version from it, and keep whichever scored higher"
+                  >
+                    {refining || judging ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="size-3.5" />
+                    )}
+                    {refining || judging ? "Refining…" : "Refine"}
+                  </Button>
+                ) : null}
                 <Button
                   variant="outline"
                   size="sm"
@@ -1925,6 +2361,7 @@ export function ImageStudio({
                         setPageUrl(h.page?.url ?? "");
                         setPageError(null);
                         setSource(h.base ?? null);
+                        setJudgeNote(null);
                       }}
                       className="block w-full"
                       title={h.prompt}
@@ -1937,7 +2374,7 @@ export function ImageStudio({
                       />
                     </button>
                     <span className="pointer-events-none absolute bottom-1 left-1 rounded bg-black/60 px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white">
-                      {h.kind === "web" ? "web" : "ai"}
+                      {h.kind === "web" ? "web" : h.refined ? "refined" : "ai"}
                     </span>
                     {/* Always visible on touch: there is no hover on a phone,
                         so a hover-only control is one nobody can press. */}

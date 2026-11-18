@@ -101,6 +101,7 @@ import {
   parseImagePick,
   type ImageCandidate,
 } from "../lib/image-compare";
+import { judgePrompt, parseImageJudgement } from "../lib/image-refine";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -3101,6 +3102,116 @@ export const enhanceImagePrompt = action({
         err instanceof Error ? err.message : err,
       );
       return { prompt: base, model: null, changed: false };
+    }
+  },
+});
+
+const IMAGE_JUDGE_SYSTEM_PROMPT =
+  "You are a picture editor reviewing renders against the brief they were made " +
+  "for. You look at every image before answering, score honestly rather than " +
+  "flattering the result, and reply with only the JSON object you were asked for.";
+
+/**
+ * Review renders: score each one against the prompt, name the best, and — when
+ * asked — write the one prompt change that would fix the best one's flaw.
+ *
+ * This is what makes "the best image" a real choice rather than a guess: the
+ * studio keeps the highest-scoring take, and a refinement replaces it only if
+ * it scores higher. The images are shown to a vision model, so the review is
+ * about what was drawn, not about whether the prompt looked sensible.
+ *
+ * Never throws for a provider failure. A picture already exists and is worth
+ * keeping; an unavailable review comes back as an empty list plus a reason the
+ * studio can state, which is honest about why no score is shown.
+ */
+export const critiqueImage = action({
+  args: {
+    /** What the pictures were meant to be — the brief they are scored against. */
+    prompt: v.string(),
+    /** The renders to review, in display order. Only the first four are read. */
+    images: v.array(v.string()),
+    /** Also write a prompt that fixes the best render's biggest flaw. */
+    refine: v.optional(v.boolean()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    entries: { url: string; score: number; verdict: string }[];
+    bestUrl: string | null;
+    refinePrompt: string | null;
+    model: string | null;
+    reason: string | null;
+  }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to review images.");
+
+    // The URLs come from the client, so they are filtered and capped here — a
+    // review is a paid call and four renders is the studio's own ceiling.
+    const urls = args.images
+      .map((url) => url.trim())
+      .filter((url) => /^https?:\/\//i.test(url))
+      .slice(0, 4);
+    if (urls.length === 0) {
+      return {
+        entries: [],
+        bestUrl: null,
+        refinePrompt: null,
+        model: null,
+        reason: "No images to review.",
+      };
+    }
+
+    const prompt = judgePrompt(args.prompt, urls.length, {
+      refine: args.refine === true,
+    });
+
+    try {
+      const plan = await routingFor(ctx, userId, {
+        task: "reason",
+        hasImages: true,
+        prompt,
+      });
+      const result = await runProviderChain(
+        [{ role: "user", content: buildUserContent(prompt, urls) }],
+        IMAGE_JUDGE_SYSTEM_PROMPT,
+        "No engine was available to review the images.",
+        plan,
+      );
+      const parsed = parseImageJudgement(result.text, urls.length);
+      if (!parsed) {
+        return {
+          entries: [],
+          bestUrl: null,
+          refinePrompt: null,
+          model: result.model,
+          reason: "The review came back unreadable, so these pictures were kept as they are.",
+        };
+      }
+      return {
+        entries: urls.map((url, index) => ({
+          url,
+          score: parsed.entries[index]?.score ?? 0,
+          verdict: parsed.entries[index]?.verdict ?? "",
+        })),
+        bestUrl: urls[parsed.best] ?? urls[0],
+        refinePrompt: parsed.refine,
+        model: result.model,
+        reason: null,
+      };
+    } catch (err) {
+      console.error(
+        "Image review failed:",
+        err instanceof Error ? err.message : err,
+      );
+      return {
+        entries: [],
+        bestUrl: null,
+        refinePrompt: null,
+        model: null,
+        reason:
+          "No vision engine could review these pictures — the ones already drawn are unchanged.",
+      };
     }
   },
 });
