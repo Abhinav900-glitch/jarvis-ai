@@ -1097,6 +1097,12 @@ export default function Dashboard() {
   const enhanceImagePromptAction = useAction(api.ai.enhanceImagePrompt);
   const characterLookAction = useAction(api.ai.characterLook);
   const critiqueImageAction = useAction(api.ai.critiqueImage);
+  // The Image Studio's Supabase copy. The secret key stays in the deployment;
+  // these four calls are the whole client surface.
+  const supabaseStatusAction = useAction(api.supabase.status);
+  const supabaseCheckAction = useAction(api.supabase.check);
+  const supabaseBackupAction = useAction(api.supabase.backup);
+  const supabasePullAction = useAction(api.supabase.pull);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
   const lookupMovieAction = useAction(api.spaceMedia.lookupMovie);
   const spacePictureAction = useAction(api.spaceMedia.spacePicture);
@@ -7519,6 +7525,12 @@ export default function Dashboard() {
             judge={async ({ prompt: p, images, refine }) =>
               await critiqueImageAction({ prompt: p, images, refine })
             }
+            cloud={{
+              status: async () => await supabaseStatusAction({}),
+              check: async () => await supabaseCheckAction({}),
+              backup: async (entries) => await supabaseBackupAction({ entries }),
+              pull: async () => await supabasePullAction({}),
+            }}
             onUseInChat={studioUseInChat}
           />
 

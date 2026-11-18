@@ -56,6 +56,8 @@ import {
   Award,
   Brain,
   Check,
+  CloudDownload,
+  CloudUpload,
   Copy,
   Download,
   ExternalLink,
@@ -188,6 +190,40 @@ export interface StudioPage {
   source: string;
 }
 
+/**
+ * What the deployment knows about its Supabase project. Names and a host —
+ * never the key, which is why this is safe to render.
+ */
+export interface StudioCloudStatus {
+  configured: boolean;
+  urlHost: string | null;
+  /** Env var the secret came from, so a VITE_-prefixed one can be flagged. */
+  keySource: string | null;
+  table: string;
+  warnings: string[];
+}
+
+/** One picture as it is sent to Postgres. */
+export interface StudioCloudEntry {
+  url: string;
+  prompt: string;
+  kind: string;
+  provider?: string;
+  aspect?: string;
+  score?: number;
+  refined?: boolean;
+  pinned?: boolean;
+  reference?: string;
+  pageTitle?: string;
+  createdAt: number;
+}
+
+/** One picture as it comes back from Postgres. */
+export interface StudioCloudRow extends StudioCloudEntry {
+  refined: boolean;
+  pinned: boolean;
+}
+
 export interface ImageStudioProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -250,6 +286,20 @@ export interface ImageStudioProps {
     images: string[];
     refine?: boolean;
   }) => Promise<StudioReview>;
+  /**
+   * Supabase, when the deployment has it configured: a copy of the history
+   * that outlives this browser and can be read on another device. Optional —
+   * without it the studio keeps history locally, as it always did.
+   */
+  cloud?: {
+    status: () => Promise<StudioCloudStatus>;
+    /** Whether the key works and the migration has been run. */
+    check: () => Promise<{ ok: boolean; message: string | null }>;
+    backup: (
+      entries: StudioCloudEntry[],
+    ) => Promise<{ saved: number; skipped: number; message: string | null }>;
+    pull: () => Promise<{ entries: StudioCloudRow[]; message: string | null }>;
+  };
   /** Hands the picture to the composer as a pending attachment. */
   onUseInChat: (image: StudioResult, prompt: string) => void;
 }
@@ -384,6 +434,53 @@ function loadHistory(): HistoryEntry[] {
   }
 }
 
+/**
+ * A history entry as a row payload, or null when it cannot be stored.
+ *
+ * Inline pictures are skipped rather than sent: a base64 image can be several
+ * megabytes, and PostgREST rejects the request long before Postgres sees it.
+ */
+function cloudEntryOf(entry: HistoryEntry): StudioCloudEntry | null {
+  if (!/^https?:\/\//i.test(entry.url)) return null;
+  return {
+    url: entry.url,
+    prompt: entry.prompt,
+    kind: entry.kind,
+    provider: entry.provider,
+    aspect: entry.aspect,
+    score: entry.score,
+    refined: entry.refined ?? false,
+    pinned: entry.pinned ?? false,
+    reference: entry.reference,
+    pageTitle: entry.page?.title,
+    createdAt: entry.at,
+  };
+}
+
+/**
+ * The same picture, back in the studio's own terms.
+ *
+ * The page a prompt was grounded on is not restored: only its title survives the
+ * round trip, and half a reference is worse than none — regenerating from it
+ * would invent the description it claims to keep.
+ */
+function historyFromCloud(row: StudioCloudRow): HistoryEntry {
+  return {
+    kind: row.kind === "web" ? "web" : "ai",
+    url: row.url,
+    prompt: row.prompt,
+    at: row.createdAt,
+    provider: row.provider,
+    aspect: ASPECTS.some((a) => a.id === row.aspect)
+      ? (row.aspect as StudioAspect)
+      : undefined,
+    score: row.score,
+    refined: row.refined,
+    pinned: row.pinned,
+    reference: row.reference,
+  };
+}
+
 /** Trim and cap a free-text instruction without splitting a word in half. */
 function note(value: string): string {
   const text = value.replace(/\s+/g, " ").trim();
@@ -400,6 +497,7 @@ export function ImageStudio({
   lookup,
   readPage,
   judge,
+  cloud,
   onUseInChat,
 }: ImageStudioProps) {
   const [prompt, setPrompt] = useState("");
@@ -478,6 +576,13 @@ export function ImageStudio({
   const [bingError, setBingError] = useState<string | null>(null);
   // Whether the pre-filled address was just copied, for the button's label.
   const [bingCopied, setBingCopied] = useState(false);
+  // The Supabase copy: what the deployment reports, what is stored there, and
+  // which press is in flight. `null` status means it has not been asked yet.
+  const [cloudStatus, setCloudStatus] = useState<StudioCloudStatus | null>(null);
+  const [cloudReady, setCloudReady] = useState(false);
+  const [cloudRows, setCloudRows] = useState<StudioCloudRow[]>([]);
+  const [cloudBusy, setCloudBusy] = useState<"backup" | "pull" | null>(null);
+  const [cloudNote, setCloudNote] = useState<string | null>(null);
   const [lookStage, setLookStage] = useState<string | null>(null);
   const [reference, setReference] = useState<{
     names: string[];
@@ -1414,6 +1519,132 @@ export function ImageStudio({
       setBingError("Couldn't copy the link — this browser blocked the clipboard.");
     }
   }, [bingPrompt]);
+
+  /**
+   * The cloud copy, read through a ref on open.
+   *
+   * The dashboard builds `cloud` inline, so it is a new object every render;
+   * keying this effect on it would re-check Supabase in a loop. The effect reads
+   * the newest props instead, and only runs when the dialog opens.
+   */
+  const cloudRef = useRef(cloud);
+  cloudRef.current = cloud;
+  useEffect(() => {
+    if (!open) return;
+    const api = cloudRef.current;
+    if (!api) return;
+    let live = true;
+    setCloudNote(null);
+    setCloudBusy(null);
+    void (async () => {
+      try {
+        const status = await api.status();
+        if (!live) return;
+        setCloudStatus(status);
+        if (!status.configured) return;
+        const checked = await api.check();
+        if (!live) return;
+        setCloudReady(checked.ok);
+        if (!checked.ok) {
+          setCloudNote(checked.message);
+          return;
+        }
+        const pulled = await api.pull();
+        if (!live) return;
+        setCloudRows(pulled.entries);
+        if (pulled.message) setCloudNote(pulled.message);
+      } catch (err) {
+        if (live) {
+          setCloudNote(
+            err instanceof Error ? err.message : "Couldn't reach Supabase.",
+          );
+        }
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [open]);
+
+  /**
+   * Copy every picture this browser remembers into Postgres.
+   *
+   * The last press's takes come first: those are the pictures most likely to be
+   * gone by tomorrow, because only the pick was ever written to history.
+   */
+  const backUpToCloud = useCallback(async () => {
+    const api = cloudRef.current;
+    if (!api) return;
+    setCloudBusy("backup");
+    setCloudNote(null);
+    try {
+      const seen = new Set<string>();
+      const entries = [...takeList, ...history]
+        .map(cloudEntryOf)
+        .filter((entry): entry is StudioCloudEntry => {
+          if (!entry || seen.has(entry.url)) return false;
+          seen.add(entry.url);
+          return true;
+        });
+      const result = await api.backup(entries);
+      setCloudNote(
+        result.message ??
+          `Saved ${result.saved} picture${result.saved === 1 ? "" : "s"} to Supabase.`,
+      );
+      if (result.saved > 0) {
+        // The count in the panel is the database's, not this press's.
+        const pulled = await api.pull();
+        setCloudRows(pulled.entries);
+      }
+    } catch (err) {
+      setCloudNote(
+        err instanceof Error ? err.message : "Couldn't reach Supabase.",
+      );
+    } finally {
+      setCloudBusy(null);
+    }
+  }, [history, takeList]);
+
+  /** Bring the cloud copy into this browser's Recent list. */
+  const pullFromCloud = useCallback(async () => {
+    const api = cloudRef.current;
+    if (!api) return;
+    setCloudBusy("pull");
+    setCloudNote(null);
+    try {
+      const result = await api.pull();
+      setCloudRows(result.entries);
+      if (result.entries.length === 0) {
+        setCloudNote(
+          result.message ??
+            "Nothing saved for this account yet — back something up first.",
+        );
+        return;
+      }
+      // Merge by URL. A picture already here keeps this browser's copy, which
+      // is the one carrying the score, the refinement and the page reference.
+      const byUrl = new Map<string, HistoryEntry>();
+      for (const local of history) byUrl.set(local.url, local);
+      let added = 0;
+      for (const row of result.entries) {
+        if (byUrl.has(row.url)) continue;
+        byUrl.set(row.url, historyFromCloud(row));
+        added += 1;
+      }
+      persist([...byUrl.values()].sort((a, b) => b.at - a.at));
+      setCloudNote(
+        added === 0
+          ? "Everything saved in Supabase is already in Recent."
+          : `Pulled ${added} picture${added === 1 ? "" : "s"} into Recent — the newest ${HISTORY_LIMIT} stay unless pinned.`,
+      );
+    } catch (err) {
+      setCloudNote(
+        err instanceof Error ? err.message : "Couldn't reach Supabase.",
+      );
+    } finally {
+      setCloudBusy(null);
+    }
+  }, [history, persist]);
 
   /**
    * Adopt a picture Bing drew as a take in this studio.
@@ -2618,6 +2849,83 @@ export function ImageStudio({
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* ---- The SQL copy, when the deployment has Supabase ---- */}
+          {cloud && (
+            <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    Cloud copy — Supabase
+                  </span>
+                  <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                    {cloudStatus === null
+                      ? "Checking the Supabase copy…"
+                      : !cloudStatus.configured
+                        ? "Not configured — add SUPABASE_URL and SUPABASE_SECRET_KEY in the Keys tab."
+                        : !cloudReady
+                          ? "Key found, but the table isn't ready yet — see below."
+                          : `${cloudRows.length} picture${
+                              cloudRows.length === 1 ? "" : "s"
+                            } saved in Postgres${
+                              cloudStatus.urlHost
+                                ? ` · ${cloudStatus.urlHost}`
+                                : ""
+                            } — readable on another device.`}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void backUpToCloud()}
+                    disabled={
+                      !cloudReady || cloudBusy !== null || history.length === 0
+                    }
+                    title="Copy this browser's pictures to Supabase — pressing twice updates, it does not duplicate"
+                  >
+                    {cloudBusy === "backup" ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <CloudUpload className="size-3.5" />
+                    )}
+                    Back up
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void pullFromCloud()}
+                    disabled={!cloudReady || cloudBusy !== null}
+                    title="Bring pictures saved on other devices into Recent"
+                  >
+                    {cloudBusy === "pull" ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <CloudDownload className="size-3.5" />
+                    )}
+                    Pull
+                  </Button>
+                </div>
+              </div>
+
+              {cloudNote && (
+                <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground">
+                  {cloudNote}
+                </p>
+              )}
+
+              {cloudStatus?.warnings.map((warning) => (
+                <p
+                  key={warning}
+                  className="mt-1.5 text-[11px] leading-4 text-destructive"
+                >
+                  {warning}
+                </p>
+              ))}
             </div>
           )}
 
