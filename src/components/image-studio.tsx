@@ -27,6 +27,7 @@
 // ---------------------------------------------------------------------------
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "react-router";
 import {
   Dialog,
   DialogContent,
@@ -65,6 +66,7 @@ import {
   GitCompare,
   Globe,
   ImagePlus,
+  Images,
   Loader2,
   RotateCcw,
   ScanEye,
@@ -605,6 +607,9 @@ export function ImageStudio({
   const [shareBusy, setShareBusy] = useState(false);
   const [shareNote, setShareNote] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+  // The gallery is a page of its own, so the dialog closes behind it rather
+  // than stacking a second overlay on top of the studio.
+  const navigate = useNavigate();
   const [lookStage, setLookStage] = useState<string | null>(null);
   const [reference, setReference] = useState<{
     names: string[];
@@ -3076,6 +3081,19 @@ export function ImageStudio({
                       <CloudDownload className="size-3.5" />
                     )}
                     Pull
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      onOpenChange(false);
+                      navigate("/gallery");
+                    }}
+                    title="Every picture backed up to Supabase, searchable"
+                  >
+                    <Images className="size-3.5" />
+                    Gallery
                   </Button>
                 </div>
               </div>

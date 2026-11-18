@@ -392,6 +392,58 @@ export const backup = action({
   },
 });
 
+/** One stored picture, in the studio's own terms. */
+interface RenderRow {
+  url: string;
+  prompt: string;
+  kind: string;
+  provider?: string;
+  aspect?: string;
+  score?: number;
+  refined: boolean;
+  pinned: boolean;
+  reference?: string;
+  pageTitle?: string;
+  shareSlug?: string;
+  createdAt: number;
+}
+
+/**
+ * A PostgREST row as a picture, or null for a row with no usable address.
+ *
+ * Shared by every read path, so `pull` and the gallery can never disagree
+ * about what a stored picture is.
+ */
+function entryFromRow(row: unknown): RenderRow | null {
+  if (!row || typeof row !== "object") return null;
+  const record = row as Record<string, unknown>;
+  const url = typeof record.image_url === "string" ? record.image_url : "";
+  if (!url) return null;
+  const at = Date.parse(String(record.created_at ?? ""));
+  return {
+    url,
+    prompt: typeof record.prompt === "string" ? record.prompt : "",
+    kind: record.kind === "web" ? "web" : "ai",
+    provider: typeof record.provider === "string" ? record.provider : undefined,
+    aspect: typeof record.aspect === "string" ? record.aspect : undefined,
+    score: typeof record.score === "number" ? record.score : undefined,
+    refined: record.refined === true,
+    pinned: record.pinned === true,
+    reference:
+      typeof record.reference === "string" ? record.reference : undefined,
+    pageTitle:
+      typeof record.page_title === "string" ? record.page_title : undefined,
+    shareSlug:
+      typeof record.share_slug === "string" ? record.share_slug : undefined,
+    /** Falls back to now for a row whose date the database mangled. */
+    createdAt: Number.isNaN(at) ? Date.now() : at,
+  };
+}
+
+/** The columns every read asks for. One list, so a new field lands everywhere. */
+const READ_COLUMNS =
+  "image_url,prompt,kind,provider,aspect,score,refined,pinned,reference,page_title,created_at,share_slug";
+
 /**
  * Read this account's pictures back, newest first.
  *
@@ -411,7 +463,7 @@ export const pull = action({
     }
 
     const query = [
-      `select=image_url,prompt,kind,provider,aspect,score,refined,pinned,reference,page_title,created_at,share_slug`,
+      `select=${READ_COLUMNS}`,
       `user_id=eq.${encodeURIComponent(String(userId))}`,
       `order=created_at.desc`,
       `limit=${PULL_LIMIT}`,
@@ -430,36 +482,68 @@ export const pull = action({
     }
 
     const entries = reply.rows.flatMap((row) => {
-      if (!row || typeof row !== "object") return [];
-      const record = row as Record<string, unknown>;
-      const url = typeof record.image_url === "string" ? record.image_url : "";
-      if (!url) return [];
-      const at = Date.parse(String(record.created_at ?? ""));
-      return [
-        {
-          url,
-          prompt: typeof record.prompt === "string" ? record.prompt : "",
-          kind: record.kind === "web" ? "web" : "ai",
-          provider:
-            typeof record.provider === "string" ? record.provider : undefined,
-          aspect: typeof record.aspect === "string" ? record.aspect : undefined,
-          score: typeof record.score === "number" ? record.score : undefined,
-          refined: record.refined === true,
-          pinned: record.pinned === true,
-          reference:
-            typeof record.reference === "string" ? record.reference : undefined,
-          pageTitle:
-            typeof record.page_title === "string" ? record.page_title : undefined,
-          /** Present when this picture has a public link; absent when revoked. */
-          shareSlug:
-            typeof record.share_slug === "string" ? record.share_slug : undefined,
-          /** Falls back to now for a row whose date the database mangled. */
-          createdAt: Number.isNaN(at) ? Date.now() : at,
-        },
-      ];
+      const entry = entryFromRow(row);
+      return entry ? [entry] : [];
     });
 
     return { entries, message: null };
+  },
+});
+
+/** How many pictures the gallery page may ask for in one read. */
+const LIST_LIMIT = 200;
+
+/**
+ * Every picture this account has stored, newest first — the gallery page's
+ * read.
+ *
+ * `pull` deliberately stops at the size of Recent; this one is for looking at
+ * the whole archive, so the ceiling is much higher and the page asks for what
+ * it can show. Still bounded: an unbounded select is a page that hangs when an
+ * account has been busy for a year.
+ */
+export const list = action({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      return { entries: [], message: "Sign in to open the gallery." };
+    }
+    const config = supabaseConfig();
+    if ("message" in config) {
+      return { entries: [], message: config.message };
+    }
+
+    const limit = Math.min(
+      Math.max(Math.round(args.limit ?? LIST_LIMIT), 1),
+      LIST_LIMIT,
+    );
+    const query = [
+      `select=${READ_COLUMNS}`,
+      `user_id=eq.${encodeURIComponent(String(userId))}`,
+      `order=created_at.desc`,
+      `limit=${limit}`,
+    ].join("&");
+
+    const reply = await postgrest(config.config, `${TABLE}?${query}`, {
+      method: "GET",
+    });
+    if (!reply.ok) {
+      return {
+        entries: [],
+        message: reply.tableMissing
+          ? "The studio_renders table doesn't exist yet — run supabase/migrations/0001_studio_renders.sql in Supabase's SQL editor."
+          : reply.message,
+      };
+    }
+
+    return {
+      entries: reply.rows.flatMap((row) => {
+        const entry = entryFromRow(row);
+        return entry ? [entry] : [];
+      }),
+      message: null,
+    };
   },
 });
 

@@ -37,6 +37,8 @@ const Embed = lazy(() => import("./pages/Embed.tsx"));
 // A picture someone shared. Public on purpose: the link is the whole point,
 // and the page asks a Convex action for the one row behind its slug.
 const SharedRender = lazy(() => import("./pages/SharedRender.tsx"));
+// The whole Supabase-backed archive, behind the usual sign-in gate.
+const Gallery = lazy(() => import("./pages/Gallery.tsx"));
 
 // Route transitions get the same mark as the boot screen rather than a text
 // "Loading..." — the first thing a user sees should already be the brand.
@@ -189,6 +191,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <Embed />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/gallery"
+                element={
+                  <RequireAuth>
+                    <Gallery />
                   </RequireAuth>
                 }
               />
