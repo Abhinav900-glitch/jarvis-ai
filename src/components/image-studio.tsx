@@ -39,7 +39,7 @@ import { Button } from "@/components/ui/button";
 import { OwnImageServer } from "@/components/own-image-server";
 import { cn } from "@/lib/utils";
 import { findWebImageQuery } from "@/lib/web-images";
-import { bingCreatorUrl } from "@/lib/bing-image";
+import { BING_PROMPT_LIMIT, bingCreatorUrl } from "@/lib/bing-image";
 import { composeGroundedPrompt } from "@/lib/character-look";
 import { JUDGE_IDEA_LIMIT } from "@/lib/image-refine";
 import { isPageUrl } from "@/lib/page-brief";
@@ -476,6 +476,8 @@ export function ImageStudio({
   const [bingOpen, setBingOpen] = useState(false);
   const [bingLink, setBingLink] = useState("");
   const [bingError, setBingError] = useState<string | null>(null);
+  // Whether the pre-filled address was just copied, for the button's label.
+  const [bingCopied, setBingCopied] = useState(false);
   const [lookStage, setLookStage] = useState<string | null>(null);
   const [reference, setReference] = useState<{
     names: string[];
@@ -1383,6 +1385,37 @@ export function ImageStudio({
   }, [bingPrompt]);
 
   /**
+   * Copy the pre-filled Bing address, so the prompt can be sent to another
+   * device — the tab that opens here is not the only place it can be drawn.
+   *
+   * The link is what gets pasted; the whole prompt follows it only when the
+   * address had to clip the ending, which keeps a long brief from arriving
+   * truncated on the other side.
+   */
+  const copyBingLink = useCallback(async () => {
+    const url = bingCreatorUrl(bingPrompt);
+    if (!url) {
+      setBingError("Write a prompt first — there's nothing to send.");
+      return;
+    }
+    const clipped = bingPrompt.replace(/\s+/g, " ").trim().length > BING_PROMPT_LIMIT;
+    try {
+      await navigator.clipboard.writeText(clipped ? `${url}\n\n${bingPrompt}` : url);
+      setBingError(null);
+      setBingCopied(true);
+      // The copied link is opened elsewhere, but the picture comes back here —
+      // so the paste row is revealed now rather than on a button press that
+      // will not happen on this device.
+      setBingOpen(true);
+      window.setTimeout(() => setBingCopied(false), 1600);
+    } catch {
+      // Same as the viewer's Copy link: a denied clipboard has no fallback
+      // worth substituting, so the failure is stated and left there.
+      setBingError("Couldn't copy the link — this browser blocked the clipboard.");
+    }
+  }, [bingPrompt]);
+
+  /**
    * Adopt a picture Bing drew as a take in this studio.
    *
    * Nothing is re-uploaded: the address Bing serves is public, so the entry is
@@ -1756,21 +1789,38 @@ export function ImageStudio({
                   already filled in, then paste the picture's link back here to
                   review, refine or keep it.
                 </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={openBing}
-                  disabled={busy || !bingPrompt}
-                  title={
-                    bingPrompt
-                      ? "Open Bing Image Creator with this prompt in its box"
-                      : "Write a prompt first"
-                  }
-                >
-                  <ExternalLink className="size-3.5" />
-                  Open in Bing
-                </Button>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={copyBingLink}
+                    disabled={!bingPrompt}
+                    title={
+                      bingPrompt
+                        ? "Copy the link with your prompt already in it — open it on any device"
+                        : "Write a prompt first"
+                    }
+                  >
+                    {bingCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                    {bingCopied ? "Copied" : "Copy link"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={openBing}
+                    disabled={busy || !bingPrompt}
+                    title={
+                      bingPrompt
+                        ? "Open Bing Image Creator with this prompt in its box"
+                        : "Write a prompt first"
+                    }
+                  >
+                    <ExternalLink className="size-3.5" />
+                    Open in Bing
+                  </Button>
+                </div>
               </div>
 
               {bingOpen && (
