@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Lightbox } from "@/components/lightbox";
 import { JarvisMark } from "@/components/jarvis-logo";
 import { downloadImage, imageFileName } from "@/lib/download-image";
+import { nextTileIndex } from "@/lib/gallery-nav";
 import { cn } from "@/lib/utils";
 
 /** One stored picture, matching the shape `supabase.list` returns. */
@@ -61,6 +62,9 @@ export default function Gallery() {
   // by a row, and a row is however many columns the current breakpoint drew.
   const gridRef = useRef<HTMLDivElement | null>(null);
   const tileRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  // Where the viewer left off, so closing it returns the keyboard there rather
+  // than to the picture that happened to be clicked first.
+  const lastViewed = useRef(0);
   // Bumped to re-run the read, so the refresh button is one state change
   // rather than a second copy of the loader.
   const [reloadKey, setReloadKey] = useState(0);
@@ -128,31 +132,8 @@ export default function Gallery() {
   const onGridKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const from = tileRefs.current.indexOf(event.target as HTMLButtonElement);
     if (from < 0) return;
-    const columns = gridColumns();
-    const last = shown.length - 1;
-    let next: number;
-    switch (event.key) {
-      case "ArrowRight":
-        next = Math.min(from + 1, last);
-        break;
-      case "ArrowLeft":
-        next = Math.max(from - 1, 0);
-        break;
-      case "ArrowDown":
-        next = Math.min(from + columns, last);
-        break;
-      case "ArrowUp":
-        next = Math.max(from - columns, 0);
-        break;
-      case "Home":
-        next = 0;
-        break;
-      case "End":
-        next = last;
-        break;
-      default:
-        return;
-    }
+    const next = nextTileIndex(from, event.key, gridColumns(), shown.length);
+    if (next === null) return;
     // The grid owns the arrows, so preventDefault before moving: otherwise the
     // page scrolls at the same time as the focus ring.
     event.preventDefault();
@@ -161,11 +142,11 @@ export default function Gallery() {
     tile?.scrollIntoView({ block: "nearest" });
   };
 
-  /** Closing the viewer puts the keyboard back where it was. */
+  /** Closing the viewer puts the keyboard back on the picture last seen. */
   const closePreview = () => {
-    const index = preview;
+    if (preview === null) return;
+    const index = Math.min(lastViewed.current, Math.max(0, shown.length - 1));
     setPreview(null);
-    if (index === null) return;
     requestAnimationFrame(() => tileRefs.current[index]?.focus());
   };
 
@@ -324,7 +305,7 @@ export default function Gallery() {
                   </span>
                 )}
                 <span className="ml-auto hidden sm:inline">
-                  ← → to move · Enter to open
+                  Stored in Supabase · ← → to move
                 </span>
               </div>
 
@@ -359,10 +340,13 @@ export default function Gallery() {
                       ref={(element) => {
                         tileRefs.current[index] = element;
                       }}
-                      onClick={() => setPreview(index)}
+                      onClick={() => {
+                        lastViewed.current = index;
+                        setPreview(index);
+                      }}
                       title={row.prompt}
                       aria-label={`Open picture ${index + 1} of ${shown.length}: ${row.prompt || "Untitled"}`}
-                      className="group relative overflow-hidden rounded-lg border border-border/70 text-left transition-colors hover:border-foreground/30"
+                      className="group relative overflow-hidden rounded-lg border border-border/70 text-left transition-colors outline-none hover:border-foreground/30 focus-visible:ring-2 focus-visible:ring-[color:var(--signal-cyan)] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                     >
                       <img
                         src={row.url}
@@ -417,6 +401,10 @@ export default function Gallery() {
           images={shown.map((row) => row.url)}
           startIndex={preview}
           alt={shown[preview].prompt}
+          alts={shown.map((row) => row.prompt)}
+          onIndexChange={(index) => {
+            lastViewed.current = index;
+          }}
           onClose={closePreview}
           onDownload={(url) => {
             const row = shown.find((candidate) => candidate.url === url);

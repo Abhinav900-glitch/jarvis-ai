@@ -7,6 +7,13 @@ interface LightboxProps {
   src?: string | null;
   startIndex?: number;
   alt?: string;
+  /**
+   * Alt text per image. A gallery's `alt` describes whichever picture was
+   * clicked, which stops being true the moment the arrows are used.
+   */
+  alts?: string[];
+  /** Reports the picture on screen, so the opener can restore focus to it. */
+  onIndexChange?: (index: number) => void;
   onClose: () => void;
   /**
    * Saves the picture on screen. Omitted where there is nothing to save (the
@@ -24,6 +31,8 @@ export function Lightbox({
   src,
   startIndex = 0,
   alt,
+  alts,
+  onIndexChange,
   onClose,
   onDownload,
 }: LightboxProps) {
@@ -33,7 +42,9 @@ export function Lightbox({
   const [direction, setDirection] = useState(1);
   const touchStartX = useRef<number | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const total = images.length;
+  const currentAlt = alts?.[index] ?? alt;
 
   // Keep index in sync when a new gallery opens
   /* eslint-disable react-hooks/set-state-in-effect -- syncing a prop into
@@ -56,6 +67,10 @@ export function Lightbox({
   const goPrev = useCallback(() => go(-1), [go]);
 
   useEffect(() => {
+    if (open) onIndexChange?.(index);
+  }, [index, open, onIndexChange]);
+
+  useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -68,6 +83,30 @@ export function Lightbox({
       } else if (e.key === "End") {
         setDirection(1);
         setIndex(total - 1);
+      } else if (e.key === "Tab") {
+        // Keep Tab inside the dialog. Without this it walks out into the page
+        // behind, which is hidden and unreachable by mouse.
+        const root = dialogRef.current;
+        if (!root) return;
+        const focusable = Array.from(
+          root.querySelectorAll<HTMLElement>(
+            'button, [href], [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter((el) => !el.hasAttribute("disabled"));
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (!active || !root.contains(active)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        } else if (e.shiftKey && (active === first || !root.contains(active))) {
+          e.preventDefault();
+          last.focus();
+        }
       }
     };
     document.addEventListener("keydown", onKey);
@@ -98,6 +137,7 @@ export function Lightbox({
     <AnimatePresence>
       {open ? (
         <motion.div
+          ref={dialogRef}
           key="lightbox-backdrop"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -107,7 +147,7 @@ export function Lightbox({
           onClick={onClose}
           role="dialog"
           aria-modal="true"
-          aria-label={alt ?? "Image viewer"}
+          aria-label={currentAlt ?? "Image viewer"}
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
         >
@@ -184,7 +224,7 @@ export function Lightbox({
             <motion.img
               key={images[index]}
               src={images[index]}
-              alt={alt ?? ""}
+              alt={currentAlt ?? ""}
               custom={direction}
               initial={{ opacity: 0, x: direction * 60 }}
               animate={{ opacity: 1, x: 0 }}

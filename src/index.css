@@ -910,7 +910,17 @@ body {
 [data-motion="reduced"] *::after {
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
+  /* Delays have to go too: collapsing the duration but keeping a 0.28s
+     stagger leaves the element hidden for the delay and then flashing. */
+  animation-delay: 0ms !important;
   transition-duration: 0.01ms !important;
+  transition-delay: 0ms !important;
+}
+
+/* Smooth scrolling is motion, and it is declared on <html>, which the
+   descendant selector above does not reach. */
+[data-motion="reduced"] {
+  scroll-behavior: auto !important;
 }
 
 [data-motion="reduced"] .animate-spin {
