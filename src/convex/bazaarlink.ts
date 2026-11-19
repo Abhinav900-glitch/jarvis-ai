@@ -86,6 +86,44 @@ export const catalog = action({
   },
 });
 
+/**
+ * The account's balance, as the gateway itself reports it.
+ *
+ * Only called after a 402, so a working key never pays for an extra request.
+ * A 402 that says "can only afford 0" is otherwise hard to tell apart from a
+ * revoked key or a per-model restriction; the balance makes it unambiguous.
+ */
+async function credits(
+  key: string,
+): Promise<{ total: number; freeTier: boolean } | null> {
+  try {
+    const [balance, keyInfo] = await Promise.all([
+      fetch(`${BASE}/credits`, {
+        headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
+      }),
+      fetch(`${BASE}/auth/key`, {
+        headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
+      }),
+    ]);
+    if (!balance.ok) return null;
+    const body = (await balance.json()) as { data?: { total_credits?: unknown } };
+    const total = body.data?.total_credits;
+    if (typeof total !== "number") return null;
+    let freeTier = false;
+    if (keyInfo.ok) {
+      const info = (await keyInfo.json()) as {
+        data?: { is_free_tier?: unknown };
+      };
+      freeTier = info.data?.is_free_tier === true;
+    }
+    return { total, freeTier };
+  } catch {
+    return null;
+  }
+}
+
 /** One completion, which is the only proof that the key can call a model. */
 export const check = action({
   args: {
@@ -152,13 +190,18 @@ export const check = action({
       } catch {
         // Not JSON — the raw prefix is the best available detail.
       }
+      const account = response.status === 402 ? await credits(key) : null;
       return {
         ok: false,
         status: response.status,
         ms,
         model: args.model,
         reply: null,
-        message: `BazaarLink answered ${response.status}${detail ? ` — ${detail}` : "."}`,
+        message: `BazaarLink answered ${response.status}${detail ? ` — ${detail}` : "."}${
+          account
+            ? ` (balance ${account.total} credits${account.freeTier ? ", free-tier key" : ""})`
+            : ""
+        }`,
       };
     }
 
