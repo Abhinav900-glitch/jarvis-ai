@@ -289,6 +289,25 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 8192,
     timeoutMs: 90_000,
   },
+  // Requesty — one OpenAI-compatible router in front of ~800 models. The
+  // endpoint and the catalogue are public; only the completion path needs the
+  // key, which is why the engines below are a short list of ids probed with a
+  // real answer rather than everything the catalogue advertises. Model ids are
+  // namespaced by lab (`google/…`, `openai/…`), and the router accepts them
+  // verbatim, so the engine ids here stay short while `modelId` is exact.
+  {
+    id: "requesty",
+    label: "Requesty",
+    url: "https://router.requesty.ai/v1/chat/completions",
+    keyEnv: ["REQUESTY_API_KEY", "REQUESTY_KEY"],
+    missing: "REQUESTY_API_KEY not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    textOnly: false,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    timeoutMs: 90_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -1221,6 +1240,56 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.95,
     context: 16_384,
     bestFor: "roleplay and character voice",
+  },
+
+  // --- Requesty -------------------------------------------------------------
+  // Probed one model at a time on 2026-11-19. Two findings shape this list:
+  //  - The account has no paid balance: every priced model answers 402 "balance
+  //    is too low", including the obvious frontier ids. Only the router's
+  //    zero-price models answer, which is the same shape as Eden above — a key
+  //    that works, for a subset.
+  //  - The catalogue is not the roster. `mistral/leanstral-1-5` is listed and
+  //    answers 400 "Invalid model", and `nvidia/nemotron-3-nano-30b-a3b` is
+  //    listed and answers 410 Gone, so neither is registered.
+  // These three were each answered with a real completion. All are reasoning
+  // models, so a small `max_tokens` comes back empty — `requesty.check` takes a
+  // budget for exactly that reason. Vision is advertised on Gemma but was not
+  // probed, so no image turn is routed here yet.
+  {
+    id: "requesty/nemotron-3.5-lightning",
+    provider: "requesty",
+    modelId: "nvidia/nemotron-3.5-lightning-30b-a3b",
+    label: "Nemotron 3.5 Lightning",
+    vision: false,
+    reasoning: true,
+    quality: 0.82,
+    speed: 0.9,
+    context: 1_048_576,
+    bestFor: "a fast answer over a million tokens, at no cost",
+  },
+  {
+    id: "requesty/nemotron-3-ultra-550b",
+    provider: "requesty",
+    modelId: "nvidia/nemotron-3-ultra-550b-a55b",
+    label: "Nemotron 3 Ultra 550B",
+    vision: false,
+    reasoning: true,
+    quality: 0.88,
+    speed: 0.5,
+    context: 1_048_576,
+    bestFor: "deliberate reasoning when the answer matters more than the wait",
+  },
+  {
+    id: "requesty/gemma-4-31b",
+    provider: "requesty",
+    modelId: "google/gemma-4-31b-it",
+    label: "Gemma 4 31B",
+    vision: false,
+    reasoning: true,
+    quality: 0.78,
+    speed: 0.7,
+    context: 262_144,
+    bestFor: "steady everyday answers from an open model",
   },
 ];
 
