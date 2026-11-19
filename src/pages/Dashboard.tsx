@@ -128,6 +128,7 @@ import { useLiveMode } from "@/hooks/use-live";
 import { useSoundEffects } from "@/hooks/use-sound-effects";
 import { findSoundCues, isSoundOnlyRequest, cueLine, SOUND_CUES, type SoundCue } from "@/lib/sound-effects";
 import { findYouTubeLinks, MAX_VIDEOS_PER_TURN } from "@/lib/youtube";
+import { splitPlaceQuery } from "@/lib/place-query";
 import { deckTopicFrom } from "@/lib/deck-request";
 import { findWebImageQuery } from "@/lib/web-images";
 import { downloadImage, imageFileName } from "@/lib/download-image";
@@ -839,6 +840,131 @@ function RegionResultCard({ result, onClose }: { result: Record<string, unknown>
     );
   }
 
+  if (result.type === "places") {
+    const places = Array.isArray(result.places)
+      ? (result.places as {
+          name: string;
+          type: string;
+          address: string;
+          rating: number | null;
+          reviews: number | null;
+          price: string;
+          openState: string;
+          phone: string;
+          website: string;
+          mapsUrl: string;
+        }[])
+      : [];
+
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+            Places · Google Maps
+          </span>
+          {closeButton}
+        </div>
+        <ul className="max-h-56 space-y-2 overflow-y-auto">
+          {places.map((place) => {
+            // A website is shown by host, not by the full URL: the address is
+            // the useful part in a list this small.
+            let site = "";
+            try {
+              site = new URL(place.website).host.replace(/^www\./, "");
+            } catch {
+              site = "";
+            }
+            return (
+              <li key={place.mapsUrl || place.name} className="text-xs">
+                <a
+                  href={place.mapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium hover:underline"
+                >
+                  {place.name}
+                </a>
+                <p className="text-[11px] text-muted-foreground">
+                  {[
+                    place.rating !== null
+                      ? `${place.rating}★${
+                          place.reviews !== null ? ` (${place.reviews})` : ""
+                        }`
+                      : "",
+                    place.price,
+                    place.openState,
+                    place.type,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+                <p className="text-[11px] text-muted-foreground">{place.address}</p>
+                {place.phone || site ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    {[place.phone, site].filter(Boolean).join(" · ")}
+                  </p>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  }
+
+  if (result.type === "recipes") {
+    const recipes = Array.isArray(result.recipes)
+      ? (result.recipes as {
+          title: string;
+          url: string;
+          source: string;
+          minutes: number | null;
+          servings: number | null;
+          ingredients: string[];
+          summary: string;
+        }[])
+      : [];
+
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+            Recipes · Spoonacular
+          </span>
+          {closeButton}
+        </div>
+        <ul className="max-h-56 space-y-2 overflow-y-auto">
+          {recipes.map((recipe) => (
+            <li key={recipe.url || recipe.title} className="text-xs">
+              <a
+                href={recipe.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium hover:underline"
+              >
+                {recipe.title}
+              </a>
+              <p className="text-[11px] text-muted-foreground">
+                {[
+                  recipe.minutes !== null ? `${recipe.minutes} min` : "",
+                  recipe.servings !== null ? `serves ${recipe.servings}` : "",
+                  recipe.source,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+              {recipe.ingredients.length > 0 ? (
+                <p className="line-clamp-2 text-[11px] text-muted-foreground">
+                  {recipe.ingredients.slice(0, 5).join(" · ")}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -1107,6 +1233,8 @@ export default function Dashboard() {
   const supabasePullAction = useAction(api.supabase.pull);
   const supabaseShareAction = useAction(api.supabase.share);
   const supabaseUnshareAction = useAction(api.supabase.unshare);
+  const placesLookupAction = useAction(api.live.places);
+  const recipesLookupAction = useAction(api.live.recipes);
   const extractPdfTextAction = useAction(api.ai.extractPdfText);
   const lookupMovieAction = useAction(api.spaceMedia.lookupMovie);
   const spacePictureAction = useAction(api.spaceMedia.spacePicture);
@@ -4958,6 +5086,27 @@ export default function Dashboard() {
           setRegionResult({ type: "isro", ...result });
           break;
         }
+        case "places": {
+          const { query, near } = splitPlaceQuery(arg);
+          if (!query) {
+            throw new Error("Usage: /places <what> [near <where>]");
+          }
+          const result = await placesLookupAction({ query, near, limit: 5 });
+          // A lookup that found nothing is not an empty card — it is a reason
+          // the user should see, worded by the provider.
+          if (!result.ok) throw new Error(result.message ?? "No places found.");
+          setRegionResult({ type: "places", ...result });
+          break;
+        }
+        case "recipe": {
+          if (!arg) throw new Error("Usage: /recipe <dish or ingredient>");
+          const result = await recipesLookupAction({ query: arg, limit: 4 });
+          if (!result.ok) {
+            throw new Error(result.message ?? "No recipes found.");
+          }
+          setRegionResult({ type: "recipes", ...result });
+          break;
+        }
         case "github": {
           if (!arg) throw new Error("Usage: /github <owner/repo>");
           const result = await repoCardAction({ repo: arg });
@@ -5354,6 +5503,8 @@ export default function Dashboard() {
       case "movie":
       case "nasa":
       case "isro":
+      case "places":
+      case "recipe":
         await handleRegionCommand(command.name, args);
         return;
       case "news": {
