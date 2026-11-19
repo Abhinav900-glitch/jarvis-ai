@@ -12,6 +12,8 @@ import { action, internalAction, type ActionCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { memoryContextFor } from "./memory";
+import { fetchAiMode } from "./liveTools";
+import { newAiModeSources } from "../lib/ai-mode-sources";
 import {
   glinerEndpoint,
   glinerLabels,
@@ -2296,6 +2298,16 @@ export const digestChat = action({
 /** Never more than this many sources reach the model, in any research run. */
 const MAX_RESEARCH_SOURCES = 12;
 
+/**
+ * What counts as "the indexes came back thin".
+ *
+ * Three is the point where a synthesis has almost nothing to stand on: one
+ * provider answered, nothing corroborated it, and a follow-up query has little
+ * to work from. Below this, AI Mode's reference list is worth one SerpAPI
+ * search; above it, the call would mostly re-cite pages already in hand.
+ */
+const THIN_RESULTS = 3;
+
 /** Ceiling on the excerpt material sent with a research prompt, in characters. */
 const MAX_RESEARCH_CONTEXT_CHARS = 14_000;
 
@@ -2578,6 +2590,37 @@ export async function webSearch(
         console.error("[deep-research] serpapi exception:", msg);
         errors.push(`serpapi: ${msg}`);
       }
+    }
+  }
+
+  // Last, and only when the indexes came back thin: Google AI Mode.
+  //
+  // A synthesis is not evidence, but the pages it cites are — and those are
+  // what this adds, as ordinary sources with their own snippets. SerpAPI's free
+  // tier is ~100 searches a month, so this runs when a run otherwise has one or
+  // two pages to stand on, never on every query.
+  if (sources.length < THIN_RESULTS) {
+    try {
+      const mode = await fetchAiMode(query);
+      if (!mode.ok && mode.message) errors.push(`ai-mode: ${mode.message}`);
+
+      const extra: SearchHit[] = newAiModeSources(
+        sources,
+        mode.references,
+        MAX_RESEARCH_SOURCES - sources.length,
+      ).map((reference) => ({
+        ...reference,
+        domain: hostnameOf(reference.url),
+      }));
+      if (extra.length > 0) {
+        sources = [...sources, ...extra];
+        answered.push("ai-mode");
+        console.log(`[deep-research] ai-mode added ${extra.length} references`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "failed";
+      console.error("[deep-research] ai-mode exception:", msg);
+      errors.push(`ai-mode: ${msg}`);
     }
   }
 

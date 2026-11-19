@@ -201,82 +201,97 @@ interface Citation {
   snippet: string;
 }
 
+/** What one AI Mode lookup produced. Shared by the tool and deep research. */
+export interface AiModeLookup {
+  ok: boolean;
+  answer: string;
+  references: Citation[];
+  message: string | null;
+}
+
 /**
  * Google AI Mode: a synthesized answer with the pages it leaned on.
  *
  * The text blocks are joined in order, headings kept as headings, because the
  * structure is most of what makes the answer readable. `reconstructed_markdown`
  * is the fallback for a response that arrives without blocks.
+ *
+ * Exported as a plain function as well as an action: deep research calls it
+ * directly when its own providers came back thin, and a `ctx.runAction` from
+ * inside a prompt-building helper is not available there.
  */
+export async function fetchAiMode(rawQuery: string): Promise<AiModeLookup> {
+  const query = rawQuery.trim().slice(0, 300);
+  if (!query) {
+    return { ok: false, answer: "", references: [], message: "The question was empty." };
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = await serpApi("google_ai_mode", { q: query });
+  } catch (err) {
+    return {
+      ok: false,
+      answer: "",
+      references: [],
+      message: err instanceof Error ? err.message : "Google AI Mode failed.",
+    };
+  }
+
+  const blocks = Array.isArray(data.text_blocks) ? data.text_blocks : [];
+  const parts: string[] = [];
+  for (const raw of blocks) {
+    if (!raw || typeof raw !== "object") continue;
+    const block = raw as Record<string, unknown>;
+
+    // Lists carry their text in `list[].snippet`, not in the block's own
+    // snippet — dropping them is how an answer keeps its headings and loses
+    // every point underneath.
+    if (block.type === "list" && Array.isArray(block.list)) {
+      const items = block.list.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const line = text((item as Record<string, unknown>).snippet);
+        return line ? [`- ${line}`] : [];
+      });
+      if (items.length > 0) parts.push(items.join("\n"));
+      continue;
+    }
+
+    const snippet = text(block.snippet);
+    if (!snippet) continue;
+    parts.push(block.type === "heading" ? `## ${snippet}` : snippet);
+  }
+  const answer =
+    parts.join("\n\n").slice(0, 3000) ||
+    text(data.reconstructed_markdown).slice(0, 3000);
+
+  const references: Citation[] = [];
+  for (const raw of Array.isArray(data.references) ? data.references : []) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const url = text(row.link);
+    if (!url) continue;
+    references.push({
+      title: text(row.title) || url,
+      url,
+      source: text(row.source),
+      snippet: text(row.snippet).slice(0, 300),
+    });
+    if (references.length >= 8) break;
+  }
+
+  return {
+    ok: Boolean(answer),
+    answer,
+    references,
+    message: answer ? null : `Google AI Mode had no answer for "${query}".`,
+  };
+}
+
+/** The agent tool: the same lookup, as an action. */
 export const aiMode = internalAction({
   args: { query: v.string() },
-  handler: async (_ctx, args) => {
-    const query = args.query.trim().slice(0, 300);
-    if (!query) {
-      return { ok: false, answer: "", references: [], message: "The question was empty." };
-    }
-
-    let data: Record<string, unknown>;
-    try {
-      data = await serpApi("google_ai_mode", { q: query });
-    } catch (err) {
-      return {
-        ok: false,
-        answer: "",
-        references: [],
-        message: err instanceof Error ? err.message : "Google AI Mode failed.",
-      };
-    }
-
-    const blocks = Array.isArray(data.text_blocks) ? data.text_blocks : [];
-    const parts: string[] = [];
-    for (const raw of blocks) {
-      if (!raw || typeof raw !== "object") continue;
-      const block = raw as Record<string, unknown>;
-
-      // Lists carry their text in `list[].snippet`, not in the block's own
-      // snippet — dropping them is how an answer keeps its headings and loses
-      // every point underneath.
-      if (block.type === "list" && Array.isArray(block.list)) {
-        const items = block.list.flatMap((item) => {
-          if (!item || typeof item !== "object") return [];
-          const line = text((item as Record<string, unknown>).snippet);
-          return line ? [`- ${line}`] : [];
-        });
-        if (items.length > 0) parts.push(items.join("\n"));
-        continue;
-      }
-
-      const snippet = text(block.snippet);
-      if (!snippet) continue;
-      parts.push(block.type === "heading" ? `## ${snippet}` : snippet);
-    }
-    const answer =
-      parts.join("\n\n").slice(0, 3000) ||
-      text(data.reconstructed_markdown).slice(0, 3000);
-
-    const references: Citation[] = [];
-    for (const raw of Array.isArray(data.references) ? data.references : []) {
-      if (!raw || typeof raw !== "object") continue;
-      const row = raw as Record<string, unknown>;
-      const url = text(row.link);
-      if (!url) continue;
-      references.push({
-        title: text(row.title) || url,
-        url,
-        source: text(row.source),
-        snippet: text(row.snippet).slice(0, 300),
-      });
-      if (references.length >= 8) break;
-    }
-
-    return {
-      ok: Boolean(answer),
-      answer,
-      references,
-      message: answer ? null : `Google AI Mode had no answer for "${query}".`,
-    };
-  },
+  handler: async (_ctx, args) => await fetchAiMode(args.query),
 });
 
 /** One recipe, with enough to decide whether to cook it. */
