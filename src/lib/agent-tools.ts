@@ -185,6 +185,9 @@ export const args = {
   prefix: (a: Record<string, unknown>) => str(a, "prefix"),
   query: (a: Record<string, unknown>) => str(a, "query"),
   limit: (a: Record<string, unknown>) => int(a, "limit"),
+  url: (a: Record<string, unknown>) => str(a, "url"),
+  text: (a: Record<string, unknown>) => str(a, "text"),
+  kind: (a: Record<string, unknown>) => str(a, "kind"),
   near: (a: Record<string, unknown>) => str(a, "near"),
   diet: (a: Record<string, unknown>) => str(a, "diet"),
   maxReadyTime: (a: Record<string, unknown>) => int(a, "max_ready_time"),
@@ -391,6 +394,21 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
     {
       type: "function",
       function: {
+        name: "fetch_url",
+        description:
+          "Opens one page and returns its readable text, title and source. Use it after search_web when a result looks decisive and you need what it actually says, or when the user gives you a URL. It does not get through JavaScript-heavy apps, login walls or downloads; if it returns little text, say so rather than guessing at the contents.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: strArg("Absolute http(s) URL, e.g. https://example.com/changelog"),
+          },
+          required: ["url"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "search_files",
         description:
           "Searches file contents across the workspace and returns matching paths with the matching lines. Use it to find where something is defined or used before changing it.",
@@ -410,6 +428,24 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
   if (mode === "readonly") return read;
 
   const write: ToolSpec[] = [
+    {
+      type: "function",
+      function: {
+        // Memory is a write even though no file changes: a read-only run must
+        // not leave durable facts behind for later conversations.
+        name: "remember_fact",
+        description:
+          "Stores one durable fact about the user for future conversations — a preference, a constraint, a name, a decision that will still be true next week. Do not use it for the current task's details, for anything the user asked you to forget, or for secrets. Write it in the third person, as a sentence, e.g. \"Prefers TypeScript and Bun over Node and npm.\"",
+        parameters: {
+          type: "object",
+          properties: {
+            text: strArg("One sentence, at most 280 characters"),
+            kind: strArg("Optional kind: fact, preference, project or person"),
+          },
+          required: ["text"],
+        },
+      },
+    },
     {
       type: "function",
       function: {

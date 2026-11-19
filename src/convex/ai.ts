@@ -4082,6 +4082,50 @@ async function readPageText(
   };
 }
 
+/**
+ * Read one page as text, for the agent's `fetch_url` tool.
+ *
+ * The agent could already search, but not open the result it found — a gap that
+ * pushed it toward answering from the headline. This is the same reader the
+ * URL summariser uses (TinyFish, then Browse AI, then a plain fetch), so a page
+ * is read once, in one way, whichever feature asked for it.
+ *
+ * Internal: it fetches a URL server-side, so it must never be callable by a
+ * client. The SSRF guard runs before anything is requested, and the text is
+ * capped so a 300 kB page cannot swallow the context window.
+ */
+export const readPage = internalAction({
+  args: { url: v.string() },
+  handler: async (
+    _ctx,
+    args,
+  ): Promise<{
+    url: string;
+    title: string;
+    source: "tinyfish" | "browse-ai" | "fetch";
+    text: string;
+    chars: number;
+    truncated: boolean;
+  }> => {
+    const url = assertSafePublicUrl(args.url.trim());
+    const page = await readPageText(url);
+    const full = page.text.trim();
+    if (full.length < 40) {
+      throw new Error(
+        "That page returned almost no readable text — it may be a download, a login wall or a script-only app.",
+      );
+    }
+    return {
+      url,
+      title: page.title,
+      source: page.source,
+      text: full.slice(0, 8000),
+      chars: full.length,
+      truncated: full.length > 8000,
+    };
+  },
+});
+
 export const summarizeUrl = action({
   args: {
     url: v.string(),

@@ -73,6 +73,23 @@ describe("toolSpecs", () => {
     }
   });
 
+  test("fetching a page is offered in every mode", () => {
+    for (const mode of ["readonly", "ask", "auto"] as const) {
+      expect(names(mode)).toContain("fetch_url");
+    }
+    const spec = toolSpecs("auto").find((s) => s.function.name === "fetch_url");
+    expect(spec?.function.parameters?.required).toEqual(["url"]);
+  });
+
+  test("memory is a write, so read-only runs cannot store facts", () => {
+    expect(names("readonly")).not.toContain("remember_fact");
+    expect(names("auto")).toContain("remember_fact");
+    const spec = toolSpecs("auto").find(
+      (s) => s.function.name === "remember_fact",
+    );
+    expect(spec?.function.parameters?.required).toEqual(["text"]);
+  });
+
   test("readonly mode drops everything that can change or execute", () => {
     const listed = names("readonly");
     expect(listed).not.toContain("run_file");

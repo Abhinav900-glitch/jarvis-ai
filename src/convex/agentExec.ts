@@ -112,6 +112,10 @@ export async function executeTool(
         );
       case "ask_google_ai":
         return await askGoogleAi(ec, args.query(parsed));
+      case "fetch_url":
+        return await fetchUrl(ec, args.url(parsed));
+      case "remember_fact":
+        return await rememberFact(ec, args.text(parsed), args.kind(parsed));
       case "write_file":
         return await writeFile(
           ec,
@@ -566,6 +570,98 @@ async function searchRecipes(
     summary: `Recipes via Spoonacular → ${found.recipes.length} result${
       found.recipes.length === 1 ? "" : "s"
     }`,
+    mutated: false,
+  };
+}
+
+/**
+ * Open one page and hand back what it says.
+ *
+ * The missing half of research: search finds the page, this reads it. The
+ * reader itself lives in `ai.readPage` because the URL summariser and the image
+ * studio's page brief already use it, and a second extractor would drift.
+ */
+async function fetchUrl(
+  ec: ExecContext,
+  rawUrl: string,
+): Promise<ToolOutcome> {
+  const url = rawUrl.trim();
+  if (!url) {
+    return {
+      result: "Give fetch_url a full http(s) URL.",
+      summary: "fetch_url had no URL",
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const page = (await ec.ctx.runAction(internal.ai.readPage, { url })) as {
+    url: string;
+    title: string;
+    source: string;
+    text: string;
+    chars: number;
+    truncated: boolean;
+  };
+
+  return {
+    result: [
+      `Page: ${page.title}`,
+      page.url,
+      `(${page.chars.toLocaleString()} characters, read via ${page.source}${
+        page.truncated ? ", truncated to the first 8,000" : ""
+      })`,
+      "",
+      page.text,
+      "",
+      "Quote what this page says when you rely on it. If it turned out not to be the page you needed, fetch another result rather than filling the gap from memory.",
+    ].join("\n"),
+    summary: `Read page via ${page.source} → ${page.chars.toLocaleString()} chars`,
+    mutated: false,
+  };
+}
+
+/**
+ * Store one durable fact in the user's memory.
+ *
+ * Goes through `memories.addOne`, which de-duplicates and refuses anything that
+ * looks like a secret — so a model that decides a token is a good fact to keep
+ * gets nothing stored rather than a leaked credential.
+ */
+async function rememberFact(
+  ec: ExecContext,
+  text: string,
+  kind: string,
+): Promise<ToolOutcome> {
+  const content = text.trim();
+  if (!content) {
+    return {
+      result: "remember_fact needs one sentence to store.",
+      summary: "remember_fact had no text",
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const stored = (await ec.ctx.runMutation(internal.memories.addOne, {
+    userId: ec.userId,
+    content,
+    kind: kind.trim() || "fact",
+  })) as Id<"memories"> | null;
+
+  if (!stored) {
+    return {
+      result:
+        "Nothing was stored: the sentence was empty after trimming, too long, or looked like a secret. Rephrase it as one short, non-secret sentence and try once more, or skip it.",
+      summary: "Refused to store a memory",
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  return {
+    result: `Saved to memory: "${content}". This will be available in future conversations.`,
+    summary: "Remembered one fact",
     mutated: false,
   };
 }
