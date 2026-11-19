@@ -62,6 +62,17 @@ describe("toolSpecs", () => {
     expect(spec?.function.parameters?.required).toEqual(["query"]);
   });
 
+  test("the spine of live lookups is offered in readonly too", () => {
+    // Places, recipes and Google AI Mode only read, so a read-only run must be
+    // able to reach them; requiring the query keeps a bare call from reaching
+    // the provider and spending quota on nothing.
+    const readonly = toolSpecs("readonly");
+    for (const name of ["search_places", "search_recipes", "ask_google_ai"]) {
+      const spec = readonly.find((s) => s.function.name === name);
+      expect(spec?.function.parameters?.required).toEqual(["query"]);
+    }
+  });
+
   test("readonly mode drops everything that can change or execute", () => {
     const listed = names("readonly");
     expect(listed).not.toContain("run_file");

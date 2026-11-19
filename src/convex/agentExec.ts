@@ -95,6 +95,23 @@ export async function executeTool(
         );
       case "search_web":
         return await searchWeb(ec, args.query(parsed), args.limit(parsed));
+      case "search_places":
+        return await searchPlaces(
+          ec,
+          args.query(parsed),
+          args.near(parsed),
+          args.limit(parsed),
+        );
+      case "search_recipes":
+        return await searchRecipes(
+          ec,
+          args.query(parsed),
+          args.diet(parsed),
+          args.maxReadyTime(parsed),
+          args.limit(parsed),
+        );
+      case "ask_google_ai":
+        return await askGoogleAi(ec, args.query(parsed));
       case "write_file":
         return await writeFile(
           ec,
@@ -369,6 +386,241 @@ async function searchWeb(
     ].join("\n"),
     summary: `Web search via ${found.provider || "the web"} → ${found.hits.length} result${
       found.hits.length === 1 ? "" : "s"
+    }`,
+    mutated: false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Live lookups that are not a web index
+//
+// Google Maps, Google AI Mode and Spoonacular sit behind these three, because
+// each answers a question organic results answer badly. All three are
+// non-mutating, so they are available in every mode including read-only.
+// ---------------------------------------------------------------------------
+
+async function searchPlaces(
+  ec: ExecContext,
+  query: string,
+  near: string,
+  limit: number | undefined,
+): Promise<ToolOutcome> {
+  const asked = query.trim();
+  if (!asked) {
+    return {
+      result: "Give search_places a query — what to look for, e.g. \"specialty coffee\".",
+      summary: "Places search had no query",
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const found = (await ec.ctx.runAction(internal.liveTools.places, {
+    query: asked,
+    near: near.trim() || undefined,
+    limit: Math.min(Math.max(limit ?? 6, 1), 10),
+  })) as {
+    ok: boolean;
+    places: {
+      name: string;
+      type: string;
+      address: string;
+      rating: number | null;
+      reviews: number | null;
+      price: string;
+      openState: string;
+      phone: string;
+      website: string;
+      mapsUrl: string;
+    }[];
+    message: string | null;
+  };
+
+  if (!found.ok || found.places.length === 0) {
+    return {
+      result:
+        `No places came back for "${asked}"${found.message ? ` (${found.message})` : ""}. ` +
+        "If the user asked for somewhere to go, say the lookup failed rather than naming a place from memory.",
+      summary: "Places search found nothing",
+      mutated: false,
+    };
+  }
+
+  const lines = found.places.map((place, i) => {
+    const facts = [
+      place.rating !== null
+        ? `${place.rating}★${place.reviews !== null ? ` (${place.reviews} reviews)` : ""}`
+        : "",
+      place.price,
+      place.openState,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return [
+      `[${i + 1}] ${place.name}${place.type ? ` — ${place.type}` : ""}`,
+      place.address,
+      facts,
+      place.phone ? `Phone: ${place.phone}` : "",
+      place.website ? `Website: ${place.website}` : "",
+      `Map: ${place.mapsUrl}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+
+  return {
+    result: [
+      `${found.places.length} place${
+        found.places.length === 1 ? "" : "s"
+      } for "${asked}"${near.trim() ? ` near ${near.trim()}` : ""}:`,
+      "",
+      lines.join("\n\n"),
+      "",
+      "Use these facts as given — addresses, ratings and opening states are live. Quote the map link so the user can open it.",
+    ].join("\n"),
+    summary: `Places via Google Maps → ${found.places.length} result${
+      found.places.length === 1 ? "" : "s"
+    }`,
+    mutated: false,
+  };
+}
+
+async function searchRecipes(
+  ec: ExecContext,
+  query: string,
+  diet: string,
+  maxReadyTime: number | undefined,
+  limit: number | undefined,
+): Promise<ToolOutcome> {
+  const asked = query.trim();
+  if (!asked) {
+    return {
+      result: "Give search_recipes a query — a dish, an ingredient or a cuisine.",
+      summary: "Recipe search had no query",
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const found = (await ec.ctx.runAction(internal.liveTools.recipes, {
+    query: asked,
+    diet: diet.trim() || undefined,
+    maxReadyTime: maxReadyTime || undefined,
+    limit: Math.min(Math.max(limit ?? 5, 1), 10),
+  })) as {
+    ok: boolean;
+    recipes: {
+      title: string;
+      url: string;
+      source: string;
+      minutes: number | null;
+      servings: number | null;
+      healthScore: number | null;
+      diets: string[];
+      ingredients: string[];
+      summary: string;
+    }[];
+    message: string | null;
+  };
+
+  if (!found.ok || found.recipes.length === 0) {
+    return {
+      result:
+        `No recipes came back for "${asked}"${found.message ? ` (${found.message})` : ""}. ` +
+        "Say so rather than inventing a recipe and presenting it as searched.",
+      summary: "Recipe search found nothing",
+      mutated: false,
+    };
+  }
+
+  const lines = found.recipes.map((recipe, i) =>
+    [
+      `[${i + 1}] ${recipe.title}${recipe.url ? `\n${recipe.url}` : ""}`,
+      [
+        recipe.minutes !== null ? `${recipe.minutes} min` : "",
+        recipe.servings !== null ? `serves ${recipe.servings}` : "",
+        recipe.source ? `from ${recipe.source}` : "",
+        recipe.diets.length > 0 ? recipe.diets.join(", ") : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      recipe.ingredients.length > 0
+        ? `Ingredients: ${recipe.ingredients.join("; ")}`
+        : "",
+      recipe.summary,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
+  return {
+    result: [
+      `${found.recipes.length} recipe${
+        found.recipes.length === 1 ? "" : "s"
+      } for "${asked}":`,
+      "",
+      lines.join("\n\n"),
+      "",
+      "These are real recipes with their source pages. Cite the link for any you recommend, and do not add steps or quantities that are not in the result.",
+    ].join("\n"),
+    summary: `Recipes via Spoonacular → ${found.recipes.length} result${
+      found.recipes.length === 1 ? "" : "s"
+    }`,
+    mutated: false,
+  };
+}
+
+async function askGoogleAi(
+  ec: ExecContext,
+  query: string,
+): Promise<ToolOutcome> {
+  const asked = query.trim();
+  if (!asked) {
+    return {
+      result: "Give ask_google_ai the question to answer.",
+      summary: "AI Mode had no question",
+      mutated: false,
+      refused: true,
+    };
+  }
+
+  const found = (await ec.ctx.runAction(internal.liveTools.aiMode, {
+    query: asked,
+  })) as {
+    ok: boolean;
+    answer: string;
+    references: { title: string; url: string; source: string }[];
+    message: string | null;
+  };
+
+  if (!found.ok || !found.answer) {
+    return {
+      result:
+        `Google AI Mode gave no answer${found.message ? ` (${found.message})` : ""}. ` +
+        "Fall back to search_web for this question and say you could not get a synthesized answer.",
+      summary: "AI Mode found nothing",
+      mutated: false,
+    };
+  }
+
+  const sources = found.references.map(
+    (reference, i) =>
+      `[${i + 1}] ${reference.title}${reference.source ? ` — ${reference.source}` : ""}\n${reference.url}`,
+  );
+
+  return {
+    result: [
+      `Google AI Mode on "${asked}":`,
+      "",
+      found.answer,
+      ...(sources.length > 0
+        ? ["", "Sources behind that answer:", "", sources.join("\n")]
+        : []),
+      "",
+      "This is a synthesized answer, not a primary source: cite the reference URLs for claims you keep, and search again if it did not settle the question.",
+    ].join("\n"),
+    summary: `Google AI Mode → ${found.references.length} source${
+      found.references.length === 1 ? "" : "s"
     }`,
     mutated: false,
   };

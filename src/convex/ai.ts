@@ -3511,7 +3511,14 @@ export const characterLook = action({
  * is configured, which callers report as a reason instead of throwing.
  */
 function readSerpApiKeys(): string[] {
-  return [process.env.SERPAPI_API_KEY, process.env.SERPAPI_API_KEY_2]
+  // Both spellings of the backup key: the Keys tab has held `SERPAPI_API_KEY2`
+  // while this function read `SERPAPI_API_KEY_2`, which made a configured key
+  // look absent. Accepting both costs nothing and cannot be got wrong twice.
+  return [
+    process.env.SERPAPI_API_KEY,
+    process.env.SERPAPI_API_KEY2,
+    process.env.SERPAPI_API_KEY_2,
+  ]
     .map((k) => k?.trim())
     .filter((k): k is string => !!k);
 }

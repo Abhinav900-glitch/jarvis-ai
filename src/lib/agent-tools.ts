@@ -185,6 +185,9 @@ export const args = {
   prefix: (a: Record<string, unknown>) => str(a, "prefix"),
   query: (a: Record<string, unknown>) => str(a, "query"),
   limit: (a: Record<string, unknown>) => int(a, "limit"),
+  near: (a: Record<string, unknown>) => str(a, "near"),
+  diet: (a: Record<string, unknown>) => str(a, "diet"),
+  maxReadyTime: (a: Record<string, unknown>) => int(a, "max_ready_time"),
   content: (a: Record<string, unknown>) => str(a, "content"),
   oldString: (a: Record<string, unknown>) => str(a, "old_string"),
   newString: (a: Record<string, unknown>) => str(a, "new_string"),
@@ -328,6 +331,58 @@ export function toolSpecs(mode: AgentMode): ToolSpec[] {
           properties: {
             query: strArg("What to search for — a question or a few keywords"),
             limit: optInt("Maximum results to return. Default 6, max 10."),
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "search_places",
+        description:
+          "Finds real places — cafés, restaurants, shops, hotels, services — with address, rating, opening state, phone and a map link. Use it for anything location-based instead of search_web: \"coffee near me\", \"a pharmacy open now in Lisbon\", \"best ramen in Tokyo\". Pass near when the location is not already in the query.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: strArg("What to look for, e.g. \"specialty coffee\""),
+            near: strArg("Optional place to search around, e.g. \"Barcelona\""),
+            limit: optInt("Maximum places to return. Default 6, max 10."),
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "search_recipes",
+        description:
+          "Searches real recipes by dish, ingredient or cuisine: cooking time, servings, ingredients with amounts, and the page the recipe came from. Use it when the user wants something to cook rather than a description of a dish. Narrow it with diet or max_ready_time.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: strArg("Dish, ingredient or cuisine, e.g. \"chicken thighs\""),
+            diet: strArg(
+              "Optional diet: vegetarian, vegan, gluten free, ketogenic, paleo, pescetarian, whole30, primal, low fodmap",
+            ),
+            max_ready_time: optInt("Optional ceiling in minutes, e.g. 30"),
+            limit: optInt("Maximum recipes to return. Default 5, max 10."),
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "ask_google_ai",
+        description:
+          "Asks Google's AI Mode and returns a synthesized answer plus the pages it cites. Use it for a question that wants a direct explanation with sources — a comparison, how something works, a current recommendation — rather than a list of links. Cite the reference URLs it returns.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: strArg("The question, phrased as you would ask a person"),
           },
           required: ["query"],
         },
