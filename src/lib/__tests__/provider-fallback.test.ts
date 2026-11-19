@@ -148,30 +148,33 @@ describe("provider fallback ladder", () => {
 // ---------------------------------------------------------------------------
 
 describe("openrouter registry freshness", () => {
-  // Recorded from the live `:free` roster on 2026-10-03. `deepseek-v4-flash:free`
-  // was absent from it while still holding the top reasoning slot, so every
-  // reasoning step went to a model that no longer existed.
+  // Recorded from the live `:free` roster on 2026-11-19. `deepseek-v4-flash:free`
+  // was absent from an earlier roster while still holding the top reasoning
+  // slot, so every reasoning step went to a model that no longer existed.
+  //
+  // This refresh also caught four engines that had died quietly: the stealth
+  // model, `ling-3.0-flash-sante`, `apodex-1.1-mini` and `lfm-2.5-2.6b` all
+  // answer "no provider serves this model anymore". They were removed rather
+  // than kept as first-attempt failures, and the two models that merely moved
+  // off the free tier (`qwen3.8-27b`, `nemotron-3-super-120b-a12b`) had their
+  // ids switched to the paid slugs that answered.
   const LIVE_AS_OF = new Set([
+    "inclusionai/ling-3.2-flash:free",
+    "baidu/ernie-5.5-flash-preview:free",
+    "liquid/lfm-3-1.7b:free",
+    "particle-ai/particle-1:free",
+    "recursive/flint-v1.0:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "dots-studio/dots-3-note-preview:free",
     "nvidia/nemotron-3.5-lightning:free",
+    "cohere/north-mini-code:free",
     "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "inclusionai/ling-3.0-flash-sante:free",
-    "qwen/qwen3.8-27b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
     "google/gemma-4-26b-a4b-it:free",
     "google/gemma-4-31b-it:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "cohere/north-mini-code:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "apodex/apodex-1.1-mini:free",
-    "poolside/laguna-s-2.1:free",
-    "poolside/laguna-xs-2.1:free",
-    "thinkingmachines/inkling:free",
-    "thinkingmachines/inkling-small:free",
-    "dots-studio/dots-3-note-preview:free",
-    // Added after checking each against the live roster on 2026-11-09, so the
-    // list keeps meaning "verified present", not "was present once".
-    "recursive/flint-v1.0:free",
-    "liquid/lfm-3-1.7b:free",
+    "google/lyria-3-pro-preview",
+    "google/lyria-3-clip-preview",
+    "openrouter/free",
   ]);
 
   test("no registered engine points at a model already known to be gone", () => {

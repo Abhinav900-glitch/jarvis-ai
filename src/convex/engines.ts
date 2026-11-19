@@ -592,18 +592,10 @@ export const ENGINES: EngineSpec[] = [
   },
 
   // --- OpenRouter free tier ------------------------------------------------
-  {
-    id: "openrouter/space-bunny",
-    provider: "openrouter",
-    modelId: "stealth/space-bunny-alpha",
-    label: "Space Bunny Alpha",
-    vision: true,
-    reasoning: false,
-    quality: 0.95,
-    speed: 0.93,
-    context: 1_048_576,
-    bestFor: "agentic work — tools, code, 1M context",
-  },
+  // `stealth/space-bunny-alpha` used to hold the top slot here and is gone: on
+  // 2026-11-19 OpenRouter answered "no provider serves this model anymore". A
+  // dead engine at quality 0.95 is the worst kind, because it is the one every
+  // plan reaches for first.
   {
     id: "openrouter/free",
     provider: "openrouter",
@@ -615,30 +607,6 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.72,
     context: 262_144,
     bestFor: "any task, auto-picking a free model that fits",
-  },
-  {
-    id: "openrouter/ling-flash",
-    provider: "openrouter",
-    modelId: "inclusionai/ling-3.0-flash-sante:free",
-    label: "Ling 3.0 Flash",
-    vision: false,
-    reasoning: true,
-    quality: 0.84,
-    speed: 0.78,
-    context: 262_144,
-    bestFor: "reasoning and long tool chains on a confirmed free slot",
-  },
-  {
-    id: "openrouter/apodex-mini",
-    provider: "openrouter",
-    modelId: "apodex/apodex-1.1-mini:free",
-    label: "Apodex 1.1 Mini",
-    vision: false,
-    reasoning: false,
-    quality: 0.74,
-    speed: 0.90,
-    context: 262_144,
-    bestFor: "the cheap fast step that still has to answer",
   },
   {
     id: "openrouter/nemotron-ultra",
@@ -655,14 +623,17 @@ export const ENGINES: EngineSpec[] = [
   {
     id: "openrouter/nemotron-super",
     provider: "openrouter",
-    modelId: "nvidia/nemotron-3-super-120b-a12b:free",
+    // No longer on the free roster: OpenRouter answers "unavailable for free —
+    // use this slug instead". The paid slug was probed and answered, so the
+    // engine stays rather than vanishing from the plan.
+    modelId: "nvidia/nemotron-3-super-120b-a12b",
     label: "Nemotron 3 Super",
     vision: false,
     reasoning: false,
     quality: 0.78,
     speed: 0.88,
     context: 262_144,
-    bestFor: "a fast free answer that still reads carefully",
+    bestFor: "a fast answer that still reads carefully",
   },
   {
     id: "openrouter/nemotron-nano",
@@ -681,7 +652,10 @@ export const ENGINES: EngineSpec[] = [
   {
     id: "openrouter/qwen-3-8",
     provider: "openrouter",
-    modelId: "qwen/qwen3.8-27b:free",
+    // Same story as Nemotron Super: the free variant was withdrawn, the paid
+    // slug answers, so the engine follows the model instead of dying with the
+    // free tier.
+    modelId: "qwen/qwen3.8-27b",
     label: "Qwen 3.8 27B",
     vision: false,
     reasoning: false,
@@ -737,18 +711,6 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.58,
     context: 262_144,
     bestFor: "a free second opinion on a hard step",
-  },
-  {
-    id: "openrouter/lfm-2-5",
-    provider: "openrouter",
-    modelId: "liquid/lfm-2.5-2.6b:free",
-    label: "LFM2.5 2.6B",
-    vision: false,
-    reasoning: false,
-    quality: 0.42,
-    speed: 0.96,
-    context: 65_536,
-    bestFor: "the cheapest step that still has to run",
   },
   {
     id: "openrouter/lfm-3-1-7b",
@@ -1353,6 +1315,111 @@ export const ENGINES: EngineSpec[] = [
     context: 32_768,
     bestFor: "Spanish, Catalan, Basque and Galician writing",
   },
+
+  // --- Roster sweep, 2026-11-19 --------------------------------------------
+  // Read from each provider's own model list, then answered with a real
+  // completion before being written here. What is absent matters as much: the
+  // Mistral free tier answered 429, Meta refused with billing not configured,
+  // `minimaxai/minimax-m3.1-flash` timed out, and the OpenRouter free models
+  // that were rate-limited upstream (`ling-3.2-flash`, the two Gemma ids) are
+  // not registered until one of them answers.
+  {
+    id: "openrouter/ernie-5.5-flash",
+    provider: "openrouter",
+    modelId: "baidu/ernie-5.5-flash-preview:free",
+    label: "ERNIE 5.5 Flash Preview",
+    vision: false,
+    reasoning: false,
+    quality: 0.8,
+    speed: 0.82,
+    context: 1_024_000,
+    bestFor: "a fast general answer on a free model",
+  },
+  {
+    id: "openrouter/particle-1",
+    provider: "openrouter",
+    modelId: "particle-ai/particle-1:free",
+    label: "Particle 1",
+    vision: true,
+    reasoning: false,
+    quality: 0.8,
+    speed: 0.95,
+    context: 1_048_576,
+    bestFor: "a quick answer, including about an image",
+  },
+  {
+    id: "openrouter/nemotron-3.5-super-vl",
+    provider: "openrouter",
+    modelId: "nvidia/nemotron-3.5-super-vl:free",
+    label: "Nemotron 3.5 Super VL",
+    vision: true,
+    reasoning: false,
+    quality: 0.82,
+    speed: 0.9,
+    context: 1_000_000,
+    bestFor: "reading screenshots and diagrams at no cost",
+  },
+  {
+    id: "openrouter/dots-3-note",
+    provider: "openrouter",
+    modelId: "dots-studio/dots-3-note-preview:free",
+    label: "Dots 3 Note Preview",
+    vision: true,
+    reasoning: false,
+    quality: 0.82,
+    speed: 0.45,
+    context: 512_000,
+    bestFor: "careful visual reading when speed does not matter",
+  },
+  {
+    id: "groq/allam-2-7b",
+    provider: "groq",
+    modelId: "allam-2-7b",
+    label: "Allam 2 7B",
+    vision: false,
+    reasoning: false,
+    quality: 0.6,
+    speed: 0.95,
+    context: 4_096,
+    bestFor: "Arabic questions, answered very quickly",
+  },
+  {
+    id: "nvidia/kimi-k3.1-pro",
+    provider: "nvidia",
+    modelId: "moonshotai/kimi-k3.1-pro",
+    label: "Kimi K3.1 Pro",
+    vision: false,
+    reasoning: true,
+    quality: 0.9,
+    speed: 0.6,
+    // The hosted list publishes no window; 128k is deliberately conservative.
+    context: 128_000,
+    bestFor: "long reasoning from Moonshot, hosted by NVIDIA",
+  },
+  {
+    id: "nvidia/mistral-large-4",
+    provider: "nvidia",
+    modelId: "mistralai/mistral-large-4-1t-a52b",
+    label: "Mistral Large 4",
+    vision: false,
+    reasoning: false,
+    quality: 0.9,
+    speed: 0.45,
+    context: 128_000,
+    bestFor: "a heavyweight general answer",
+  },
+  {
+    id: "cohere/north-mini-code",
+    provider: "cohere",
+    modelId: "north-mini-code-1.0",
+    label: "North Mini Code",
+    vision: false,
+    reasoning: false,
+    quality: 0.78,
+    speed: 0.9,
+    context: 256_000,
+    bestFor: "code completion and small edits, fast",
+  },
 ];
 
 /**
@@ -1371,7 +1438,9 @@ export const ENGINES: EngineSpec[] = [
  * useful state, because it is the one the panel can warn about.
  */
 export const RETIRING: Record<string, string> = {
-  "openrouter/space-bunny": "2026-10-05",
+  // Empty right now. `openrouter/space-bunny` lived here until 2026-11-19, when
+  // the model stopped being served at all — a withdrawal date is for an engine
+  // that still exists and answers, and this one no longer does.
 };
 
 /** Engine ids whose withdrawal is still in the future. */
