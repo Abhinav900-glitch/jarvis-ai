@@ -1608,12 +1608,10 @@ export function ImageStudio({
    * The last press's takes come first: those are the pictures most likely to be
    * gone by tomorrow, because only the pick was ever written to history.
    */
-  const backUpToCloud = useCallback(async () => {
-    const api = cloudRef.current;
-    if (!api) return;
-    setCloudBusy("backup");
-    setCloudNote(null);
-    try {
+  const backUpToCloud = useCallback(
+    async (onlyPinned = false) => {
+      const api = cloudRef.current;
+      if (!api) return;
       const seen = new Set<string>();
       const entries = [...takeList, ...history]
         .map(cloudEntryOf)
@@ -1621,25 +1619,42 @@ export function ImageStudio({
           if (!entry || seen.has(entry.url)) return false;
           seen.add(entry.url);
           return true;
-        });
-      const result = await api.backup(entries);
-      setCloudNote(
-        result.message ??
-          `Saved ${result.saved} picture${result.saved === 1 ? "" : "s"} to Supabase.`,
-      );
-      if (result.saved > 0) {
-        // The count in the panel is the database's, not this press's.
-        const pulled = await api.pull();
-        setCloudRows(pulled.entries);
+        })
+        // Pinned-only is the cheap, deliberate copy: the twelve unpinned
+        // pictures rotate away on their own, so they are not what a user is
+        // protecting when they press this.
+        .filter((entry) => !onlyPinned || entry.pinned);
+      if (entries.length === 0) {
+        setCloudNote(
+          onlyPinned
+            ? "Nothing pinned to back up — pin a picture in Recent first."
+            : "Nothing to back up yet.",
+        );
+        return;
       }
-    } catch (err) {
-      setCloudNote(
-        err instanceof Error ? err.message : "Couldn't reach Supabase.",
-      );
-    } finally {
-      setCloudBusy(null);
-    }
-  }, [history, takeList]);
+      setCloudBusy("backup");
+      setCloudNote(null);
+      try {
+        const result = await api.backup(entries);
+        setCloudNote(
+          result.message ??
+            `Saved ${result.saved} picture${result.saved === 1 ? "" : "s"} to Supabase.`,
+        );
+        if (result.saved > 0) {
+          // The count in the panel is the database's, not this press's.
+          const pulled = await api.pull();
+          setCloudRows(pulled.entries);
+        }
+      } catch (err) {
+        setCloudNote(
+          err instanceof Error ? err.message : "Couldn't reach Supabase.",
+        );
+      } finally {
+        setCloudBusy(null);
+      }
+    },
+    [history, takeList],
+  );
 
   /** Bring the cloud copy into this browser's Recent list. */
   const pullFromCloud = useCallback(async () => {
@@ -3049,7 +3064,7 @@ export function ImageStudio({
                             } — readable on another device.`}
                   </p>
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <Button
                     type="button"
                     variant="outline"
@@ -3066,6 +3081,21 @@ export function ImageStudio({
                       <CloudUpload className="size-3.5" />
                     )}
                     Back up
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void backUpToCloud(true)}
+                    disabled={
+                      !cloudReady ||
+                      cloudBusy !== null ||
+                      !history.some((entry) => entry.pinned)
+                    }
+                    title="Copy only the pinned pictures — the ones that would otherwise rotate out of Recent"
+                  >
+                    <Star className="size-3.5" />
+                    Pinned
                   </Button>
                   <Button
                     type="button"

@@ -49,14 +49,56 @@ type GalleryState =
   | { status: "error"; message: string }
   | { status: "ready"; rows: GalleryRow[]; message: string | null };
 
+type GalleryFilter = "all" | "ai" | "web" | "shared";
+type GallerySort = "newest" | "oldest" | "best";
+
+const VIEW_KEY = "jarvis-gallery-view";
+
+/**
+ * The view someone left the archive in.
+ *
+ * A filter is a way of working, not a one-off click: someone who curates the
+ * shared pictures should find that view again rather than re-picking it every
+ * visit. Validated on read, because localStorage is user-editable and a stale
+ * key from an older build must not empty the page.
+ */
+function readView(): { filter: GalleryFilter; sort: GallerySort } {
+  const fallback = { filter: "all" as GalleryFilter, sort: "newest" as GallerySort };
+  try {
+    const raw = localStorage.getItem(VIEW_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as { filter?: unknown; sort?: unknown };
+    return {
+      filter: (["all", "ai", "web", "shared"] as const).includes(
+        parsed.filter as GalleryFilter,
+      )
+        ? (parsed.filter as GalleryFilter)
+        : fallback.filter,
+      sort: (["newest", "oldest", "best"] as const).includes(
+        parsed.sort as GallerySort,
+      )
+        ? (parsed.sort as GallerySort)
+        : fallback.sort,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 export default function Gallery() {
   const load = useAction(api.supabase.list);
+  const removeFromCloud = useAction(api.supabase.remove);
   const [state, setState] = useState<GalleryState>({ status: "loading" });
   const [query, setQuery] = useState("");
   // What kind of picture to show. "shared" is a state rather than a kind, but
   // it is the other question people ask of an archive: what can I send?
-  const [filter, setFilter] = useState<"all" | "ai" | "web" | "shared">("all");
-  const [sort, setSort] = useState<"newest" | "oldest" | "best">("newest");
+  const [filter, setFilter] = useState<GalleryFilter>(() => readView().filter);
+  const [sort, setSort] = useState<GallerySort>(() => readView().sort);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteNote, setDeleteNote] = useState<{
+    text: string;
+    bad: boolean;
+  } | null>(null);
   const [preview, setPreview] = useState<number | null>(null);
   // Keyboard navigation needs the grid to know its own shape: Up and Down move
   // by a row, and a row is however many columns the current breakpoint drew.
@@ -93,6 +135,16 @@ export default function Gallery() {
       live = false;
     };
   }, [load, reloadKey]);
+
+  // Written on every change, including the first render, so a fresh visit and
+  // a changed view end up with the same stored shape.
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIEW_KEY, JSON.stringify({ filter, sort }));
+    } catch {
+      // Private windows can refuse storage; the view still works this visit.
+    }
+  }, [filter, sort]);
 
   const rows = state.status === "ready" ? state.rows : [];
 
@@ -140,6 +192,55 @@ export default function Gallery() {
     const tile = tileRefs.current[next];
     tile?.focus();
     tile?.scrollIntoView({ block: "nearest" });
+  };
+
+  /**
+   * Delete one row from the cloud copy.
+   *
+   * Only the Postgres row goes — the image host keeps the file, because the
+   * company that made the picture is the owner of it, not this archive. The
+   * local gallery drops the row immediately rather than refetching: the delete
+   * already succeeded, and a full round trip would flash the grid.
+   */
+  const deleteRender = async (url: string) => {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteNote(null);
+    try {
+      const result = await removeFromCloud({ url });
+      if (!result.ok) {
+        setDeleteNote({
+          text: result.message ?? "Couldn't delete that picture.",
+          bad: true,
+        });
+        return;
+      }
+      setState((previous) =>
+        previous.status === "ready"
+          ? {
+              ...previous,
+              rows: previous.rows.filter((row) => row.url !== url),
+            }
+          : previous,
+      );
+      setPreview(null);
+      setDeleteNote({
+        text:
+          result.removed === 0
+            ? "That picture was already gone — the grid is up to date."
+            : "Deleted from the cloud copy.",
+        bad: false,
+      });
+      // Focus has to land somewhere real: the tile that is gone cannot take it.
+      requestAnimationFrame(() => tileRefs.current[0]?.focus());
+    } catch (err) {
+      setDeleteNote({
+        text: err instanceof Error ? err.message : "Couldn't reach Supabase.",
+        bad: true,
+      });
+    } finally {
+      setDeleting(false);
+    }
   };
 
   /** Closing the viewer puts the keyboard back on the picture last seen. */
@@ -309,6 +410,18 @@ export default function Gallery() {
                 </span>
               </div>
 
+              {deleteNote && (
+                <p
+                  role="status"
+                  className={cn(
+                    "mb-2 text-[11px]",
+                    deleteNote.bad ? "text-destructive" : "text-muted-foreground",
+                  )}
+                >
+                  {deleteNote.text}
+                </p>
+              )}
+
               {shown.length === 0 ? (
                 <div className="mt-10 text-center text-sm text-muted-foreground">
                   <p>
@@ -406,6 +519,7 @@ export default function Gallery() {
             lastViewed.current = index;
           }}
           onClose={closePreview}
+          onDelete={(url) => void deleteRender(url)}
           onDownload={(url) => {
             const row = shown.find((candidate) => candidate.url === url);
             void downloadImage(url, imageFileName(url, row?.prompt));

@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Trash2, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -20,6 +20,12 @@ interface LightboxProps {
    * chat's own attachments), in which case no download button is drawn.
    */
   onDownload?: (url: string) => void;
+  /**
+   * Removes the picture on screen from wherever it is stored. The confirm is
+   * two presses on the same button rather than a browser dialog, so the arrow
+   * keys keep working and the picture stays visible while it is decided.
+   */
+  onDelete?: (url: string) => void | Promise<void>;
 }
 
 /**
@@ -35,11 +41,15 @@ export function Lightbox({
   onIndexChange,
   onClose,
   onDownload,
+  onDelete,
 }: LightboxProps) {
   const images = imagesProp ?? (src ? [src] : []);
   const open = images.length > 0;
   const [index, setIndex] = useState(Math.min(startIndex, images.length - 1));
   const [direction, setDirection] = useState(1);
+  // Keyed by URL, not a boolean: navigating away from a picture cancels the
+  // pending confirmation without an effect to reset it.
+  const [confirmUrl, setConfirmUrl] = useState<string | null>(null);
   const touchStartX = useRef<number | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -174,6 +184,46 @@ export function Lightbox({
             >
               <Download className="size-4" />
               Download
+            </button>
+          ) : null}
+
+          {/* Delete — under Download, and inert until pressed twice. */}
+          {onDelete ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                const url = images[index];
+                if (!url) return;
+                if (confirmUrl === url) {
+                  setConfirmUrl(null);
+                  void onDelete(url);
+                  return;
+                }
+                setConfirmUrl(url);
+                // Four seconds to mean it; after that the button is just a
+                // button again, so a stray press cannot delete in two taps
+                // minutes apart.
+                window.setTimeout(
+                  () =>
+                    setConfirmUrl((current) =>
+                      current === url ? null : current,
+                    ),
+                  4000,
+                );
+              }}
+              className={`absolute top-16 left-4 z-10 flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium text-white transition-colors ${
+                confirmUrl === images[index]
+                  ? "bg-destructive hover:bg-destructive/90"
+                  : "bg-white/10 hover:bg-white/20"
+              }`}
+              title={
+                confirmUrl === images[index]
+                  ? "Press again to delete this picture from the cloud copy"
+                  : "Delete this picture from the cloud copy"
+              }
+            >
+              <Trash2 className="size-4" />
+              {confirmUrl === images[index] ? "Delete?" : "Delete"}
             </button>
           ) : null}
 

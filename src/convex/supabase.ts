@@ -630,6 +630,49 @@ export const unshare = action({
 });
 
 /**
+ * Delete one picture from the cloud copy.
+ *
+ * The row is an index, not the picture: nothing on the image host is touched,
+ * and a share link dies with the row because the slug lives on it. Scoped by
+ * `user_id`, so knowing an address is not enough to delete someone else's row —
+ * the same reasoning as `unshare`.
+ */
+export const remove = action({
+  args: { url: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { ok: false, message: "Sign in to delete a picture." };
+    if (!isHttpUrl(args.url)) {
+      return {
+        ok: false,
+        message: "Only http(s) pictures are stored in the cloud.",
+      };
+    }
+    const config = supabaseConfig();
+    if ("message" in config) return { ok: false, message: config.message };
+
+    const query = `user_id=eq.${encodeURIComponent(
+      String(userId),
+    )}&image_url=eq.${encodeURIComponent(args.url)}`;
+    const reply = await postgrest(config.config, `${TABLE}?${query}`, {
+      method: "DELETE",
+      // Representation, so the caller can tell a real delete from a stale row
+      // that was already gone. A silent 204 would report success either way.
+      prefer: "return=representation",
+    });
+    if (!reply.ok) {
+      return {
+        ok: false,
+        message: reply.tableMissing
+          ? "The studio_renders table doesn't exist yet — there is nothing to delete."
+          : reply.message,
+      };
+    }
+    return { ok: true, removed: reply.rows.length, message: null };
+  },
+});
+
+/**
  * The picture behind a share link — the only read this deployment exposes
  * without a signed-in user.
  *
