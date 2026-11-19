@@ -327,6 +327,24 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 4096,
     timeoutMs: 90_000,
   },
+  // BazaarLink — an OpenRouter-shaped gateway. This deployment's key is a
+  // free-tier key with zero credits, so only the zero-priced models are
+  // registered: the paid ones answer 402 and would be dead rungs. The free set
+  // started working only after the key's zero-data-retention mode was turned
+  // off, because ZDR keys are refused every `:free` variant outright.
+  {
+    id: "bazaarlink",
+    label: "BazaarLink",
+    url: "https://bazaarlink.ai/v1/chat/completions",
+    keyEnv: ["BAAZARLINK_API_KEY", "BAZAARLINK_API_KEY"],
+    missing: "BAAZARLINK_API_KEY not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    textOnly: false,
+    reasoningEffort: false,
+    maxTokens: 4096,
+    timeoutMs: 90_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -1419,6 +1437,74 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.9,
     context: 256_000,
     bestFor: "code completion and small edits, fast",
+  },
+
+  // --- BazaarLink free tier -------------------------------------------------
+  // Every engine here answered a real completion on 2026-11-19, after ZDR was
+  // turned off for the key. The paid models on this gateway answer 402 on a
+  // zero-credit account and are deliberately absent.
+  {
+    id: "bazaarlink/deepseek-v4-flash",
+    provider: "bazaarlink",
+    modelId: "deepseek-v4-flash-0731free",
+    label: "DeepSeek V4 Flash (free)",
+    vision: false,
+    reasoning: false,
+    quality: 0.82,
+    speed: 0.7,
+    context: 1_048_576,
+    bestFor: "a free DeepSeek answer over a million tokens",
+  },
+  {
+    id: "bazaarlink/qwen-3.7-flash",
+    provider: "bazaarlink",
+    modelId: "qwen/qwen3.7-flash:free",
+    label: "Qwen 3.7 Flash (free)",
+    // The catalogue lists image and video inputs, so this is the free engine
+    // that can be shown a screenshot.
+    vision: true,
+    reasoning: true,
+    quality: 0.8,
+    speed: 0.85,
+    context: 1_000_000,
+    bestFor: "free reasoning that can also look at an image",
+  },
+  {
+    id: "bazaarlink/nemotron-3.5-lightning",
+    provider: "bazaarlink",
+    modelId: "nemotron-3.5-lightning-free",
+    label: "Nemotron 3.5 Lightning (free)",
+    vision: false,
+    reasoning: false,
+    quality: 0.76,
+    speed: 0.8,
+    context: 1_000_000,
+    bestFor: "a fast free answer with a million-token window",
+  },
+  {
+    id: "bazaarlink/glyph-cluster",
+    provider: "bazaarlink",
+    modelId: "stealth/glyph-cluster:free",
+    label: "Glyph Cluster (free)",
+    vision: false,
+    reasoning: false,
+    quality: 0.7,
+    speed: 0.8,
+    context: 256_000,
+    bestFor: "a free second opinion",
+  },
+  {
+    id: "bazaarlink/free-router",
+    provider: "bazaarlink",
+    modelId: "auto:free",
+    label: "Free Router",
+    vision: false,
+    reasoning: false,
+    quality: 0.78,
+    speed: 0.75,
+    // The router publishes no window; 128k is the conservative reading.
+    context: 128_000,
+    bestFor: "any task, auto-picking a free model that fits",
   },
 ];
 
