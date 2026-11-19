@@ -26,13 +26,19 @@ function apiKey(): string | null {
   return null;
 }
 
-/** What this gateway advertises. Public, so it is a roster, not a key check. */
+/**
+ * What this gateway advertises. Public, so it is a roster, not a key check.
+ *
+ * `zdrOnly` asks the gateway which of them a zero-data-retention key may call:
+ * those keys are refused the free and variant models outright, so the full
+ * roster is misleading for them.
+ */
 export const catalog = action({
-  args: {},
-  handler: async () => {
+  args: { zdrOnly: v.optional(v.boolean()) },
+  handler: async (_ctx, args) => {
     let response: Response;
     try {
-      response = await fetch(`${BASE}/models`, {
+      response = await fetch(`${BASE}/models${args.zdrOnly ? "?zdr=only" : ""}`, {
         headers: { Accept: "application/json" },
         signal: AbortSignal.timeout(20_000),
       });
@@ -191,6 +197,10 @@ export const check = action({
         // Not JSON — the raw prefix is the best available detail.
       }
       const account = response.status === 402 ? await credits(key) : null;
+      // Two refusals look like model problems but are key settings: a 400 about
+      // zero-data-retention means free and variant models are off-limits for
+      // this key, and no amount of retrying another :free id will change that.
+      const zdr = response.status === 400 && /zero-data-retention/i.test(detail);
       return {
         ok: false,
         status: response.status,
@@ -200,6 +210,10 @@ export const check = action({
         message: `BazaarLink answered ${response.status}${detail ? ` — ${detail}` : "."}${
           account
             ? ` (balance ${account.total} credits${account.freeTier ? ", free-tier key" : ""})`
+            : ""
+        }${
+          zdr
+            ? " (this key enforces zero-data-retention, which excludes every free and :free model — turn ZDR off for the key or add credits for a ZDR model)"
             : ""
         }`,
       };
