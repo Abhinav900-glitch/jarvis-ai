@@ -308,6 +308,25 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 8192,
     timeoutMs: 90_000,
   },
+  // Public AI — a non-profit gateway to open-weight models, mostly European and
+  // Southeast Asian. `/v1/models` is key-gated (401 without a header), so the
+  // catalogue is a genuine check that the key is accepted; the engines below
+  // were each answered with a real completion on 2026-11-19. Text only: every
+  // model in this catalogue is text-in, so image parts are dropped rather than
+  // sent to be rejected.
+  {
+    id: "publicai",
+    label: "Public AI",
+    url: "https://api.publicai.co/v1/chat/completions",
+    keyEnv: ["PUBLIC_AI_API_KEY", "PUBLICAI_API_KEY"],
+    missing: "PUBLIC_AI_API_KEY not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    textOnly: true,
+    reasoningEffort: false,
+    maxTokens: 4096,
+    timeoutMs: 90_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -1290,6 +1309,49 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.7,
     context: 262_144,
     bestFor: "steady everyday answers from an open model",
+  },
+
+  // --- Public AI ------------------------------------------------------------
+  // Probed one at a time on 2026-11-19. The catalogue publishes no context
+  // window, so the values below are a conservative 32k rather than an invented
+  // headline number: too low only means a very long prompt routes elsewhere,
+  // which is the safe way to be wrong. ALIA thinks before it answers, which is
+  // why it is slower than the Apertus models and marked accordingly.
+  {
+    id: "publicai/apertus-v1.5-70b",
+    provider: "publicai",
+    modelId: "swiss-ai/apertus-v1.5-70b",
+    label: "Apertus 1.5 70B",
+    vision: false,
+    reasoning: false,
+    quality: 0.72,
+    speed: 0.86,
+    context: 32_768,
+    bestFor: "an open-weight general answer with no cost attached",
+  },
+  {
+    id: "publicai/nemotron-sea-lion-120b",
+    provider: "publicai",
+    modelId: "aisingapore/Nemotron-SEA-LION-v4.8-120B-A12B",
+    label: "Nemotron SEA-LION 120B",
+    vision: false,
+    reasoning: false,
+    quality: 0.78,
+    speed: 0.8,
+    context: 32_768,
+    bestFor: "multilingual answers, especially Southeast Asian languages",
+  },
+  {
+    id: "publicai/alia-40b",
+    provider: "publicai",
+    modelId: "BSC-LT/ALIA-40b-instruct",
+    label: "ALIA 40B",
+    vision: false,
+    reasoning: false,
+    quality: 0.7,
+    speed: 0.5,
+    context: 32_768,
+    bestFor: "Spanish, Catalan, Basque and Galician writing",
   },
 ];
 
