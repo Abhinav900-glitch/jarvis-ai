@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
+  ArrowLeftRight,
   ChevronLeft,
   ChevronRight,
   FileSpreadsheet,
@@ -33,6 +34,14 @@ import {
   Presentation,
   X,
 } from "lucide-react";
+import { useAction, useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
+import {
+  conversionTargets,
+  extensionOf,
+  mimeForTarget,
+} from "@/lib/convert-formats";
 import { disposeOpenedFile, openOfficeFile, type OpenedFile, type SheetTable } from "@/lib/office/read";
 import type { SlideView } from "@/lib/pptx/read";
 
@@ -41,6 +50,12 @@ export interface FileViewerProps {
   onOpenChange: (open: boolean) => void;
   /** A file the caller already read — the studio passes its own packaged deck. */
   initial?: OpenedFile | null;
+  /**
+   * The bytes behind `initial`, so the viewer can convert without asking the
+   * caller to upload anything: the file already exists in memory, and only a
+   * conversion needs the service.
+   */
+  initialSource?: { name: string; bytes: Uint8Array } | null;
 }
 
 const ACCEPT = ".pptx,.xlsx,.xlsm,.docx,.csv,.tsv";
@@ -235,21 +250,34 @@ function SheetBook({ sheets }: { sheets: SheetTable[] }) {
   );
 }
 
-export function FileViewer({ open, onOpenChange, initial }: FileViewerProps) {
+export function FileViewer({ open, onOpenChange, initial, initialSource }: FileViewerProps) {
   const [picked, setPicked] = useState<OpenedFile | null>(null);
+  const [ownSource, setOwnSource] = useState<{ name: string; bytes: Uint8Array } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const pickedRef = useRef<OpenedFile | null>(null);
 
+  const createUpload = useMutation(api.cloud.createUpload);
+  const convertBlob = useAction(api.convert.blob);
+  const [convertOpen, setConvertOpen] = useState(false);
+  const [converting, setConverting] = useState<string | null>(null);
+
   const file = picked ?? initial ?? null;
+  /** A locally picked file wins over the caller's, because it is the newer one. */
+  const source = picked ? ownSource : initialSource ?? null;
+  const targets = source ? conversionTargets(source.name) : [];
 
   const close = (next: boolean) => {
     if (!next) {
       if (pickedRef.current) disposeOpenedFile(pickedRef.current);
       pickedRef.current = null;
       setPicked(null);
+      setOwnSource(null);
       setError(null);
+      setNote(null);
+      setConvertOpen(false);
     }
     onOpenChange(next);
   };
@@ -262,10 +290,67 @@ export function FileViewer({ open, onOpenChange, initial }: FileViewerProps) {
       if (pickedRef.current) disposeOpenedFile(pickedRef.current);
       pickedRef.current = opened;
       setPicked(opened);
+      setOwnSource({ name, bytes });
+      setNote(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not read that file.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * Convert the open file and download the result.
+   *
+   * The bytes go to Convex storage first only because an action argument is not
+   * a file channel; the action deletes that temporary blob itself, and the
+   * converted file is downloaded straight from the storage URL. Nothing lands
+   * in the author's cloud unless they save it there deliberately.
+   */
+  const convert = async (target: string) => {
+    if (!source || converting) return;
+    setConverting(target);
+    setError(null);
+    setNote(null);
+    try {
+      const mime = mimeForTarget(extensionOf(source.name));
+      const uploadUrl = await createUpload({});
+      const upload = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": mime },
+        body: new Blob([source.bytes as unknown as BlobPart], { type: mime }),
+      });
+      if (!upload.ok) throw new Error("Could not hand that file to the converter.");
+      const body = (await upload.json()) as { storageId?: Id<"_storage"> };
+      if (!body.storageId) throw new Error("The upload returned no file id.");
+
+      const result = await convertBlob({
+        storageId: body.storageId,
+        name: source.name,
+        mime,
+        target,
+        temporary: true,
+      });
+      setNote(
+        `${result.name} · ${Math.round(result.size / 1024)} KB${
+          result.engine === "CONVERT_API_SANDBOX_KEY" ? " · sandbox token" : ""
+        }`,
+      );
+      setConvertOpen(false);
+
+      if (result.url) {
+        const anchor = document.createElement("a");
+        anchor.href = result.url;
+        anchor.download = result.name;
+        anchor.rel = "noreferrer";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not convert that file.");
+    } finally {
+      setConverting(null);
     }
   };
 
@@ -281,8 +366,8 @@ export function FileViewer({ open, onOpenChange, initial }: FileViewerProps) {
             File viewer
           </DialogTitle>
           <DialogDescription className="pr-6 text-xs sm:text-sm">
-            Open a .pptx, .xlsx, .docx, .csv or .tsv and read it here — no PowerPoint, Excel or Word,
-            and nothing is uploaded anywhere.
+            Open a .pptx, .xlsx, .docx, .csv or .tsv and read it here — no PowerPoint, Excel or Word.
+            Reading stays in the browser; converting sends that one file to ConvertAPI.
           </DialogDescription>
         </DialogHeader>
 
@@ -320,7 +405,49 @@ export function FileViewer({ open, onOpenChange, initial }: FileViewerProps) {
                     : ` · ${file.rows.length} rows`}
             </span>
           ) : null}
+          {source && targets.length > 0 ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConvertOpen((value) => !value)}
+              disabled={converting !== null}
+              aria-expanded={convertOpen}
+            >
+              {converting ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <ArrowLeftRight className="size-3.5" />
+              )}
+              {converting ? "Converting…" : "Convert"}
+            </Button>
+          ) : null}
+          {note ? (
+            <span className="min-w-0 truncate text-[11px] text-emerald-600 dark:text-emerald-400">
+              {note}
+            </span>
+          ) : null}
         </div>
+
+        {convertOpen && source ? (
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-[10px] uppercase tracking-widest text-muted-foreground/60">
+              Convert to
+            </span>
+            {targets.map((target) => (
+              <button
+                key={target.ext}
+                onClick={() => void convert(target.ext)}
+                disabled={converting !== null}
+                className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+              >
+                {converting === target.ext ? "Working…" : target.label}
+              </button>
+            ))}
+            <span className="text-[10px] text-muted-foreground/60">
+              · downloads straight away, nothing added to your cloud
+            </span>
+          </div>
+        ) : null}
 
         {busy ? (
           <div className="flex items-center gap-2 rounded-lg border border-border/70 px-3 py-6 text-xs text-muted-foreground">

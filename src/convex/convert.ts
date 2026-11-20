@@ -170,6 +170,98 @@ async function convertWith(
 }
 
 /**
+ * The credential loop: live key first, sandbox token after it.
+ *
+ * Shared by both entry points so "which token ran" is answered the same way
+ * whether the file came from the cloud or straight out of the viewer.
+ */
+async function convertBytes(
+  from: string,
+  to: string,
+  bytes: Uint8Array,
+  fileName: string,
+  mime: string,
+): Promise<{ bytes: Uint8Array; ext: string; engine: string }> {
+  const credentialsToTry = credentials();
+  if (credentialsToTry.length === 0) {
+    throw new Error("Neither CONVERT_API_KEY nor CONVERT_API_SANDBOX_KEY is configured.");
+  }
+
+  const failures: string[] = [];
+  for (const credential of credentialsToTry) {
+    try {
+      const result = await convertWith(credential, from, to, bytes, fileName, mime);
+      return { ...result, engine: credential.name };
+    } catch (err) {
+      // A spent live key should still answer through the sandbox token rather
+      // than failing the button.
+      failures.push(
+        `${credential.name}: ${err instanceof Error ? err.message : "failed"}`,
+      );
+    }
+  }
+  throw new Error(failures.join(" · "));
+}
+
+/**
+ * Convert bytes that are not in the cloud at all.
+ *
+ * This is the viewer's path: the browser puts the file into Convex storage just
+ * long enough for the server to read it (a 60 MB deck does not travel through
+ * an action argument), converts it, and the temporary blob is deleted whatever
+ * the outcome. Nothing is added to the cloud, because the author never asked
+ * for it to be — they asked to read a .pptx and perhaps get a PDF out of it.
+ *
+ * The result is returned as a download URL that the caller opens immediately;
+ * it stays valid like any other storage URL.
+ */
+export const blob = action({
+  args: {
+    storageId: v.id("_storage"),
+    name: v.string(),
+    mime: v.string(),
+    target: v.string(),
+    /** True for viewer uploads: the source blob is transport, not storage. */
+    temporary: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args): Promise<{ name: string; url: string | null; size: number; engine: string }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to convert a file.");
+
+    const name = args.name.replace(/\s+/g, " ").trim().slice(0, 160) || "file";
+    const from = extensionOf(name);
+    if (!from) throw new Error("That file has no extension, so its format is unknown.");
+    const target = findTarget(name, args.target);
+    if (!target) {
+      throw new Error(`A ${from.toUpperCase()} file cannot be converted to ${args.target.toUpperCase()} here.`);
+    }
+
+    try {
+      const source = await ctx.storage.get(args.storageId);
+      if (!source) throw new Error("The uploaded file is gone before it could be converted.");
+
+      const bytes = new Uint8Array(await source.arrayBuffer());
+      if (bytes.byteLength === 0) throw new Error("That file is empty.");
+      if (bytes.byteLength > MAX_BYTES) throw new Error("That file is larger than the 64 MB limit.");
+
+      const result = await convertBytes(from, target.ext, bytes, name, args.mime || "application/octet-stream");
+      const outName = convertedName(name, result.ext);
+      const storageId = await ctx.storage.store(blobOf(result.bytes, mimeForTarget(result.ext)));
+      return {
+        name: outName,
+        url: await ctx.storage.getUrl(storageId),
+        size: result.bytes.byteLength,
+        engine: result.engine,
+      };
+    } finally {
+      if (args.temporary) {
+        await ctx.storage.delete(args.storageId).catch(() => undefined);
+      }
+    }
+  },
+});
+
+/**
  * Convert one cloud file and keep the result.
  *
  * The converted file lands in the same folder as its source and appears in the
@@ -201,37 +293,11 @@ export const run = action({
     const blob = await ctx.storage.get(file.storageId);
     if (!blob) throw new Error("The stored bytes for that file are gone.");
 
-    const credentialsToTry = credentials();
-    if (credentialsToTry.length === 0) {
-      throw new Error("Neither CONVERT_API_KEY nor CONVERT_API_SANDBOX_KEY is configured.");
-    }
-
     const bytes = new Uint8Array(await blob.arrayBuffer());
     if (bytes.byteLength === 0) throw new Error("That file is empty.");
     if (bytes.byteLength > MAX_BYTES) throw new Error("That file is larger than the 64 MB limit.");
 
-    let result: { bytes: Uint8Array; ext: string } | null = null;
-    let engine = credentialsToTry[0].name;
-    const failures: string[] = [];
-    for (const credential of credentialsToTry) {
-      try {
-        result = await convertWith(
-          credential,
-          from,
-          target.ext,
-          bytes,
-          file.name,
-          file.mime,
-        );
-        engine = credential.name;
-        break;
-      } catch (err) {
-        // Try the next credential: a spent live key should still answer through
-        // the sandbox token rather than failing the button.
-        failures.push(`${credential.name}: ${err instanceof Error ? err.message : "failed"}`);
-      }
-    }
-    if (!result) throw new Error(failures.join(" · "));
+    const result = await convertBytes(from, target.ext, bytes, file.name, file.mime);
 
     const name = convertedName(file.name, result.ext);
     const storageId = await ctx.storage.store(blobOf(result.bytes, mimeForTarget(result.ext)));
@@ -249,7 +315,7 @@ export const run = action({
       fileId: args.fileId,
       name,
       url: await ctx.storage.getUrl(storageId),
-      engine,
+      engine: result.engine,
     };
   },
 });

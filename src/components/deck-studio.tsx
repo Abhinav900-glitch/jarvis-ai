@@ -407,6 +407,8 @@ export function DeckStudio({
   // The viewer gets the real packaged bytes, so the preview is the download.
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerFile, setViewerFile] = useState<OpenedFile | null>(null);
+  /** The packaged bytes, so the viewer can convert the deck it is showing. */
+  const [viewerSource, setViewerSource] = useState<{ name: string; bytes: Uint8Array } | null>(null);
   const [viewing, setViewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
@@ -880,9 +882,11 @@ export function DeckStudio({
     setViewing(true);
     try {
       const bytes = await buildPptx(spec);
-      const opened = await openOfficeFile(deckFileName(spec.title), bytes);
+      const name = deckFileName(spec.title);
+      const opened = await openOfficeFile(name, bytes);
       if (viewerFile) disposeOpenedFile(viewerFile);
       setViewerFile(opened);
+      setViewerSource({ name, bytes });
       setViewerOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not build the file to view.");
@@ -1607,9 +1611,11 @@ export function DeckStudio({
           if (!next && viewerFile) {
             disposeOpenedFile(viewerFile);
             setViewerFile(null);
+            setViewerSource(null);
           }
         }}
         initial={viewerFile}
+        initialSource={viewerSource}
       />
     </motion.div>
   );
