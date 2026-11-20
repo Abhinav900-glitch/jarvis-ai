@@ -307,7 +307,7 @@ export function guessDelimiter(text: string): string {
   return ",";
 }
 
-export type OfficeKind = "slides" | "sheet" | "doc" | "csv";
+export type OfficeKind = "slides" | "sheet" | "doc" | "csv" | "pdf";
 
 /** What a filename or a zip's parts say this file is. */
 export function detectKind(name: string, parts: Map<string, Uint8Array> | null): OfficeKind | null {
@@ -316,6 +316,7 @@ export function detectKind(name: string, parts: Map<string, Uint8Array> | null):
   if (lower.endsWith(".xlsx") || lower.endsWith(".xlsm")) return "sheet";
   if (lower.endsWith(".docx")) return "doc";
   if (lower.endsWith(".csv") || lower.endsWith(".tsv")) return "csv";
+  if (lower.endsWith(".pdf")) return "pdf";
   if (!parts) return null;
   if (parts.has("ppt/presentation.xml")) return "slides";
   if (parts.has("xl/workbook.xml")) return "sheet";
@@ -330,7 +331,13 @@ export type OpenedFile =
   | { kind: "slides"; name: string; deck: LoadedDeck }
   | { kind: "sheet"; name: string; sheets: SheetTable[] }
   | { kind: "doc"; name: string; view: DocumentView }
-  | { kind: "csv"; name: string; rows: string[][]; delimiter: string };
+  | { kind: "csv"; name: string; rows: string[][]; delimiter: string }
+  /**
+   * A PDF is not parsed: the browser's own viewer draws it from a blob URL.
+   * That is the honest ceiling without adding a PDF engine — pages, text and
+   * links are real, but nothing here can search or extract them.
+   */
+  | { kind: "pdf"; name: string; url: string };
 
 /**
  * Read any supported file by name and bytes.
@@ -348,13 +355,24 @@ export async function openOfficeFile(name: string, bytes: Uint8Array): Promise<O
     const delimiter = guessDelimiter(text);
     return { kind, name, rows: readCsv(text, delimiter), delimiter };
   }
+  if (kind === "pdf") {
+    // Owned by this function, released by `disposeOpenedFile` — the same rule
+    // as the slide branch's image URLs.
+    const url = URL.createObjectURL(new Blob([bytes.slice()], { type: "application/pdf" }));
+    return { kind, name, url };
+  }
   throw new Error(
-    "That file type isn't supported here. Open a .pptx, .xlsx, .docx, .csv or .tsv.",
+    "That file type isn't supported here. Open a .pdf, .pptx, .xlsx, .docx, .csv or .tsv.",
   );
 }
 
 /** Zip-backed types are identified by the part that only they contain. */
 async function detectKindFromBytes(bytes: Uint8Array): Promise<OfficeKind | null> {
+  // A PDF has no zip parts and its signature is the first five bytes, so it is
+  // checked before the zip attempt: a reader that only looked at extensions
+  // would refuse a file the browser can display perfectly.
+  const head = new TextDecoder().decode(bytes.slice(0, 5));
+  if (head === "%PDF-") return "pdf";
   try {
     const parts = await readZip(bytes);
     return detectKind("", parts);
@@ -366,4 +384,5 @@ async function detectKindFromBytes(bytes: Uint8Array): Promise<OfficeKind | null
 /** Release anything an opened file allocated. Safe on any kind. */
 export function disposeOpenedFile(file: OpenedFile): void {
   if (file.kind === "slides") disposeDeck(file.deck);
+  if (file.kind === "pdf") URL.revokeObjectURL(file.url);
 }

@@ -59,7 +59,7 @@ export interface FileViewerProps {
   initialSource?: { name: string; bytes: Uint8Array } | null;
 }
 
-const ACCEPT = ".pptx,.xlsx,.xlsm,.docx,.csv,.tsv";
+const ACCEPT = ".pdf,.pptx,.xlsx,.xlsm,.docx,.csv,.tsv";
 
 function SlideFace({ slide, urls, ratio }: { slide: SlideView; urls: string[]; ratio: number }) {
   const body = slide.lines.filter((line) => line !== slide.title);
@@ -412,7 +412,11 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
   };
 
   const Icon =
-    file?.kind === "sheet" ? FileSpreadsheet : file?.kind === "doc" || file?.kind === "csv" ? FileText : Presentation;
+    file?.kind === "sheet"
+      ? FileSpreadsheet
+      : file?.kind === "doc" || file?.kind === "csv" || file?.kind === "pdf"
+        ? FileText
+        : Presentation;
 
   return (
     <Dialog open={open} onOpenChange={close}>
@@ -423,8 +427,8 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
             File viewer
           </DialogTitle>
           <DialogDescription className="pr-6 text-xs sm:text-sm">
-            Open a .pptx, .xlsx, .docx, .csv or .tsv and read it here — no PowerPoint, Excel or Word.
-            Reading stays in the browser; converting sends that one file to ConvertAPI.
+            Open a .pdf, .pptx, .xlsx, .docx, .csv or .tsv and read it here — no PowerPoint, Excel or
+            Word. Reading stays in the browser; converting sends that one file to ConvertAPI.
           </DialogDescription>
         </DialogHeader>
 
@@ -459,7 +463,9 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
                   ? ` · ${file.sheets.length} sheet${file.sheets.length === 1 ? "" : "s"}`
                   : file.kind === "doc"
                     ? ` · ${file.view.paragraphs.length} paragraphs`
-                    : ` · ${file.rows.length} rows`}
+                    : file.kind === "pdf"
+                      ? " · PDF"
+                      : ` · ${file.rows.length} rows`}
             </span>
           ) : null}
           {source && targets.length > 0 ? (
@@ -550,6 +556,24 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
                 <Grid rows={table.rows} />
               </div>
             ))}
+          </div>
+        ) : file?.kind === "pdf" ? (
+          <div className="space-y-1">
+            {/* The browser's PDF engine, not a bundled one: real pages, real
+                text selection and links, at the cost of no search or copy-out
+                API we could build on. Saying "built-in" is more honest than
+                pretending this app renders PDFs itself. */}
+            <iframe
+              src={file.url}
+              title={file.name}
+              className="h-[65vh] w-full rounded-lg border border-border/70 bg-white"
+            />
+            <p className="text-[10px] text-muted-foreground/70">
+              Drawn by your browser&apos;s built-in PDF viewer ·{" "}
+              <a href={file.url} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">
+                open in a new tab
+              </a>
+            </p>
           </div>
         ) : file?.kind === "csv" ? (
           <div className="space-y-2">

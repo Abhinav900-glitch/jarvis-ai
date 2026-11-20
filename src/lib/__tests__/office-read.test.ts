@@ -169,6 +169,8 @@ describe("detectKind", () => {
     expect(detectKind("Book.XLSX", null)).toBe("sheet");
     expect(detectKind("notes.docx", null)).toBe("doc");
     expect(detectKind("export.csv", null)).toBe("csv");
+    expect(detectKind("report.pdf", null)).toBe("pdf");
+    expect(detectKind("REPORT.PDF", null)).toBe("pdf");
     expect(detectKind("mystery", new Map([["xl/workbook.xml", new Uint8Array()]]))).toBe("sheet");
     expect(detectKind("mystery", new Map([["word/document.xml", new Uint8Array()]]))).toBe("doc");
     expect(detectKind("mystery", null)).toBeNull();
