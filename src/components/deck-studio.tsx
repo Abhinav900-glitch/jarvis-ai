@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  ArrowLeft,
+  ArrowRight,
   ChevronRight,
+  Copy,
   Download,
   Eye,
   FileJson,
@@ -9,6 +12,7 @@ import {
   ImagePlus,
   Loader2,
   Pencil,
+  Plus,
   Presentation,
   QrCode,
   Sparkles,
@@ -43,6 +47,25 @@ import { disposeOpenedFile, openOfficeFile, type OpenedFile } from "@/lib/office
 // ---------------------------------------------------------------------------
 
 const COUNTS = [10, 14, 20, 30, 50];
+
+/**
+ * The three steers people type most often.
+ *
+ * A prompt box is empty exactly when the author does not know what the model
+ * can do with a slide, so the chips are the affordance: click one and the
+ * instruction is filled in, still editable before Rewrite runs.
+ */
+const QUICK_REWRITES: { label: string; hint: string }[] = [
+  {
+    label: "More detail",
+    hint: "Add one more concrete bullet with a figure from the research notes, plus a speaker note that says what to point at.",
+  },
+  { label: "Shorter", hint: "Cut this to a single tight bullet and a title under eight words." },
+  {
+    label: "Add a source",
+    hint: "Keep the copy and name the source of this slide's main figure in the speaker notes.",
+  },
+];
 
 /**
  * A QR code drawn on a canvas.
@@ -419,6 +442,12 @@ export function DeckStudio({
   const editSlideAction = useMutation(api.decks.editSlide);
   const rewriteSlideAction = useAction(api.decks.rewrite);
   const findImageAction = useAction(api.deckImages.find);
+  const addSlideAction = useMutation(api.decks.addSlide);
+  const duplicateSlideAction = useMutation(api.decks.duplicateSlide);
+  const removeSlideAction = useMutation(api.decks.removeSlide);
+  const moveSlideAction = useMutation(api.decks.moveSlide);
+  const sourcesSlideAction = useMutation(api.decks.addSourcesSlide);
+  const [slideBusy, setSlideBusy] = useState(false);
 
   const recent = useQuery(api.decks.list, {});
   const deck = useQuery(api.decks.get, deckId ? { deckId } : "skip");
@@ -676,6 +705,36 @@ export function DeckStudio({
     setImageBusy(null);
   };
 
+  /**
+   * Slide-level structure: add, copy, move, delete, and the sources slide.
+   *
+   * All five are deck-spec writes, so none of them needs a model call and the
+   * downloaded file reflects the change immediately. `next` is where the
+   * selection should land afterwards — without it, deleting a slide leaves the
+   * panel pointing at whatever slid into its place.
+   */
+  const restructure = async (work: () => Promise<unknown>, next?: number) => {
+    if (!deckId || slideBusy) return;
+    setSlideBusy(true);
+    setError(null);
+    setEditDraft(null);
+    try {
+      await work();
+      if (typeof next === "number") setSelected(Math.max(0, next));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change the slides.");
+    } finally {
+      setSlideBusy(false);
+    }
+  };
+
+  const moveCurrent = (direction: -1 | 1) => {
+    if (!deckId) return;
+    const to = selected + direction;
+    if (to < 0 || to >= slides.length) return;
+    void restructure(() => moveSlideAction({ deckId, from: selected, to }), to);
+  };
+
   const downloadQr = () => {
     if (!qrPng) return;
     const anchor = document.createElement("a");
@@ -729,10 +788,19 @@ export function DeckStudio({
   const activeTheme = deck ? themeById(deck.theme) : themeById(theme);
   // `research` is stored as `v.any()`, so the panel reads it defensively: an
   // old deck has no field, and a half-written one could hold anything.
-  const researchCount = (() => {
-    const facts = (deck?.research as { facts?: unknown } | undefined)?.facts;
-    return Array.isArray(facts) ? facts.filter((fact) => typeof fact === "string").length : 0;
-  })();
+  const research = deck?.research as { facts?: unknown; sources?: unknown } | undefined;
+  const researchFacts = Array.isArray(research?.facts)
+    ? (research.facts as unknown[]).filter((fact): fact is string => typeof fact === "string")
+    : [];
+  const researchSources = Array.isArray(research?.sources)
+    ? (research.sources as { title?: unknown; url?: unknown }[])
+        .filter((source) => typeof source?.url === "string")
+        .map((source) => ({
+          title: typeof source.title === "string" ? source.title : String(source.url),
+          url: source.url as string,
+        }))
+    : [];
+  const researchCount = researchFacts.length;
 
   return (
     <motion.div
@@ -999,6 +1067,49 @@ export function DeckStudio({
           ) : null}
 
           {error ? <p className="mt-1.5 text-[10px] text-destructive">{error}</p> : null}
+
+          {/* What the writer was told. The facts are the deck's evidence, so
+              they stay visible after the build instead of living only in the
+              prompt — including the sources, which nothing on the slides
+              names unless a sources slide is added. */}
+          {researchFacts.length > 0 ? (
+            <details className="mt-2 rounded border border-border/60 p-2">
+              <summary className="cursor-pointer text-[9px] uppercase tracking-widest text-muted-foreground/60">
+                Research · {researchFacts.length} facts · {researchSources.length} sources
+              </summary>
+              <ul className="mt-1 space-y-1">
+                {researchFacts.slice(0, 8).map((fact, i) => (
+                  <li key={i} className="text-[10px] leading-relaxed text-muted-foreground">
+                    · {fact}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                {researchSources.slice(0, 6).map((source) => (
+                  <a
+                    key={source.url}
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[10px] underline underline-offset-2 hover:text-foreground"
+                    title={source.title}
+                  >
+                    {source.url.replace(/^https?:\/\/(www\.)?/i, "").split("/")[0]}
+                  </a>
+                ))}
+                {deckId ? (
+                  <button
+                    onClick={() => void restructure(() => sourcesSlideAction({ deckId }))}
+                    disabled={slideBusy}
+                    title="Add one slide crediting every source"
+                    className="ml-auto inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] transition-colors hover:bg-accent disabled:opacity-40"
+                  >
+                    <Plus className="size-2.5" /> Sources slide
+                  </button>
+                ) : null}
+              </div>
+            </details>
+          ) : null}
         </div>
 
         {/* Previews */}
@@ -1056,6 +1167,19 @@ export function DeckStudio({
                   aria-label="Slide notes"
                   className="mt-1 w-full resize-y rounded border border-border/60 bg-transparent px-1.5 py-1 text-[11px] leading-relaxed outline-none focus:border-foreground/30"
                 />
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {QUICK_REWRITES.map((quick) => (
+                    <button
+                      key={quick.label}
+                      onClick={() => setRewriteHint(quick.hint)}
+                      disabled={rewriting}
+                      title={quick.hint}
+                      className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    >
+                      {quick.label}
+                    </button>
+                  ))}
+                </div>
                 <div className="mt-1 flex items-center gap-1.5">
                   <input
                     value={rewriteHint}
@@ -1097,6 +1221,52 @@ export function DeckStudio({
             ) : (
             <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
               <div className="rounded-lg border border-border/60 p-2">
+                <div className="mb-1 flex flex-wrap items-center gap-1">
+                  <button
+                    onClick={() => moveCurrent(-1)}
+                    disabled={selected === 0 || slideBusy}
+                    title="Move this slide earlier"
+                    aria-label="Move slide earlier"
+                    className="rounded border border-border/60 p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+                  >
+                    <ArrowLeft className="size-3" />
+                  </button>
+                  <button
+                    onClick={() => moveCurrent(1)}
+                    disabled={selected >= slides.length - 1 || slideBusy}
+                    title="Move this slide later"
+                    aria-label="Move slide later"
+                    className="rounded border border-border/60 p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+                  >
+                    <ArrowRight className="size-3" />
+                  </button>
+                  <button
+                    onClick={() => void restructure(() => duplicateSlideAction({ deckId: deckId!, index: selected }), selected + 1)}
+                    disabled={slideBusy || !deckId}
+                    title="Duplicate this slide"
+                    aria-label="Duplicate slide"
+                    className="rounded border border-border/60 p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+                  >
+                    <Copy className="size-3" />
+                  </button>
+                  <button
+                    onClick={() => void restructure(() => removeSlideAction({ deckId: deckId!, index: selected }), selected - 1)}
+                    disabled={slideBusy || !deckId || slides.length <= 1}
+                    title="Delete this slide"
+                    aria-label="Delete slide"
+                    className="rounded border border-border/60 p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive disabled:opacity-30"
+                  >
+                    <Trash2 className="size-3" />
+                  </button>
+                  <button
+                    onClick={() => void restructure(() => addSlideAction({ deckId: deckId!, after: selected }), selected + 1)}
+                    disabled={slideBusy || !deckId}
+                    title="Add a slide after this one"
+                    className="ml-auto inline-flex items-center gap-1 rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+                  >
+                    <Plus className="size-2.5" /> Add slide
+                  </button>
+                </div>
                 <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-muted-foreground/60">
                   <ChevronRight className="size-3" /> Slide {selected + 1} · {current?.kind}
                   <button

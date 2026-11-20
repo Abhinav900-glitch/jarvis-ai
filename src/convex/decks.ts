@@ -281,6 +281,176 @@ export const setSlideImage = internalMutation({
 });
 
 /**
+ * Add one slide after the selected one.
+ *
+ * Seeded from the template writer rather than empty: a blank slide with a
+ * placeholder makes the author write a title before anything renders, while
+ * template copy is something they can edit down. The index is clamped rather
+ * than rejected — "add after the last slide" is the common case and a stale
+ * selection should not turn it into an error.
+ */
+export const addSlide = mutation({
+  args: { deckId: v.id("decks"), after: v.number() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to edit a deck.");
+    const deck = await ctx.db.get(args.deckId);
+    if (!deck || deck.userId !== userId) throw new Error("Deck not found.");
+
+    const slides = [...((deck.slides ?? []) as SlideSpec[])];
+    if (slides.length >= MAX_SLIDES) {
+      throw new Error(`A deck holds at most ${MAX_SLIDES} slides.`);
+    }
+    const at = Math.min(Math.max(0, Math.round(args.after) + 1), slides.length);
+    const seeded = ensureNotes(
+      fallbackSlide({ kind: "bullets", title: "New slide", purpose: "Added after the deck was built" }, deck.topic, at),
+      deck.topic,
+    );
+    slides.splice(at, 0, seeded);
+    await ctx.db.patch(args.deckId, {
+      slides,
+      total: Math.max(deck.total, slides.length),
+      written: slides.length,
+      updatedAt: Date.now(),
+    });
+    return await ctx.db.get(args.deckId);
+  },
+});
+
+/** Copy a slide in place; the usual reason is a layout that should repeat. */
+export const duplicateSlide = mutation({
+  args: { deckId: v.id("decks"), index: v.number() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to edit a deck.");
+    const deck = await ctx.db.get(args.deckId);
+    if (!deck || deck.userId !== userId) throw new Error("Deck not found.");
+
+    const slides = [...((deck.slides ?? []) as SlideSpec[])];
+    const source = slides[args.index];
+    if (!source) throw new Error("That slide is no longer in the deck.");
+    if (slides.length >= MAX_SLIDES) throw new Error(`A deck holds at most ${MAX_SLIDES} slides.`);
+
+    // A deep copy, not a reference: the two slides must be editable apart.
+    slides.splice(args.index + 1, 0, JSON.parse(JSON.stringify(source)) as SlideSpec);
+    await ctx.db.patch(args.deckId, {
+      slides,
+      total: Math.max(deck.total, slides.length),
+      written: slides.length,
+      updatedAt: Date.now(),
+    });
+    return await ctx.db.get(args.deckId);
+  },
+});
+
+/** Remove one slide. A deck is never allowed to reach zero slides. */
+export const removeSlide = mutation({
+  args: { deckId: v.id("decks"), index: v.number() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to edit a deck.");
+    const deck = await ctx.db.get(args.deckId);
+    if (!deck || deck.userId !== userId) throw new Error("Deck not found.");
+
+    const slides = [...((deck.slides ?? []) as SlideSpec[])];
+    if (!slides[args.index]) throw new Error("That slide is no longer in the deck.");
+    if (slides.length <= 1) throw new Error("A deck needs at least one slide.");
+
+    slides.splice(args.index, 1);
+    await ctx.db.patch(args.deckId, {
+      slides,
+      total: slides.length,
+      written: slides.length,
+      updatedAt: Date.now(),
+    });
+    return await ctx.db.get(args.deckId);
+  },
+});
+
+/** Move one slide to another position, for reordering without a rebuild. */
+export const moveSlide = mutation({
+  args: { deckId: v.id("decks"), from: v.number(), to: v.number() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to edit a deck.");
+    const deck = await ctx.db.get(args.deckId);
+    if (!deck || deck.userId !== userId) throw new Error("Deck not found.");
+
+    const slides = [...((deck.slides ?? []) as SlideSpec[])];
+    if (!slides[args.from]) throw new Error("That slide is no longer in the deck.");
+    const to = Math.min(Math.max(0, Math.round(args.to)), slides.length - 1);
+    if (to === args.from) return deck;
+
+    const [moved] = slides.splice(args.from, 1);
+    slides.splice(to, 0, moved);
+    await ctx.db.patch(args.deckId, { slides, updatedAt: Date.now() });
+    return await ctx.db.get(args.deckId);
+  },
+});
+
+/**
+ * One closing slide for the research.
+ *
+ * The facts are quoted all over the deck and nothing credited them. This adds
+ * that slide from the sources already stored on the deck — no network call, and
+ * no way for it to disagree with the facts in the copy. It goes before the
+ * closing slide when there is one, because a sources page after "Thank you"
+ * reads as an appendix nobody stays for.
+ */
+export const addSourcesSlide = mutation({
+  args: { deckId: v.id("decks") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to edit a deck.");
+    const deck = await ctx.db.get(args.deckId);
+    if (!deck || deck.userId !== userId) throw new Error("Deck not found.");
+
+    const research = deck.research as
+      | { sources?: { title?: string; url?: string }[] }
+      | undefined;
+    const sources = (research?.sources ?? []).filter(
+      (source): source is { title: string; url: string } =>
+        typeof source?.url === "string" && /^https?:\/\//i.test(source.url),
+    );
+    if (sources.length === 0) throw new Error("This deck has no research to cite.");
+
+    const slides = [...((deck.slides ?? []) as SlideSpec[])];
+    if (slides.some((slide) => slide.kicker === "research" && slide.title.toLowerCase() === "sources")) {
+      throw new Error("This deck already has a sources slide.");
+    }
+    if (slides.length >= MAX_SLIDES) throw new Error(`A deck holds at most ${MAX_SLIDES} slides.`);
+
+    const body = sources
+      .slice(0, 6)
+      .map((source) => {
+        const domain = source.url.replace(/^https?:\/\/(www\.)?/i, "").split("/")[0];
+        return `${source.title.slice(0, 110)} — ${domain}`;
+      });
+    const slide = normalizeSlide({
+      kind: "bullets",
+      title: "Sources",
+      kicker: "research",
+      body,
+      notes: `Where the figures in this deck come from:\n${sources
+        .slice(0, 6)
+        .map((source) => source.url)
+        .join("\n")}`.slice(0, 1200),
+    });
+    if (!slide) throw new Error("Those sources did not fit a slide.");
+
+    const closing = slides[slides.length - 1]?.kind === "closing";
+    slides.splice(closing ? slides.length - 1 : slides.length, 0, slide);
+    await ctx.db.patch(args.deckId, {
+      slides,
+      total: Math.max(deck.total, slides.length),
+      written: slides.length,
+      updatedAt: Date.now(),
+    });
+    return await ctx.db.get(args.deckId);
+  },
+});
+
+/**
  * Change the look without regenerating the content.
  *
  * This is the advantage of storing a spec rather than a file: a deck is
