@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import {
   ArrowLeftRight,
   ChevronLeft,
+  CloudUpload,
   ChevronRight,
   FileSpreadsheet,
   FileText,
@@ -261,8 +262,24 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
 
   const createUpload = useMutation(api.cloud.createUpload);
   const convertBlob = useAction(api.convert.blob);
+  const keepConverted = useAction(api.convert.keep);
+  const discardConverted = useAction(api.convert.discard);
   const [convertOpen, setConvertOpen] = useState(false);
   const [converting, setConverting] = useState<string | null>(null);
+  /**
+   * The conversion result, kept so it can be adopted into the cloud.
+   *
+   * The blob is stored by the conversion action purely to hand the download
+   * over; if it is never kept, the viewer deletes it on close rather than
+   * leaving storage to fill with one throwaway PDF per conversion.
+   */
+  const [converted, setConverted] = useState<{
+    storageId: Id<"_storage">;
+    name: string;
+    mime: string;
+    saved: boolean;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const file = picked ?? initial ?? null;
   /** A locally picked file wins over the caller's, because it is the newer one. */
@@ -271,6 +288,10 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
 
   const close = (next: boolean) => {
     if (!next) {
+      if (converted && !converted.saved) {
+        void discardConverted({ storageId: converted.storageId }).catch(() => undefined);
+      }
+      setConverted(null);
       if (pickedRef.current) disposeOpenedFile(pickedRef.current);
       pickedRef.current = null;
       setPicked(null);
@@ -287,6 +308,12 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
     setError(null);
     try {
       const opened = await openOfficeFile(name, bytes);
+      // A different file makes the last conversion irrelevant; its blob goes
+      // unless the author had already kept it.
+      if (converted && !converted.saved) {
+        void discardConverted({ storageId: converted.storageId }).catch(() => undefined);
+      }
+      setConverted(null);
       if (pickedRef.current) disposeOpenedFile(pickedRef.current);
       pickedRef.current = opened;
       setPicked(opened);
@@ -312,6 +339,10 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
     setConverting(target);
     setError(null);
     setNote(null);
+    if (converted && !converted.saved) {
+      void discardConverted({ storageId: converted.storageId }).catch(() => undefined);
+    }
+    setConverted(null);
     try {
       const mime = mimeForTarget(extensionOf(source.name));
       const uploadUrl = await createUpload({});
@@ -337,6 +368,12 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
         }`,
       );
       setConvertOpen(false);
+      setConverted({
+        storageId: result.storageId as Id<"_storage">,
+        name: result.name,
+        mime: mimeForTarget(extensionOf(result.name)),
+        saved: false,
+      });
 
       if (result.url) {
         const anchor = document.createElement("a");
@@ -351,6 +388,26 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
       setError(err instanceof Error ? err.message : "Could not convert that file.");
     } finally {
       setConverting(null);
+    }
+  };
+
+  /** Adopt the downloaded conversion into the author's cloud. */
+  const saveConverted = async () => {
+    if (!converted || converted.saved || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await keepConverted({
+        storageId: converted.storageId,
+        name: converted.name,
+        mime: converted.mime,
+      });
+      setConverted({ ...converted, saved: true });
+      setNote(`${converted.name} saved to your cloud.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save that file to your cloud.");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -425,6 +482,24 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
             <span className="min-w-0 truncate text-[11px] text-emerald-600 dark:text-emerald-400">
               {note}
             </span>
+          ) : null}
+          {converted?.saved ? (
+            <span className="text-[11px] text-muted-foreground/60">in your cloud</span>
+          ) : converted ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void saveConverted()}
+              disabled={saving}
+              title="Keep the converted file in your cloud"
+            >
+              {saving ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <CloudUpload className="size-3.5" />
+              )}
+              {saving ? "Saving…" : "Save to cloud"}
+            </Button>
           ) : null}
         </div>
 

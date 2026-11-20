@@ -224,7 +224,17 @@ export const blob = action({
     /** True for viewer uploads: the source blob is transport, not storage. */
     temporary: v.optional(v.boolean()),
   },
-  handler: async (ctx, args): Promise<{ name: string; url: string | null; size: number; engine: string }> => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    name: string;
+    url: string | null;
+    size: number;
+    engine: string;
+    /** Handed back so "Save to cloud" can adopt this exact blob. */
+    storageId: string;
+  }> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to convert a file.");
 
@@ -252,12 +262,70 @@ export const blob = action({
         url: await ctx.storage.getUrl(storageId),
         size: result.bytes.byteLength,
         engine: result.engine,
+        storageId,
       };
     } finally {
       if (args.temporary) {
         await ctx.storage.delete(args.storageId).catch(() => undefined);
       }
     }
+  },
+});
+
+/**
+ * Adopt a viewer conversion into the cloud.
+ *
+ * The blob already exists — stored by `blob` for the download — so saving it
+ * is a row insert that references the same bytes, not a second upload. The
+ * size is read from storage rather than trusted from the client, and the same
+ * quota checks as every other cloud write run inside `saveConversion`.
+ */
+export const keep = action({
+  args: {
+    storageId: v.id("_storage"),
+    name: v.string(),
+    mime: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ name: string }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to save a file.");
+
+    const blob = await ctx.storage.get(args.storageId);
+    if (!blob) throw new Error("That converted file is no longer available.");
+
+    await ctx.runMutation(internal.cloud.saveConversion, {
+      userId,
+      storageId: args.storageId,
+      name: args.name,
+      mime: args.mime,
+      size: blob.size,
+    });
+    return { name: args.name };
+  },
+});
+
+/**
+ * Delete a converted file the author did not keep.
+ *
+ * Best effort by design: the viewer calls it when it closes, and a blob that is
+ * already gone, already saved, or still referenced by a row is not an error.
+ * The reference check is what makes this safe to expose — it can only remove
+ * bytes nothing in the user's cloud points at.
+ */
+export const discard = action({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, args): Promise<{ removed: boolean }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return { removed: false };
+
+    const referenced = await ctx.runQuery(internal.cloud.blobReferences, {
+      storageId: args.storageId,
+      userId,
+    });
+    if (referenced) return { removed: false };
+
+    await ctx.storage.delete(args.storageId);
+    return { removed: true };
   },
 });
 

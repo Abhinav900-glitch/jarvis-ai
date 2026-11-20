@@ -132,6 +132,31 @@ export const loadFile = internalQuery({
 });
 
 /**
+ * Is this blob still the bytes behind something the user can see?
+ *
+ * A conversion the author chose not to keep is deleted from storage when the
+ * viewer closes. Before deleting, this asks whether any row still points at
+ * it — a cloud file or a run artifact — because deleting one of those would
+ * turn a listed file into a dead download.
+ */
+export const blobReferences = internalQuery({
+  args: { storageId: v.id("_storage"), userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const files = await ctx.db
+      .query("cloudFiles")
+      .withIndex("by_user_time", (q) => q.eq("userId", args.userId))
+      .take(MAX_FILES);
+    if (files.some((row) => row.storageId === args.storageId)) return true;
+
+    const artifacts = await ctx.db
+      .query("agentArtifacts")
+      .withIndex("by_user_time", (q) => q.eq("userId", args.userId))
+      .take(40);
+    return artifacts.some((row) => row.storageId === args.storageId);
+  },
+});
+
+/**
  * Record a converted blob.
  *
  * A conversion costs storage exactly like an upload, so it goes through the
