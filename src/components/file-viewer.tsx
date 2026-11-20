@@ -65,7 +65,12 @@ export interface FileViewerProps {
    * a hosted URL rather than the bytes: the studio sends that URL to a
    * generation provider, which cannot read a blob URL from this tab.
    */
-  onSendToStudio?: (image: { name: string; url: string }) => void;
+  onSendToStudio?: (image: {
+    name: string;
+    url: string;
+    /** Kept so an abandoned seed can be deleted when the studio closes. */
+    storageId: Id<"_storage">;
+  }) => void;
 }
 
 const ACCEPT =
@@ -472,7 +477,7 @@ export function FileViewer({
 
       const url = await storageUrl({ storageId: body.storageId });
       if (!url) throw new Error("That image has no public URL yet.");
-      onSendToStudio({ name: source.name, url });
+      onSendToStudio({ name: source.name, url, storageId: body.storageId });
       close(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send that image to the studio.");

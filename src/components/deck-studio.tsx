@@ -391,7 +391,7 @@ export function DeckStudio({
   initialTopic: string;
   onClose: () => void;
   /** Forwarded to the viewer: an opened image can become a studio seed. */
-  onSendToStudio?: (image: { name: string; url: string }) => void;
+  onSendToStudio?: (image: { name: string; url: string; storageId: Id<"_storage"> }) => void;
   /**
    * Start writing as soon as the panel opens. Used when the panel is the
    * fallback for a slides request that already failed elsewhere: the user asked

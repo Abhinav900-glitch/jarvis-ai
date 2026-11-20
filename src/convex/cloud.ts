@@ -13,10 +13,11 @@
 // ---------------------------------------------------------------------------
 
 import { v } from "convex/values";
-import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import { action, internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 
 /** What a signed-in account gets. Exported so the panel and landing agree. */
 export const LIMIT_BYTES = 512 * 1024 * 1024;
@@ -217,6 +218,32 @@ export const storageUrl = mutation({
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to use your storage.");
     return await ctx.storage.getUrl(args.storageId);
+  },
+});
+
+/**
+ * Throw away an upload that never became anything.
+ *
+ * The file viewer publishes an image so the image studio can use it as a
+ * starting frame, and a provider can only fetch a URL. If the studio is closed
+ * without generating, that blob is pure waste, so it is deleted here. The same
+ * reference check as every other discard applies: a blob a cloud file or run
+ * artifact still points at is never touched.
+ */
+export const discardUpload = action({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, args): Promise<{ removed: boolean }> => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { removed: false };
+
+    const referenced = await ctx.runQuery(internal.cloud.blobReferences, {
+      storageId: args.storageId,
+      userId,
+    });
+    if (referenced) return { removed: false };
+
+    await ctx.storage.delete(args.storageId);
+    return { removed: true };
   },
 });
 

@@ -1547,7 +1547,14 @@ export default function Dashboard() {
   const [showStats, setShowStats] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
   /** An image handed to the studio by the viewer, used as its starting frame. */
-  const [studioSeed, setStudioSeed] = useState<{ name: string; url: string } | null>(null);
+  const [studioSeed, setStudioSeed] = useState<{
+    name: string;
+    url: string;
+    storageId: Id<"_storage">;
+  } | null>(null);
+  /** Whether that seed was actually drawn from; an unused one is deleted. */
+  const studioSeedUsed = useRef(false);
+  const discardUpload = useAction(api.cloud.discardUpload);
   const [showCode, setShowCode] = useState(false);
   const [showAeroTransform, setShowAeroTransform] = useState(false);
 
@@ -7705,6 +7712,7 @@ export default function Dashboard() {
                   autoStart={deckSeed?.auto ?? false}
                   onSendToStudio={(image) => {
                     setStudioSeed(image);
+                    studioSeedUsed.current = false;
                     setShowStudio(true);
                   }}
                   onClose={() => {
@@ -7721,6 +7729,7 @@ export default function Dashboard() {
               onOpenChange={setShowSlides}
               onSendToStudio={(image) => {
                 setStudioSeed(image);
+                studioSeedUsed.current = false;
                 setShowStudio(true);
               }}
             />
@@ -7813,11 +7822,23 @@ export default function Dashboard() {
           <ImageStudio
             open={showStudio}
             seed={studioSeed}
+            onSourceUsed={(url) => {
+              if (studioSeed && url === studioSeed.url) studioSeedUsed.current = true;
+            }}
             onOpenChange={(next) => {
               setShowStudio(next);
-              // The seed has done its job once the dialog closes; keeping it
-              // would silently apply it to the next unrelated studio visit.
-              if (!next) setStudioSeed(null);
+              if (!next) {
+                // A seed that never produced a picture is waste: the blob was
+                // uploaded only so a provider could fetch it. Delete it, and
+                // forget the seed so the next visit is not seeded by accident.
+                if (studioSeed && !studioSeedUsed.current) {
+                  void discardUpload({ storageId: studioSeed.storageId }).catch(
+                    () => undefined,
+                  );
+                }
+                setStudioSeed(null);
+                studioSeedUsed.current = false;
+              }
             }}
             generate={async ({
               prompt: p,

@@ -241,6 +241,12 @@ export interface ImageStudioProps {
    */
   seed?: { url: string; name?: string } | null;
   /**
+   * Called when a generation actually used the seed's URL. The caller keeps
+   * the uploaded blob when this fires and deletes it otherwise, so a studio
+   * visit that never generated does not leave an orphan in storage.
+   */
+  onSourceUsed?: (url: string) => void;
+  /**
    * Runs the provider chain. Kept as a prop so the studio never learns the
    * provider order — and so it can be stubbed in tests.
    */
@@ -517,6 +523,7 @@ export function ImageStudio({
   open,
   onOpenChange,
   seed,
+  onSourceUsed,
   generate,
   search,
   enhance,
@@ -566,6 +573,11 @@ export function ImageStudio({
   const [source, setSource] = useState<{ url: string; strength: number } | null>(
     null,
   );
+  // Which seed the current source came from, and whether it has been drawn
+  // from. A seed that was never used is dropped on close, both here and in
+  // storage, so the next visit does not start from a deleted URL.
+  const [seededUrl, setSeededUrl] = useState<string | null>(null);
+  const seededUsed = useRef(false);
 
   const [lookups, setLookups] = useState(() => {
     try {
@@ -638,10 +650,20 @@ export function ImageStudio({
       // A seed becomes the starting frame at the same moment, so the studio
       // opens already in variation mode with its reference visible. Strength
       // starts at Balanced; the author can change it before pressing Generate.
-      if (seed) setSource({ url: seed.url, strength: STRENGTHS[1].id });
+      if (seed) {
+        setSource({ url: seed.url, strength: STRENGTHS[1].id });
+        setSeededUrl(seed.url);
+        seededUsed.current = false;
+      }
     } else {
       // The viewer is portaled outside the dialog, so it would outlive it.
       setPreview(null);
+      // An unused seed is about to be deleted by the caller; holding its URL
+      // as the next starting frame would mean generating from a 404.
+      if (seededUrl && !seededUsed.current) {
+        setSource((current) => (current?.url === seededUrl ? null : current));
+      }
+      setSeededUrl(null);
     }
   }
 
@@ -1043,6 +1065,8 @@ export function ImageStudio({
         // least describes what was asked for.
         const usedSource = source;
         if (usedSource) {
+          if (usedSource.url === seededUrl) seededUsed.current = true;
+          onSourceUsed?.(usedSource.url);
           grounded = `${grounded}\n\nVariation of the reference image: keep its subject, framing and palette; change what the prompt names.`;
         }
 
