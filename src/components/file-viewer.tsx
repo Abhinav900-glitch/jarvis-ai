@@ -31,6 +31,7 @@ import {
   FileSpreadsheet,
   FileText,
   FileUp,
+  Image as ImageIcon,
   Loader2,
   Presentation,
   X,
@@ -60,7 +61,8 @@ export interface FileViewerProps {
   initialSource?: { name: string; bytes: Uint8Array } | null;
 }
 
-const ACCEPT = ".pdf,.pptx,.xlsx,.xlsm,.docx,.csv,.tsv";
+const ACCEPT =
+  ".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,.pptx,.xlsx,.xlsm,.docx,.csv,.tsv";
 
 function SlideFace({ slide, urls, ratio }: { slide: SlideView; urls: string[]; ratio: number }) {
   const body = slide.lines.filter((line) => line !== slide.title);
@@ -414,11 +416,13 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
   };
 
   const Icon =
-    file?.kind === "sheet"
-      ? FileSpreadsheet
-      : file?.kind === "doc" || file?.kind === "csv" || file?.kind === "pdf"
-        ? FileText
-        : Presentation;
+    file?.kind === "image"
+      ? ImageIcon
+      : file?.kind === "sheet"
+        ? FileSpreadsheet
+        : file?.kind === "doc" || file?.kind === "csv" || file?.kind === "pdf"
+          ? FileText
+          : Presentation;
 
   return (
     <Dialog open={open} onOpenChange={close}>
@@ -429,8 +433,8 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
             File viewer
           </DialogTitle>
           <DialogDescription className="pr-6 text-xs sm:text-sm">
-            Open a .pdf, .pptx, .xlsx, .docx, .csv or .tsv and read it here — no PowerPoint, Excel or
-            Word. Reading stays in the browser; converting sends that one file to ConvertAPI.
+            Open a .pdf, image, .pptx, .xlsx, .docx, .csv or .tsv and read it here — no PowerPoint,
+            Excel or Word. Reading stays in the browser; converting sends that one file to ConvertAPI.
           </DialogDescription>
         </DialogHeader>
 
@@ -467,7 +471,9 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
                     ? ` · ${file.view.paragraphs.length} paragraphs`
                     : file.kind === "pdf"
                       ? " · PDF"
-                      : ` · ${file.rows.length} rows`}
+                      : file.kind === "image"
+                        ? ` · ${(file.name.split(".").pop() ?? "image").toUpperCase()}`
+                        : ` · ${file.rows.length} rows`}
             </span>
           ) : null}
           {source && targets.length > 0 ? (
@@ -568,6 +574,23 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
                 <Grid rows={table.rows} />
               </div>
             ))}
+          </div>
+        ) : file?.kind === "image" ? (
+          <div className="space-y-1">
+            <div className="flex max-h-[65vh] items-center justify-center overflow-auto rounded-lg border border-border/70 bg-muted/20 p-2">
+              <img
+                src={file.url}
+                alt={file.name}
+                className="max-h-[62vh] max-w-full rounded object-contain"
+              />
+            </div>
+            <p className="text-[10px] text-muted-foreground/70">
+              Drawn at its own size from memory ·{" "}
+              <a href={file.url} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">
+                open in a new tab
+              </a>{" "}
+              · convert it to PDF or another image above
+            </p>
           </div>
         ) : file?.kind === "pdf" ? (
           <div className="space-y-1">

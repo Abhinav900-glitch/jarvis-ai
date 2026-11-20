@@ -10,7 +10,9 @@ import { zipFiles } from "../pptx/zip";
 import {
   columnIndex,
   detectKind,
+  disposeOpenedFile,
   guessDelimiter,
+  openOfficeFile,
   parseDocument,
   parseSharedStrings,
   parseSheet,
@@ -171,8 +173,23 @@ describe("detectKind", () => {
     expect(detectKind("export.csv", null)).toBe("csv");
     expect(detectKind("report.pdf", null)).toBe("pdf");
     expect(detectKind("REPORT.PDF", null)).toBe("pdf");
+    expect(detectKind("photo.png", null)).toBe("image");
+    expect(detectKind("photo.JPG", null)).toBe("image");
+    expect(detectKind("scan.webp", null)).toBe("image");
     expect(detectKind("mystery", new Map([["xl/workbook.xml", new Uint8Array()]]))).toBe("sheet");
     expect(detectKind("mystery", new Map([["word/document.xml", new Uint8Array()]]))).toBe("doc");
     expect(detectKind("mystery", null)).toBeNull();
+  });
+
+  test("an image with no extension is recognised from its bytes", async () => {
+    // The PNG signature, and nothing else — an image dropped in with a broken
+    // name still opens, which is the whole point of sniffing.
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const opened = await openOfficeFile("no-extension", png);
+    expect(opened.kind).toBe("image");
+    if (opened.kind === "image") {
+      expect(opened.url.startsWith("blob:")).toBe(true);
+      disposeOpenedFile(opened);
+    }
   });
 });

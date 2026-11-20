@@ -307,7 +307,29 @@ export function guessDelimiter(text: string): string {
   return ",";
 }
 
-export type OfficeKind = "slides" | "sheet" | "doc" | "csv" | "pdf";
+export type OfficeKind = "slides" | "sheet" | "doc" | "csv" | "pdf" | "image";
+
+/** Image extensions the viewer will draw, and the type a blob URL needs. */
+const IMAGE_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  svg: "image/svg+xml",
+  avif: "image/avif",
+};
+
+/** The image type from the name, then from the first bytes, then a safe default. */
+function imageMimeOf(name: string, bytes: Uint8Array): string {
+  const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase() ?? "";
+  if (IMAGE_MIME[ext]) return IMAGE_MIME[ext];
+  if (bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes[0] === 0x47 && bytes[1] === 0x49) return "image/gif";
+  return "image/*";
+}
 
 /** What a filename or a zip's parts say this file is. */
 export function detectKind(name: string, parts: Map<string, Uint8Array> | null): OfficeKind | null {
@@ -317,6 +339,8 @@ export function detectKind(name: string, parts: Map<string, Uint8Array> | null):
   if (lower.endsWith(".docx")) return "doc";
   if (lower.endsWith(".csv") || lower.endsWith(".tsv")) return "csv";
   if (lower.endsWith(".pdf")) return "pdf";
+  const ext = /^.+?\.([a-z0-9]+)$/.exec(lower)?.[1] ?? "";
+  if (IMAGE_MIME[ext]) return "image";
   if (!parts) return null;
   if (parts.has("ppt/presentation.xml")) return "slides";
   if (parts.has("xl/workbook.xml")) return "sheet";
@@ -337,7 +361,9 @@ export type OpenedFile =
    * That is the honest ceiling without adding a PDF engine — pages, text and
    * links are real, but nothing here can search or extract them.
    */
-  | { kind: "pdf"; name: string; url: string };
+  | { kind: "pdf"; name: string; url: string }
+  /** An image is drawn as-is from a blob URL, at whatever its own size is. */
+  | { kind: "image"; name: string; url: string };
 
 /**
  * Read any supported file by name and bytes.
@@ -361,8 +387,12 @@ export async function openOfficeFile(name: string, bytes: Uint8Array): Promise<O
     const url = URL.createObjectURL(new Blob([bytes.slice()], { type: "application/pdf" }));
     return { kind, name, url };
   }
+  if (kind === "image") {
+    const url = URL.createObjectURL(new Blob([bytes.slice()], { type: imageMimeOf(name, bytes) }));
+    return { kind, name, url };
+  }
   throw new Error(
-    "That file type isn't supported here. Open a .pdf, .pptx, .xlsx, .docx, .csv or .tsv.",
+    "That file type isn't supported here. Open a .pdf, .png, .jpg, .webp, .pptx, .xlsx, .docx, .csv or .tsv.",
   );
 }
 
@@ -373,6 +403,20 @@ async function detectKindFromBytes(bytes: Uint8Array): Promise<OfficeKind | null
   // would refuse a file the browser can display perfectly.
   const head = new TextDecoder().decode(bytes.slice(0, 5));
   if (head === "%PDF-") return "pdf";
+  // The same argument for images with the wrong (or no) extension. Only the
+  // four signatures worth checking are here; the rest rely on the name.
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image";
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "image";
+  if (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP"
+  ) {
+    return "image";
+  }
   try {
     const parts = await readZip(bytes);
     return detectKind("", parts);
@@ -384,5 +428,5 @@ async function detectKindFromBytes(bytes: Uint8Array): Promise<OfficeKind | null
 /** Release anything an opened file allocated. Safe on any kind. */
 export function disposeOpenedFile(file: OpenedFile): void {
   if (file.kind === "slides") disposeDeck(file.deck);
-  if (file.kind === "pdf") URL.revokeObjectURL(file.url);
+  if (file.kind === "pdf" || file.kind === "image") URL.revokeObjectURL(file.url);
 }
