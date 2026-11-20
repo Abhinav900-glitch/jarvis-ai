@@ -386,9 +386,12 @@ export function DeckStudio({
   initialTopic,
   onClose,
   autoStart = false,
+  onSendToStudio,
 }: {
   initialTopic: string;
   onClose: () => void;
+  /** Forwarded to the viewer: an opened image can become a studio seed. */
+  onSendToStudio?: (image: { name: string; url: string }) => void;
   /**
    * Start writing as soon as the panel opens. Used when the panel is the
    * fallback for a slides request that already failed elsewhere: the user asked
@@ -1616,6 +1619,7 @@ export function DeckStudio({
         }}
         initial={viewerFile}
         initialSource={viewerSource}
+        onSendToStudio={onSendToStudio}
       />
     </motion.div>
   );

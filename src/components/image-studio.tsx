@@ -235,6 +235,12 @@ export interface ImageStudioProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /**
+   * A picture to start from, handed in by another part of the app — the file
+   * viewer sending an opened image here. Consumed on the open transition, not
+   * on every render, so the strength the author picks is not reset.
+   */
+  seed?: { url: string; name?: string } | null;
+  /**
    * Runs the provider chain. Kept as a prop so the studio never learns the
    * provider order — and so it can be stubbed in tests.
    */
@@ -510,6 +516,7 @@ function note(value: string): string {
 export function ImageStudio({
   open,
   onOpenChange,
+  seed,
   generate,
   search,
   enhance,
@@ -626,9 +633,16 @@ export function ImageStudio({
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
-    if (open) setHistory(loadHistory());
-    // The viewer is portaled outside the dialog, so it would outlive it.
-    else setPreview(null);
+    if (open) {
+      setHistory(loadHistory());
+      // A seed becomes the starting frame at the same moment, so the studio
+      // opens already in variation mode with its reference visible. Strength
+      // starts at Balanced; the author can change it before pressing Generate.
+      if (seed) setSource({ url: seed.url, strength: STRENGTHS[1].id });
+    } else {
+      // The viewer is portaled outside the dialog, so it would outlive it.
+      setPreview(null);
+    }
   }
 
   // Focus the prompt when the studio opens — it is the only reason it was

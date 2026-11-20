@@ -34,6 +34,7 @@ import {
   Image as ImageIcon,
   Loader2,
   Presentation,
+  Sparkles,
   X,
 } from "lucide-react";
 import { useAction, useMutation } from "convex/react";
@@ -59,6 +60,12 @@ export interface FileViewerProps {
    * conversion needs the service.
    */
   initialSource?: { name: string; bytes: Uint8Array } | null;
+  /**
+   * Hand an open image to the image studio as its starting frame. Called with
+   * a hosted URL rather than the bytes: the studio sends that URL to a
+   * generation provider, which cannot read a blob URL from this tab.
+   */
+  onSendToStudio?: (image: { name: string; url: string }) => void;
 }
 
 const ACCEPT =
@@ -261,7 +268,13 @@ function SheetBook({ sheets }: { sheets: SheetTable[] }) {
   );
 }
 
-export function FileViewer({ open, onOpenChange, initial, initialSource }: FileViewerProps) {
+export function FileViewer({
+  open,
+  onOpenChange,
+  initial,
+  initialSource,
+  onSendToStudio,
+}: FileViewerProps) {
   const [picked, setPicked] = useState<OpenedFile | null>(null);
   const [ownSource, setOwnSource] = useState<{ name: string; bytes: Uint8Array } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -277,6 +290,8 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
   const pickedRef = useRef<OpenedFile | null>(null);
 
   const createUpload = useMutation(api.cloud.createUpload);
+  const storageUrl = useMutation(api.cloud.storageUrl);
+  const [seeding, setSeeding] = useState(false);
   const convertBlob = useAction(api.convert.blob);
   const conversionCredits = useConversionCredits(open);
   const keepConverted = useAction(api.convert.keep);
@@ -432,6 +447,40 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
     }
   };
 
+  /**
+   * Publish the open image and hand it to the studio as a starting frame.
+   *
+   * Cloud storage is the transport for the same reason the converter uses it:
+   * a provider fetches a URL, not a Uint8Array. The viewer closes once the
+   * studio has the URL, so the two dialogs never stack.
+   */
+  const sendToStudio = async () => {
+    if (!source || !onSendToStudio || seeding) return;
+    setSeeding(true);
+    setError(null);
+    try {
+      const mime = mimeForTarget(extensionOf(source.name));
+      const uploadUrl = await createUpload({});
+      const upload = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": mime },
+        body: new Blob([source.bytes as unknown as BlobPart], { type: mime }),
+      });
+      if (!upload.ok) throw new Error("Could not upload that image for the studio.");
+      const body = (await upload.json()) as { storageId?: Id<"_storage"> };
+      if (!body.storageId) throw new Error("The upload returned no file id.");
+
+      const url = await storageUrl({ storageId: body.storageId });
+      if (!url) throw new Error("That image has no public URL yet.");
+      onSendToStudio({ name: source.name, url });
+      close(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send that image to the studio.");
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   /** Adopt the downloaded conversion into the author's cloud. */
   const saveConverted = async () => {
     if (!converted || converted.saved || saving) return;
@@ -537,6 +586,22 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
             <span className="min-w-0 truncate text-[11px] text-emerald-600 dark:text-emerald-400">
               {note}
             </span>
+          ) : null}
+          {onSendToStudio && source && file?.kind === "image" ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void sendToStudio()}
+              disabled={seeding || converting !== null}
+              title="Open this image in the image studio as the starting frame"
+            >
+              {seeding ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="size-3.5" />
+              )}
+              {seeding ? "Sending…" : "Use in studio"}
+            </Button>
           ) : null}
           {converted?.saved ? (
             <span className="text-[11px] text-muted-foreground/60">in your cloud</span>

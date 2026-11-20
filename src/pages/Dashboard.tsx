@@ -1546,6 +1546,8 @@ export default function Dashboard() {
   const [showExport, setShowExport] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
+  /** An image handed to the studio by the viewer, used as its starting frame. */
+  const [studioSeed, setStudioSeed] = useState<{ name: string; url: string } | null>(null);
   const [showCode, setShowCode] = useState(false);
   const [showAeroTransform, setShowAeroTransform] = useState(false);
 
@@ -7701,6 +7703,10 @@ export default function Dashboard() {
                 <DeckStudio
                   initialTopic={deckSeed?.text ?? input}
                   autoStart={deckSeed?.auto ?? false}
+                  onSendToStudio={(image) => {
+                    setStudioSeed(image);
+                    setShowStudio(true);
+                  }}
                   onClose={() => {
                     setShowDeck(false);
                     setDeckSeed(null);
@@ -7710,7 +7716,14 @@ export default function Dashboard() {
             </AnimatePresence>
 
             {/* ---- File viewer: .pptx, .xlsx, .docx, .csv — no Office needed ---- */}
-            <FileViewer open={showSlides} onOpenChange={setShowSlides} />
+            <FileViewer
+              open={showSlides}
+              onOpenChange={setShowSlides}
+              onSendToStudio={(image) => {
+                setStudioSeed(image);
+                setShowStudio(true);
+              }}
+            />
 
             {/* ---- AeroTransformGen overview: runs + workspace ---- */}
             <AnimatePresence>
@@ -7799,7 +7812,13 @@ export default function Dashboard() {
           {/* ---- Image Studio ---- */}
           <ImageStudio
             open={showStudio}
-            onOpenChange={setShowStudio}
+            seed={studioSeed}
+            onOpenChange={(next) => {
+              setShowStudio(next);
+              // The seed has done its job once the dialog closes; keeping it
+              // would silently apply it to the next unrelated studio visit.
+              if (!next) setStudioSeed(null);
+            }}
             generate={async ({
               prompt: p,
               model: m,

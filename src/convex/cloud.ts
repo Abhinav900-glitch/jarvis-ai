@@ -201,6 +201,25 @@ export const saveConversion = internalMutation({
   },
 });
 
+/**
+ * A fetchable URL for a blob that is not a cloud file.
+ *
+ * The viewer uploads an image so the image studio can use it as a starting
+ * frame, and a generation provider has to be able to download it: a blob URL
+ * is meaningless outside the tab. This returns the storage URL for that blob.
+ *
+ * A mutation rather than a query because it is awaited once, right after the
+ * upload — a query would need a subscription for a value that cannot change.
+ */
+export const storageUrl = mutation({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to use your storage.");
+    return await ctx.storage.getUrl(args.storageId);
+  },
+});
+
 /** A short-lived upload URL. The bytes go straight to storage, not through us. */
 export const createUpload = mutation({
   args: {},
