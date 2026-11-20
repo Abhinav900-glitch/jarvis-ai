@@ -448,6 +448,9 @@ export function DeckStudio({
   const moveSlideAction = useMutation(api.decks.moveSlide);
   const sourcesSlideAction = useMutation(api.decks.addSourcesSlide);
   const [slideBusy, setSlideBusy] = useState(false);
+  /** The tile being dragged, and the tile it is hovering over. */
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
 
   const recent = useQuery(api.decks.list, {});
   const deck = useQuery(api.decks.get, deckId ? { deckId } : "skip");
@@ -726,6 +729,22 @@ export function DeckStudio({
     } finally {
       setSlideBusy(false);
     }
+  };
+
+  /**
+   * Reorder by dropping one thumbnail onto another.
+   *
+   * The drop index is the tile's own index, not "before" or "after" it: the
+   * arrows move by one and the drag moves by however far it was dragged, and
+   * both end up at a position the author can see. The index also comes from
+   * the drag state rather than only from `dataTransfer`, because Firefox will
+   * not expose data during `dragover` and Safari sometimes drops it.
+   */
+  const dropOn = (from: number, to: number) => {
+    setDragIndex(null);
+    setDragOver(null);
+    if (!deckId || from === to || from < 0 || to < 0) return;
+    void restructure(() => moveSlideAction({ deckId, from, to }), to);
   };
 
   const moveCurrent = (direction: -1 | 1) => {
@@ -1204,23 +1223,61 @@ export function DeckStudio({
         {slides.length > 0 ? (
           <>
             <p className="mt-2 text-[9px] text-muted-foreground/60">
-              Keys · ← → choose a slide · Shift+↑↓ move · Shift+Enter add · Shift+D duplicate · Shift+Del delete
+              Drag a thumbnail to reorder · ← → choose · Shift+↑↓ move · Shift+Enter add · Shift+D duplicate · Shift+Del delete
             </p>
 
             <div className="mt-1 grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
               {slides.map((slide, index) => (
-                <button
+                // The drag lives on a wrapper, not on the button: Firefox will
+                // not start an HTML5 drag from a `<button>`, while it happily
+                // drags a div that wraps one. The button keeps every bit of its
+                // own behaviour — click to select, focus ring, keyboard.
+                <div
                   key={index}
-                  onClick={() => {
-                    setSelected(index);
-                    setEditDraft(null);
+                  draggable={!busy && !slideBusy && imageBusy === null}
+                  onDragStart={(event) => {
+                    setDragIndex(index);
+                    event.dataTransfer.effectAllowed = "move";
+                    // Some browsers refuse to start a drag without data.
+                    event.dataTransfer.setData("text/plain", String(index));
                   }}
-                  className={`group relative aspect-video overflow-hidden rounded-md border text-left transition-all ${
-                    index === selected ? "border-primary/60 ring-1 ring-primary/30" : "border-border/60 hover:border-foreground/30"
-                  }`}
+                  onDragEnd={() => {
+                    setDragIndex(null);
+                    setDragOver(null);
+                  }}
+                  onDragOver={(event) => {
+                    if (dragIndex === null || dragIndex === index) return;
+                    // Only a prevented dragover marks the tile as a drop target.
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setDragOver(index);
+                  }}
+                  onDragLeave={() => setDragOver((current) => (current === index ? null : current))}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const raw = event.dataTransfer.getData("text/plain");
+                    const from = dragIndex ?? (raw ? Number(raw) : -1);
+                    dropOn(from, index);
+                  }}
+                  title={`Slide ${index + 1} — drag to reorder`}
+                  className={dragIndex === index ? "cursor-grabbing opacity-40" : ""}
                 >
-                  <SlideThumb slide={slide} themeId={deck?.theme ?? theme} index={index} />
-                </button>
+                  <button
+                    onClick={() => {
+                      setSelected(index);
+                      setEditDraft(null);
+                    }}
+                    className={`group relative aspect-video w-full overflow-hidden rounded-md border text-left transition-all ${
+                      dragOver === index
+                        ? "border-primary ring-2 ring-primary/50"
+                        : index === selected
+                          ? "border-primary/60 ring-1 ring-primary/30"
+                          : "border-border/60 hover:border-foreground/30"
+                    }`}
+                  >
+                    <SlideThumb slide={slide} themeId={deck?.theme ?? theme} index={index} />
+                  </button>
+                </div>
               ))}
             </div>
 
