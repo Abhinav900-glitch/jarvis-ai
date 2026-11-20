@@ -18,6 +18,7 @@ import {
   fitSlideKind,
   hasContent,
   normalizePlan,
+  normalizeSlide,
   normalizeSlides,
   type DeckPlan,
   type SlideSpec,
@@ -51,14 +52,31 @@ import { applySlideEdit, coerceSlideRewrite } from "../lib/pptx/edit";
 const BATCH = 3;
 
 const briefOf = (
-  deck: { topic: string; tone?: string | null; audience?: string | null },
+  deck: {
+    topic: string;
+    tone?: string | null;
+    audience?: string | null;
+    research?: unknown;
+  },
   slideCount: number,
 ): DeckBrief => ({
   topic: deck.topic,
   slideCount,
   tone: deck.tone ?? undefined,
   audience: deck.audience ?? undefined,
+  // Stored with the deck, not refetched per batch: eight batches of one deck
+  // must quote the same numbers, and a second search could disagree.
+  research: researchFacts(deck.research),
 });
+
+/** The facts stored from the build's one search, if it had one. */
+function researchFacts(value: unknown): string[] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const facts = (value as { facts?: unknown }).facts;
+  if (!Array.isArray(facts)) return undefined;
+  const clean = facts.filter((fact): fact is string => typeof fact === "string" && fact.trim() !== "");
+  return clean.length ? clean : undefined;
+}
 
 function clampCount(value: number | undefined): number {
   const n = Number.isFinite(value) ? Math.round(value as number) : 12;
@@ -238,6 +256,31 @@ export const rewrite = action({
 });
 
 /**
+ * Put a picture on a slide.
+ *
+ * Internal because the value is a data URL produced by the image action: a
+ * client posting its own would bypass the size and type checks that make a
+ * .pptx openable. The index is re-checked here for the same reason every other
+ * write checks it — the panel's selection can outlive the slide.
+ */
+export const setSlideImage = internalMutation({
+  args: {
+    deckId: v.id("decks"),
+    index: v.number(),
+    image: v.object({ dataUrl: v.string(), caption: v.optional(v.string()) }),
+  },
+  handler: async (ctx, args) => {
+    const deck = await ctx.db.get(args.deckId);
+    if (!deck) throw new Error("Deck not found.");
+    const slides = [...((deck.slides ?? []) as SlideSpec[])];
+    const slide = slides[args.index];
+    if (!slide) throw new Error("That slide is no longer in the deck.");
+    slides[args.index] = normalizeSlide({ ...slide, image: args.image }) ?? slide;
+    await ctx.db.patch(args.deckId, { slides, updatedAt: Date.now() });
+  },
+});
+
+/**
  * Change the look without regenerating the content.
  *
  * This is the advantage of storing a spec rather than a file: a deck is
@@ -279,6 +322,8 @@ export const create = internalMutation({
     audience: v.optional(v.string()),
     qrUrl: v.optional(v.string()),
     plan: v.any(),
+    /** `{facts, sources}` from the build's single web search, when it ran. */
+    research: v.optional(v.any()),
     total: v.number(),
     aiFailures: v.number(),
     engine: v.optional(v.string()),
@@ -295,6 +340,7 @@ export const create = internalMutation({
       audience: args.audience,
       qrUrl: args.qrUrl,
       plan: args.plan,
+      research: args.research,
       slides: [],
       status: "writing",
       total: args.total,
@@ -399,6 +445,12 @@ export const start = action({
     audience: v.optional(v.string()),
     /** Link or text for a closing QR slide. */
     qrUrl: v.optional(v.string()),
+    /**
+     * Search the web first and write the deck against what it found.
+     * Defaults to on: a deck with a source in it is the point of the studio,
+     * and the search costs one lookup before the outline is even asked for.
+     */
+    research: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<Doc<"decks"> | null> => {
     const userId = await getAuthUserId(ctx);
@@ -415,6 +467,22 @@ export const start = action({
       audience: args.audience?.trim().slice(0, 120) || undefined,
     };
     const qrUrl = args.qrUrl?.trim().slice(0, 600) || undefined;
+
+    // Research is best-effort in both directions: a missing key or a failed
+    // search leaves `facts` empty, and the brief then reads exactly as it did
+    // before this feature existed.
+    let research: { facts: string[]; sources: { title: string; url: string }[] } | undefined;
+    if (args.research !== false) {
+      try {
+        const found = await ctx.runAction(internal.ai.deckResearch, { topic });
+        if (found.facts.length > 0) {
+          research = found;
+          brief.research = found.facts;
+        }
+      } catch {
+        // The deck is still worth writing without citations.
+      }
+    }
 
     let plan: DeckPlan;
     let engine: string | undefined;
@@ -453,6 +521,7 @@ export const start = action({
       audience: brief.audience,
       qrUrl,
       plan,
+      research,
       total: plan.slides.length,
       aiFailures,
       engine,

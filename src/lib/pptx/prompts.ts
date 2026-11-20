@@ -29,7 +29,7 @@ export const KIND_MENU: { kind: SlideKind; use: string }[] = [
   { kind: "timeline", use: "phases or dates in order" },
   { kind: "table", use: "an honest comparison" },
   { kind: "chart", use: "a trend or a mix, with real numbers" },
-  { kind: "image", use: "a visual beat (no picture is attached)" },
+  { kind: "image", use: "a visual beat — a real web picture can be attached after writing" },
   { kind: "section", use: "opens a part of the argument" },
 ];
 
@@ -45,6 +45,24 @@ export interface DeckBrief {
   slideCount: number;
   tone?: string;
   audience?: string;
+  /**
+   * Facts from one live web search, each already ending with its source.
+   *
+   * The writer is allowed to quote these and nothing else that looks like a
+   * figure: a deck with a made-up percentage is worse than a deck without one,
+   * because the number is the part the room remembers.
+   */
+  research?: string[];
+}
+
+/** The research block both prompts share, or nothing when there was no search. */
+function researchBlock(research: string[] | undefined): string[] {
+  if (!research || research.length === 0) return [];
+  return [
+    "Research notes from a live web search — these are the only figures you may quote:",
+    ...research.map((fact) => `- ${fact}`),
+    "Use them where they fit the argument. If a note disagrees with the outline, the note wins.",
+  ];
 }
 
 /**
@@ -79,6 +97,9 @@ export function outlinePrompt(brief: DeckBrief): string {
   return [
     `Plan a ${brief.slideCount}-slide deck about: ${brief.topic}`,
     `Audience: ${audience}. Tone: ${tone}.`,
+    ...(researchBlock(brief.research).length
+      ? ["", ...researchBlock(brief.research), "Plan a slide that carries each of the strongest notes."]
+      : []),
     "",
     "Return only JSON with this shape:",
     '{"title":"deck title","subtitle":"one line","sections":[{"title":"section name","intent":"what it argues"}],"slides":[{"kind":"cover|agenda|section|bullets|columns|quote|stats|timeline|table|chart|image|closing","title":"slide title","purpose":"why this slide exists"}]}',
@@ -90,6 +111,7 @@ export function outlinePrompt(brief: DeckBrief): string {
     `- For the middle slides, choose the kind that suits the content: ${KIND_MENU.map((k) => `${k.kind} (${k.use})`).join("; ")}.`,
     "- Never use the same kind for more than two slides in a row.",
     "- Titles are specific claims, not labels. \"Costs fell 40% in two years\", not \"Costs\".",
+    "- When research notes are given, at least one title must state the finding they support.",
     "- Between 2 and 6 sections. No markdown, no numbering inside the titles.",
   ].join("\n");
 }
@@ -113,6 +135,7 @@ export function slidesPrompt(
     brief.tone ? `Tone: ${brief.tone}.` : "",
     `The deck's argument: ${plan.title}${plan.subtitle ? ` — ${plan.subtitle}` : ""}`,
     sections ? `Sections:\n${sections}` : "",
+    ...(researchBlock(brief.research).length ? ["", ...researchBlock(brief.research)] : []),
     "",
     "Slides to write, in this order:",
     request,
@@ -122,8 +145,10 @@ export function slidesPrompt(
     "",
     "Rules:",
     "- One object per slide, same order and same kind as requested. Keep the requested kind; do not switch it.",
-    "- Fill only the fields that kind needs, and keep them tight.",
-    "- body: 3-5 points, at most 18 words each, no leading bullet characters.",
+    "- Fill only the fields that kind needs. Be detailed, not padded: a slide is finished when the argument is.",
+    "- body: 4-6 points, 8-22 words each, each one a claim with its evidence, no leading bullet characters.",
+    "- Use the research notes for any figure. A number that is not in them must be marked illustrative in its note.",
+    "- notes: name the source once when a slide leans on a research note, so the presenter can credit it.",
     "- quote: one sentence, plus who said it when that is known.",
     "- metrics: 3 or 4; value at most 6 characters; add note \"illustrative\" if the figure is a placeholder.",
     "- steps: 3-5 phases; when is a date or a horizon.",

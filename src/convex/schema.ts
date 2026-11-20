@@ -426,6 +426,15 @@ const schema = defineSchema(
       plan: v.optional(v.any()),
       /** `SlideSpec[]` written so far, in presentation order. */
       slides: v.optional(v.any()),
+      /**
+       * `{facts, sources}` from the build's one web search.
+       *
+       * Stored on the deck rather than fetched again per batch: eight batches
+       * quoting three different versions of the same number would be a worse
+       * deck than one that quotes none of them, and the panel shows the same
+       * list the writer was given.
+       */
+      research: v.optional(v.any()),
       /** How many slides the plan holds, and how many are written. */
       total: v.number(),
       written: v.number(),

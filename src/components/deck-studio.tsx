@@ -5,6 +5,8 @@ import {
   Download,
   Eye,
   FileJson,
+  Globe,
+  ImagePlus,
   Loader2,
   Pencil,
   Presentation,
@@ -290,10 +292,18 @@ function SlideThumb({ slide, themeId, index }: { slide: SlideSpec; themeId: stri
     return frame(
       <>
         <div className="text-[10px] font-semibold leading-tight">{slide.title}</div>
-        <div className="mt-2 flex flex-1 items-center justify-center rounded-sm" style={{ background: `#${t.panel}` }}>
-          <div className="flex size-10 items-center justify-center rounded-full border" style={{ borderColor: accent }}>
-            <div className="size-4 rounded-full border" style={{ borderColor: `#${t.muted}` }} />
-          </div>
+        <div className="mt-2 flex flex-1 items-center justify-center overflow-hidden rounded-sm" style={{ background: `#${t.panel}` }}>
+          {slide.image?.dataUrl ? (
+            <img
+              src={slide.image.dataUrl}
+              alt={slide.image.caption ?? ""}
+              className="size-full object-cover"
+            />
+          ) : (
+            <div className="flex size-10 items-center justify-center rounded-full border" style={{ borderColor: accent }}>
+              <div className="size-4 rounded-full border" style={{ borderColor: `#${t.muted}` }} />
+            </div>
+          )}
         </div>
         <div className="mt-1 line-clamp-1 text-[6px]" style={{ color: `#${t.muted}` }}>
           {slide.image?.caption ?? "Visual placeholder"}
@@ -391,6 +401,11 @@ export function DeckStudio({
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [rewriteHint, setRewriteHint] = useState("");
+  /** Search the web before writing, and let the slides quote what it found. */
+  const [withResearch, setWithResearch] = useState(true);
+  /** Which slide is waiting on an image, so only that button spins. */
+  const [imageBusy, setImageBusy] = useState<number | null>(null);
+  const [imageHint, setImageHint] = useState("");
   const [rewriting, setRewriting] = useState(false);
   const [rendered, setRendered] = useState<{ url: string | null; bytes: number; slides: number } | null>(null);
   const runToken = useRef(0);
@@ -403,6 +418,7 @@ export function DeckStudio({
   const renderTemplate = useAction(api.deckTemplate.render);
   const editSlideAction = useMutation(api.decks.editSlide);
   const rewriteSlideAction = useAction(api.decks.rewrite);
+  const findImageAction = useAction(api.deckImages.find);
 
   const recent = useQuery(api.decks.list, {});
   const deck = useQuery(api.decks.get, deckId ? { deckId } : "skip");
@@ -446,6 +462,7 @@ export function DeckStudio({
         topic: text,
         slideCount,
         theme,
+        research: withResearch,
         ...(tone.trim() ? { tone: tone.trim() } : {}),
         ...(audience.trim() ? { audience: audience.trim() } : {}),
         ...(qrUrl.trim() ? { qrUrl: qrUrl.trim() } : {}),
@@ -613,6 +630,52 @@ export function DeckStudio({
     }
   };
 
+  /**
+   * Put a real web picture on one slide.
+   *
+   * Only image slides render `image`, so this is offered where it lands. A
+   * failed search leaves the placeholder in place and says why — an empty
+   * frame with no message reads as a broken button.
+   */
+  const findImage = async (index: number) => {
+    if (!deckId || imageBusy !== null) return;
+    setImageBusy(index);
+    setError(null);
+    try {
+      const hint = imageHint.trim();
+      const result = await findImageAction({
+        deckId,
+        index,
+        ...(hint ? { query: hint } : {}),
+      });
+      if (!result.ok) setError(result.reason ?? "No picture could be attached to that slide.");
+      else setImageHint("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not attach a picture.");
+    } finally {
+      setImageBusy(null);
+    }
+  };
+
+  /** Fill every image slide that is still a placeholder, one at a time. */
+  const fillImageSlides = async () => {
+    if (!deckId || imageBusy !== null) return;
+    const pending = slides
+      .map((slide, index) => ({ slide, index }))
+      .filter(({ slide }) => slide.kind === "image" && !slide.image?.dataUrl);
+    setError(null);
+    for (const { index } of pending) {
+      setImageBusy(index);
+      try {
+        const result = await findImageAction({ deckId, index });
+        if (!result.ok && result.reason) setError(result.reason);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not attach a picture.");
+      }
+    }
+    setImageBusy(null);
+  };
+
   const downloadQr = () => {
     if (!qrPng) return;
     const anchor = document.createElement("a");
@@ -664,6 +727,12 @@ export function DeckStudio({
 
   const current = slides[Math.min(selected, Math.max(0, slides.length - 1))];
   const activeTheme = deck ? themeById(deck.theme) : themeById(theme);
+  // `research` is stored as `v.any()`, so the panel reads it defensively: an
+  // old deck has no field, and a half-written one could hold anything.
+  const researchCount = (() => {
+    const facts = (deck?.research as { facts?: unknown } | undefined)?.facts;
+    return Array.isArray(facts) ? facts.filter((fact) => typeof fact === "string").length : 0;
+  })();
 
   return (
     <motion.div
@@ -820,6 +889,26 @@ export function DeckStudio({
             </div>
           ) : null}
 
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setWithResearch((value) => !value)}
+              title="Search the web first, then write the slides against what it found"
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                withResearch
+                  ? "border-foreground/30 bg-accent text-foreground"
+                  : "border-border/60 text-muted-foreground hover:bg-accent/50"
+              }`}
+              aria-pressed={withResearch}
+            >
+              <Globe className="size-3" /> Web research
+            </button>
+            <span className="text-[10px] text-muted-foreground/70">
+              {withResearch
+                ? "one live search — slides quote its facts and credit its sources"
+                : "the model writes alone, with no sources"}
+            </span>
+          </div>
+
           <div className="mt-2 flex items-center gap-2">
             <button
               onClick={() => void run()}
@@ -835,6 +924,17 @@ export function DeckStudio({
                 className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <Square className="size-2.5" /> Stop
+              </button>
+            ) : null}
+            {deck && slides.some((slide) => slide.kind === "image" && !slide.image?.dataUrl) ? (
+              <button
+                onClick={() => void fillImageSlides()}
+                disabled={imageBusy !== null || busy}
+                title="Search the web for a picture for every image slide"
+                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+              >
+                {imageBusy !== null ? <Loader2 className="size-3 animate-spin" /> : <ImagePlus className="size-3" />}
+                Pictures
               </button>
             ) : null}
             {deck && slides.length > 0 ? (
@@ -886,6 +986,7 @@ export function DeckStudio({
           {finished && deck ? (
             <p className="mt-1.5 text-[10px] text-muted-foreground">
               {slides.length} slides · theme {activeTheme.label} · speaker notes on every slide
+              {researchCount ? ` · ${researchCount} researched facts` : ""}
               {deck.engine ? ` · written by ${deck.engine}` : ""}
             </p>
           ) : null}
@@ -1014,6 +1115,41 @@ export function DeckStudio({
                     · {line.replace(/\*\*/g, "")}
                   </p>
                 ))}
+                {current?.kind === "image" ? (
+                  <div className="mt-1.5 rounded border border-border/60 p-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        value={imageHint}
+                        onChange={(e) => setImageHint(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void findImage(selected);
+                        }}
+                        maxLength={160}
+                        placeholder="Picture to search for (optional)"
+                        aria-label="Picture search query"
+                        className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-1.5 py-1 text-[10px] outline-none placeholder:text-muted-foreground/50 focus:border-foreground/30"
+                      />
+                      <button
+                        onClick={() => void findImage(selected)}
+                        disabled={imageBusy !== null}
+                        title="Find a web picture and put it on this slide"
+                        className="inline-flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-[10px] font-medium transition-colors hover:bg-accent disabled:opacity-40"
+                      >
+                        {imageBusy === selected ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <ImagePlus className="size-3" />
+                        )}
+                        {imageBusy === selected ? "Searching…" : "Web image"}
+                      </button>
+                    </div>
+                    <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
+                      {current.image?.dataUrl
+                        ? current.image.caption || "Picture attached."
+                        : "Placeholder — search the web, or leave it for the template."}
+                    </p>
+                  </div>
+                ) : null}
               </div>
               <div className="rounded-lg border border-border/60 p-2">
                 <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-muted-foreground/60">

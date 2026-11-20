@@ -14,6 +14,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { memoryContextFor } from "./memory";
 import { fetchAiMode } from "./liveTools";
 import { newAiModeSources } from "../lib/ai-mode-sources";
+import { researchFromHits } from "../lib/pptx/research";
 import {
   glinerEndpoint,
   glinerLabels,
@@ -4945,6 +4946,38 @@ export const deckTurn = internalAction({
       rankEngines(),
       { temperature: args.temperature ?? 0.6 },
     );
+  },
+});
+
+/**
+ * One search for a deck that is about to be written.
+ *
+ * Deliberately not `deepResearch`: a deck needs six quotable sentences, not a
+ * synthesis. So this is one pass of the same search stack, shaped by
+ * `researchFromHits` into facts that carry their source, and it degrades to no
+ * research at all rather than failing the build — a deck without citations is
+ * still a deck, and the key that was missing is visible in `catalog` anyway.
+ */
+export const deckResearch = internalAction({
+  args: { topic: v.string() },
+  handler: async (
+    _ctx,
+    args,
+  ): Promise<{ facts: string[]; sources: { title: string; url: string }[] }> => {
+    const topic = args.topic.replace(/\s+/g, " ").trim().slice(0, 300);
+    if (!topic) return { facts: [], sources: [] };
+    try {
+      const { sources } = await webSearch(topic);
+      const research = researchFromHits(sources);
+      console.log(`[deck-research] ${research.facts.length} facts from ${sources.length} hits`);
+      return research;
+    } catch (err) {
+      console.error(
+        "[deck-research] search failed:",
+        err instanceof Error ? err.message : err,
+      );
+      return { facts: [], sources: [] };
+    }
   },
 });
 
