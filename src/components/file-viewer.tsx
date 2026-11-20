@@ -44,6 +44,7 @@ import {
   mimeForTarget,
 } from "@/lib/convert-formats";
 import { disposeOpenedFile, openOfficeFile, type OpenedFile, type SheetTable } from "@/lib/office/read";
+import { useConversionCredits } from "@/hooks/use-conversion-credits";
 import type { SlideView } from "@/lib/pptx/read";
 
 export interface FileViewerProps {
@@ -262,6 +263,7 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
 
   const createUpload = useMutation(api.cloud.createUpload);
   const convertBlob = useAction(api.convert.blob);
+  const conversionCredits = useConversionCredits(open);
   const keepConverted = useAction(api.convert.keep);
   const discardConverted = useAction(api.convert.discard);
   const [convertOpen, setConvertOpen] = useState(false);
@@ -527,6 +529,16 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
             <span className="text-[10px] text-muted-foreground/60">
               · downloads straight away, nothing added to your cloud
             </span>
+            {conversionCredits.label ? (
+              <span
+                className={`ml-auto text-[10px] ${
+                  conversionCredits.hint ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground/60"
+                }`}
+              >
+                {conversionCredits.label}
+                {conversionCredits.hint ? ` · ${conversionCredits.hint}` : ""}
+              </span>
+            ) : null}
           </div>
         ) : null}
 

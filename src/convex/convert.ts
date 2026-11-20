@@ -330,6 +330,90 @@ export const discard = action({
 });
 
 /**
+ * What is left on the conversion plan.
+ *
+ * ConvertAPI keeps the plan counters on the account, and `/user` is the only
+ * endpoint that reports them. It officially wants a master token; a regular
+ * key often gets a 403 there, which is reported rather than hidden — "no figure
+ * for this key" is true, and quietly showing zero would be worse. The sandbox
+ * token is asked too, since a build that has run out on the live key falls back
+ * to it.
+ */
+export const credits = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{
+    keys: {
+      name: string;
+      ok: boolean;
+      total?: number;
+      consumed?: number;
+      remaining?: number;
+      active?: boolean;
+      message?: string;
+    }[];
+  }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to check conversion credits.");
+
+    const keys = credentials();
+    if (keys.length === 0) return { keys: [] };
+
+    const results = [];
+    for (const credential of keys) {
+      try {
+        const res = await fetch("https://v2.convertapi.com/user", {
+          headers: {
+            Authorization: `Bearer ${credential.key}`,
+            Accept: "application/json",
+          },
+          signal: AbortSignal.timeout(15_000),
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          results.push({
+            name: credential.name,
+            ok: false,
+            message:
+              res.status === 401 || res.status === 403
+                ? "needs a master token to report the plan"
+                : `ConvertAPI answered ${res.status}`,
+          });
+          continue;
+        }
+        const data = JSON.parse(text) as {
+          Active?: boolean;
+          ConversionsTotal?: number;
+          ConversionsConsumed?: number;
+        };
+        const total = typeof data.ConversionsTotal === "number" ? data.ConversionsTotal : undefined;
+        const consumed =
+          typeof data.ConversionsConsumed === "number" ? data.ConversionsConsumed : undefined;
+        results.push({
+          name: credential.name,
+          ok: true,
+          active: data.Active,
+          total,
+          consumed,
+          remaining:
+            typeof total === "number" && typeof consumed === "number"
+              ? Math.max(0, total - consumed)
+              : undefined,
+        });
+      } catch (err) {
+        results.push({
+          name: credential.name,
+          ok: false,
+          message: err instanceof Error ? err.message.slice(0, 120) : "could not reach ConvertAPI",
+        });
+      }
+    }
+    return { keys: results };
+  },
+});
+
+/**
  * Convert one cloud file and keep the result.
  *
  * The converted file lands in the same folder as its source and appears in the

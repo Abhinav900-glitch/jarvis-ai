@@ -20,6 +20,7 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { conversionTargets } from "@/lib/convert-formats";
+import { useConversionCredits } from "@/hooks/use-conversion-credits";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -62,6 +63,7 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
   const deleteFolder = useMutation(api.cloud.deleteFolder);
   const moveFile = useMutation(api.cloud.moveFile);
   const convertFileAction = useAction(api.convert.run);
+  const conversionCredits = useConversionCredits();
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -635,6 +637,12 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
           Signed in, so these files are yours across devices, not tied to the
           browser that uploaded them.
         </p>
+        {conversionCredits.label || conversionCredits.hint ? (
+          <p className="mt-1 text-[10px] text-muted-foreground/60">
+            ConvertAPI · {conversionCredits.label ?? "credits unavailable"}
+            {conversionCredits.hint ? ` · ${conversionCredits.hint}` : ""}
+          </p>
+        ) : null}
       </div>
     </motion.div>
   );
