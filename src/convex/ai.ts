@@ -3260,6 +3260,81 @@ export const critiqueImage = action({
   },
 });
 
+const DESCRIBE_SYSTEM_PROMPT =
+  "You write the prompt an image generator would need to draw the picture you are shown. " +
+  "Describe only what is visible: subject and count, setting, framing, light, colours, materials and medium. " +
+  "Do not name real people, brands or franchises, and do not mention any text in the image. " +
+  "Do not invent anything outside the frame. One paragraph, under 70 words, plain text, no preamble, no list.";
+
+/**
+ * Turn an image into a generator prompt.
+ *
+ * The file viewer can hand an image to the studio as a starting frame, and a
+ * variation with no prompt leaves the model to guess what to change. This is
+ * the sentence that stops that: the same vision-capable engine chain every
+ * other image call uses, asked for a description rather than a judgement.
+ *
+ * It returns its reason instead of throwing for provider failures — the
+ * studio can still generate from the reference with the prompt the author
+ * writes, and losing the convenience should not cost the picture.
+ */
+export const describeImage = action({
+  args: { url: v.string() },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ prompt: string | null; model: string | null; reason: string | null }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to describe an image.");
+
+    let url: string;
+    try {
+      url = assertSafePublicUrl(args.url.trim());
+    } catch {
+      return {
+        prompt: null,
+        model: null,
+        reason: "That image is not at an address this app will fetch.",
+      };
+    }
+
+    const instruction = "Describe this picture as a prompt for an image generator.";
+    try {
+      const plan = await routingFor(ctx, userId, {
+        task: "reason",
+        hasImages: true,
+        prompt: instruction,
+      });
+      const result = await runProviderChain(
+        [{ role: "user", content: buildUserContent(instruction, [url]) }],
+        DESCRIBE_SYSTEM_PROMPT,
+        "No vision engine could describe the image.",
+        plan,
+      );
+      const text = result.text
+        .trim()
+        .replace(/^["'`]+|["'`]+$/g, "")
+        .replace(/\s+/g, " ")
+        .slice(0, 600);
+      if (!text) {
+        return {
+          prompt: null,
+          model: result.model,
+          reason: "The description came back empty — write the prompt yourself.",
+        };
+      }
+      return { prompt: text, model: result.model, reason: null };
+    } catch (err) {
+      console.error("Image description failed:", err instanceof Error ? err.message : err);
+      return {
+        prompt: null,
+        model: null,
+        reason: "No vision engine could describe that image — write the prompt yourself.",
+      };
+    }
+  },
+});
+
 const CHARACTER_SYSTEM_PROMPT =
   "You identify the fictional characters or franchises an image request refers " +
   "to — people, creatures, robots, or a series someone names as a shorthand for " +

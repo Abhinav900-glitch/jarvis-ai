@@ -1555,6 +1555,7 @@ export default function Dashboard() {
   /** Whether that seed was actually drawn from; an unused one is deleted. */
   const studioSeedUsed = useRef(false);
   const discardUpload = useAction(api.cloud.discardUpload);
+  const describeImageAction = useAction(api.ai.describeImage);
   const [showCode, setShowCode] = useState(false);
   const [showAeroTransform, setShowAeroTransform] = useState(false);
 
@@ -7824,6 +7825,10 @@ export default function Dashboard() {
             seed={studioSeed}
             onSourceUsed={(url) => {
               if (studioSeed && url === studioSeed.url) studioSeedUsed.current = true;
+            }}
+            describe={async (url) => {
+              const described = await describeImageAction({ url });
+              return { prompt: described.prompt, reason: described.reason };
             }}
             onOpenChange={(next) => {
               setShowStudio(next);

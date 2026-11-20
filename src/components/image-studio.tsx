@@ -247,6 +247,12 @@ export interface ImageStudioProps {
    */
   onSourceUsed?: (url: string) => void;
   /**
+   * Describes a picture so a seeded variation starts with real wording rather
+   * than an empty prompt. Optional: without it the seed still loads as the
+   * reference, it just arrives without a description.
+   */
+  describe?: (url: string) => Promise<{ prompt: string | null; reason: string | null }>;
+  /**
    * Runs the provider chain. Kept as a prop so the studio never learns the
    * provider order — and so it can be stubbed in tests.
    */
@@ -524,6 +530,7 @@ export function ImageStudio({
   onOpenChange,
   seed,
   onSourceUsed,
+  describe,
   generate,
   search,
   enhance,
@@ -577,7 +584,34 @@ export function ImageStudio({
   // from. A seed that was never used is dropped on close, both here and in
   // storage, so the next visit does not start from a deleted URL.
   const [seededUrl, setSeededUrl] = useState<string | null>(null);
-  const seededUsed = useRef(false);
+  const [seededUsed, setSeededUsed] = useState(false);
+  // One description per seed. `describeFor` is the URL being described and
+  // `describeResult` is what came back for it — keeping the URL in the result
+  // is what lets a stale answer be ignored without an extra ref.
+  const [describeFor, setDescribeFor] = useState<string | null>(null);
+  const [describeResult, setDescribeResult] = useState<{
+    for: string;
+    prompt: string | null;
+    reason: string | null;
+    /** Whether it replaced an empty prompt or respected one already written. */
+    filled: boolean;
+  } | null>(null);
+  // The dashboard passes an inline callback, so its identity changes on every
+  // render; the ref keeps the effect from re-firing the description for that.
+  const describeRef = useRef(describe);
+  // The generation callback must not be rebuilt when the dashboard re-renders,
+  // so the seed URL and the "used" callback are read through refs.
+  const seededUrlRef = useRef(seededUrl);
+  const onSourceUsedRef = useRef(onSourceUsed);
+  const describing = describeFor !== null && describeResult?.for !== describeFor;
+  const describeNote =
+    describeResult && describeResult.for === describeFor
+      ? describeResult.prompt
+        ? describeResult.filled
+          ? "Wrote a starting prompt from the image — edit it, then Generate."
+          : "Reference loaded; your prompt was left as written."
+        : describeResult.reason
+      : null;
 
   const [lookups, setLookups] = useState(() => {
     try {
@@ -653,19 +687,70 @@ export function ImageStudio({
       if (seed) {
         setSource({ url: seed.url, strength: STRENGTHS[1].id });
         setSeededUrl(seed.url);
-        seededUsed.current = false;
+        setSeededUsed(false);
+        setDescribeFor(seed.url);
+        setDescribeResult(null);
       }
     } else {
       // The viewer is portaled outside the dialog, so it would outlive it.
       setPreview(null);
       // An unused seed is about to be deleted by the caller; holding its URL
       // as the next starting frame would mean generating from a 404.
-      if (seededUrl && !seededUsed.current) {
+      if (seededUrl && !seededUsed) {
         setSource((current) => (current?.url === seededUrl ? null : current));
       }
       setSeededUrl(null);
     }
   }
+
+  useEffect(() => {
+    describeRef.current = describe;
+    seededUrlRef.current = seededUrl;
+    onSourceUsedRef.current = onSourceUsed;
+  });
+
+  // A seeded image arrives with no prompt. Describing it turns "a variation of
+  // something" into a sentence that names the subject, framing and light, which
+  // is what a variation prompt needs to change one thing on purpose.
+  //
+  // The ref is the guard, not the dependency list: `describe` is an inline
+  // callback in the dashboard and gets a new identity on every render there.
+  useEffect(() => {
+    if (!open) return;
+    if (!describeFor || !describeRef.current) return;
+    // Already answered for this seed, or a newer seed replaced it.
+    if (describeResult?.for === describeFor) return;
+
+    let cancelled = false;
+    void describeRef
+      .current(describeFor)
+      .then((result) => {
+        if (cancelled) return;
+        // Only fill an empty box: a prompt the author already wrote is theirs.
+        const written = textareaRef.current?.value ?? "";
+        const filled = Boolean(result.prompt) && !written.trim();
+        if (filled && result.prompt) setPrompt(result.prompt);
+        setDescribeResult({
+          for: describeFor,
+          prompt: result.prompt,
+          reason: result.reason,
+          filled,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDescribeResult({
+          for: describeFor,
+          prompt: null,
+          reason: "Could not describe that image; write the prompt yourself.",
+          filled: false,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, describeFor, describeResult]);
 
   // Focus the prompt when the studio opens — it is the only reason it was
   // opened, and the delay waits for the dialog's own focus trap to settle.
@@ -1065,8 +1150,8 @@ export function ImageStudio({
         // least describes what was asked for.
         const usedSource = source;
         if (usedSource) {
-          if (usedSource.url === seededUrl) seededUsed.current = true;
-          onSourceUsed?.(usedSource.url);
+          if (usedSource.url === seededUrlRef.current) setSeededUsed(true);
+          onSourceUsedRef.current?.(usedSource.url);
           grounded = `${grounded}\n\nVariation of the reference image: keep its subject, framing and palette; change what the prompt names.`;
         }
 
@@ -2006,6 +2091,14 @@ export function ImageStudio({
                 {sharpenNote}
               </p>
             )}
+            {describing ? (
+              <p className="mt-1.5 flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground">
+                <Loader2 className="size-3 animate-spin" />
+                Reading the image for a starting prompt…
+              </p>
+            ) : describeNote ? (
+              <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground">{describeNote}</p>
+            ) : null}
 
             {/* ---- Style presets (AI only: a style suffix means nothing to a
                 web search, which returns what already exists) ---- */}
