@@ -48,6 +48,13 @@ import {
   type ChainStageTrace,
 } from "./chain";
 import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
+import {
+  isRapidApiGateway,
+  rapidApiGatewayHost,
+  rapidApiKey,
+  rapidApiPrefix,
+  withRapidApiAuth,
+} from "../lib/rapidapi";
 import { depthDirective } from "../lib/answer-depth";
 import {
   answerReviewPrompt,
@@ -1421,11 +1428,21 @@ async function mcpServersFor(
         headers[authHeaderName] =
           row.authType === "bearer" ? `Bearer ${authValue}` : authValue;
       }
+      // RapidAPI APIs all share one gateway URL; the row's header names which
+      // catalogue API it is, and the key is added here from the deployment.
+      // Without the key the server is skipped rather than called and rejected —
+      // Settings → MCP says so when the user tests it.
+      const rapid = isRapidApiGateway(row.url);
+      const rapidHost = rapid ? rapidApiGatewayHost(headers) : null;
+      if (rapid && (!rapidHost || !rapidApiKey())) continue;
+
       servers.push({
         id: row._id,
-        prefix: row.prefix || (row.name || "mcp").toLowerCase().replace(/[^a-z0-9_-]/g, "_"),
+        prefix: rapidHost
+          ? rapidApiPrefix(rapidHost)
+          : row.prefix || (row.name || "mcp").toLowerCase().replace(/[^a-z0-9_-]/g, "_"),
         url: row.url,
-        headers,
+        headers: withRapidApiAuth(row.url, headers),
       });
     }
   } catch {

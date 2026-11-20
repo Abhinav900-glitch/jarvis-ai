@@ -1273,6 +1273,17 @@ const ROWS: PresetRow[] = [
     "https://smithery.ai",
   ],
   [
+    "rapidapi",
+    "RapidAPI (any API)",
+    "https://mcp.rapidapi.com",
+    "Developer",
+    "header",
+    "rapidapi",
+    "Any RapidAPI API you are subscribed to, exposed as MCP tools. Paste its host (xxx.p.rapidapi.com).",
+    "https://docs.rapidapi.com/docs/consume-apis-using-ai",
+    "x-api-host",
+  ],
+  [
     "smithery-github",
     "GitHub via Smithery",
     "https://server.smithery.ai/@smithery-ai/github/mcp",

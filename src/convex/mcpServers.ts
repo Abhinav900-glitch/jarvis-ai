@@ -31,6 +31,12 @@ import {
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { McpClient } from "../lib/mcp";
+import {
+  isRapidApiGateway,
+  rapidApiGatewayHost,
+  rapidApiKey,
+  withRapidApiAuth,
+} from "../lib/rapidapi";
 
 export type McpAuthType = "none" | "bearer" | "header";
 
@@ -253,7 +259,27 @@ export const testConnection = action({
     try {
       const headers: Record<string, string> = {};
       if (authHeader) headers[authHeader.name] = authHeader.value;
-      const client: McpClient = new McpClient(row.url, headers);
+
+      // RapidAPI's gateway needs the account key on top of the host header, and
+      // that key is deployment-wide. Say which half is missing instead of
+      // letting the gateway answer "internal error".
+      if (isRapidApiGateway(row.url)) {
+        if (!rapidApiGatewayHost(headers)) {
+          throw new Error(
+            "Add the RapidAPI API host as an x-api-host header, e.g. weather.p.rapidapi.com.",
+          );
+        }
+        if (!rapidApiKey()) {
+          throw new Error(
+            "Add RAPIDAPI_KEY in the Keys tab — RapidAPI needs the application key.",
+          );
+        }
+      }
+
+      const client: McpClient = new McpClient(
+        row.url,
+        withRapidApiAuth(row.url, headers),
+      );
       try {
         const tools = await client.listTools();
         result.toolCount = tools.length;
