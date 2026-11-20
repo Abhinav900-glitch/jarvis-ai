@@ -735,6 +735,94 @@ export function DeckStudio({
     void restructure(() => moveSlideAction({ deckId, from: selected, to }), to);
   };
 
+  // ---------------------------------------------------------------------------
+  // Keyboard shortcuts.
+  //
+  // The handler lives in a ref, and the listener is registered once: the
+  // alternative is re-subscribing on every keystroke of the topic box, which
+  // is also the render that would make a stale closure most likely. The ref is
+  // refreshed after every render, so it always closes over the current
+  // selection without the listener ever being replaced.
+  //
+  // Shift is the modifier for everything that changes the deck. Plain
+  // Cmd/Ctrl/Alt combinations are left alone on purpose — Cmd+D is a bookmark
+  // and Alt+Arrow changes tabs — so no shortcut here shadows a browser one, and
+  // nothing fires while the caret is in a field (the topic box, the slide
+  // editor, or a search input).
+  // ---------------------------------------------------------------------------
+  const shortcutHandler = useRef<(event: KeyboardEvent) => void>(() => {});
+  const onShortcut = (event: KeyboardEvent) => {
+    if (!deckId || slides.length === 0) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+    const target = event.target as HTMLElement | null;
+    if (target?.isContentEditable) return;
+    if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+
+    if (viewerOpen || busy || slideBusy || rewriting || saving || imageBusy !== null) return;
+    // A held key should not walk a slide across the deck.
+    if (event.repeat) return;
+
+    const last = slides.length - 1;
+    const key = event.key;
+
+    if (key === "ArrowLeft" || key === "ArrowRight") {
+      const step = key === "ArrowLeft" ? -1 : 1;
+      if (event.shiftKey) {
+        const to = selected + step;
+        if (to < 0 || to > last) return;
+        event.preventDefault();
+        void restructure(() => moveSlideAction({ deckId, from: selected, to }), to);
+        return;
+      }
+      const next = selected + step;
+      if (next < 0 || next > last) return;
+      event.preventDefault();
+      setSelected(next);
+      setEditDraft(null);
+      return;
+    }
+
+    if (key === "ArrowUp" || key === "ArrowDown") {
+      if (!event.shiftKey) return;
+      const to = selected + (key === "ArrowUp" ? -1 : 1);
+      if (to < 0 || to > last) return;
+      event.preventDefault();
+      void restructure(() => moveSlideAction({ deckId, from: selected, to }), to);
+      return;
+    }
+
+    if (key === "Enter" && event.shiftKey) {
+      event.preventDefault();
+      void restructure(() => addSlideAction({ deckId, after: selected }), selected + 1);
+      return;
+    }
+
+    if ((key === "d" || key === "D") && event.shiftKey) {
+      event.preventDefault();
+      void restructure(() => duplicateSlideAction({ deckId, index: selected }), selected + 1);
+      return;
+    }
+
+    if (key === "Delete" && event.shiftKey) {
+      if (slides.length <= 1) return;
+      event.preventDefault();
+      void restructure(() => removeSlideAction({ deckId, index: selected }), selected - 1);
+    }
+  };
+
+  // Refreshed after every render (no dependency list) so the single listener
+  // mounted below always calls the closure over the current selection.
+  useEffect(() => {
+    shortcutHandler.current = onShortcut;
+  });
+
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => shortcutHandler.current(event);
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
+
   const downloadQr = () => {
     if (!qrPng) return;
     const anchor = document.createElement("a");
@@ -1115,7 +1203,11 @@ export function DeckStudio({
         {/* Previews */}
         {slides.length > 0 ? (
           <>
-            <div className="mt-3 grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
+            <p className="mt-2 text-[9px] text-muted-foreground/60">
+              Keys · ← → choose a slide · Shift+↑↓ move · Shift+Enter add · Shift+D duplicate · Shift+Del delete
+            </p>
+
+            <div className="mt-1 grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
               {slides.map((slide, index) => (
                 <button
                   key={index}
