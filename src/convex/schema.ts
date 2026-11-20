@@ -708,6 +708,7 @@ const schema = defineSchema(
           v.literal("run"),
           v.literal("image"),
           v.literal("music"),
+          v.literal("converted"),
         ),
       ),
       /** Absent means unfiled — at the top level, not in a missing folder. */

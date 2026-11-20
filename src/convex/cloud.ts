@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
@@ -113,6 +113,66 @@ export const list = query({
       maxFile: MAX_FILE_BYTES,
       count: rows.length,
     };
+  },
+});
+
+/**
+ * One row, read by an action that holds only an id.
+ *
+ * Actions have no database access, and a conversion needs the blob, the name
+ * and the folder. Ownership is checked here rather than in the action so there
+ * is exactly one place that decides whose file a row is.
+ */
+export const loadFile = internalQuery({
+  args: { fileId: v.id("cloudFiles"), userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const file = await ctx.db.get(args.fileId);
+    return file && file.userId === args.userId ? file : null;
+  },
+});
+
+/**
+ * Record a converted blob.
+ *
+ * A conversion costs storage exactly like an upload, so it goes through the
+ * same quota checks — otherwise the file limit would be bypassable by
+ * converting in a loop. A blob that breaks the quota is deleted here rather
+ * than left orphaned by the failed write.
+ */
+export const saveConversion = internalMutation({
+  args: {
+    userId: v.id("users"),
+    storageId: v.id("_storage"),
+    name: v.string(),
+    mime: v.string(),
+    size: v.number(),
+    folderId: v.optional(v.id("cloudFolders")),
+  },
+  handler: async (ctx, args) => {
+    if (args.size > MAX_FILE_BYTES) {
+      await ctx.storage.delete(args.storageId);
+      throw new Error("The converted file is larger than the 64 MB per-file limit.");
+    }
+    if (args.folderId && !(await ownedFolder(ctx, args.userId, args.folderId))) {
+      await ctx.storage.delete(args.storageId);
+      throw new Error("That folder no longer exists.");
+    }
+    const used = await usedBytes(ctx, args.userId);
+    if (used + args.size > LIMIT_BYTES) {
+      await ctx.storage.delete(args.storageId);
+      throw new Error("Not enough space in your cloud for the converted file.");
+    }
+
+    return await ctx.db.insert("cloudFiles", {
+      userId: args.userId,
+      name: cleanName(args.name),
+      mime: args.mime || "application/octet-stream",
+      size: args.size,
+      storageId: args.storageId,
+      source: "converted",
+      folderId: args.folderId,
+      createdAt: Date.now(),
+    });
   },
 });
 

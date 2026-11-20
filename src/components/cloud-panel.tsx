@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  ArrowLeftRight,
   Cloud,
   CloudUpload,
   Download,
@@ -15,9 +16,10 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import { conversionTargets } from "@/lib/convert-formats";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -47,6 +49,7 @@ const SOURCE_LABEL: Record<string, string> = {
   run: "from a run",
   image: "image",
   music: "music",
+  converted: "converted",
 };
 
 export function CloudPanel({ onClose }: { onClose: () => void }) {
@@ -58,6 +61,7 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
   const createFolder = useMutation(api.cloud.createFolder);
   const deleteFolder = useMutation(api.cloud.deleteFolder);
   const moveFile = useMutation(api.cloud.moveFile);
+  const convertFileAction = useAction(api.convert.run);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -73,6 +77,9 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
   const [folderDraft, setFolderDraft] = useState("");
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [folderBusy, setFolderBusy] = useState(false);
+  /** The file whose format picker is open, and the one being converted. */
+  const [convertFor, setConvertFor] = useState<Id<"cloudFiles"> | null>(null);
+  const [converting, setConverting] = useState<string | null>(null);
 
   const folders = data?.folders ?? [];
   const activeFolder = folders.find((f) => f._id === folderId) ?? null;
@@ -142,6 +149,34 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
       setError(err instanceof Error ? err.message : "Could not keep that file.");
     } finally {
       setBusy(null);
+    }
+  };
+
+  /**
+   * Convert one file and keep the result.
+   *
+   * The action stores the output beside its source, so the only local change
+   * is which picker is open — the list updates through the live query. The
+   * note names the sandbox token when that is what ran, because a sandbox
+   * conversion is not the same thing as a paid one.
+   */
+  const handleConvert = async (fileId: Id<"cloudFiles">, target: string) => {
+    if (converting) return;
+    setConverting(fileId);
+    setError(null);
+    setNote(null);
+    try {
+      const result = await convertFileAction({ fileId, target });
+      setNote(
+        `${result.name} is in your cloud${
+          result.engine === "CONVERT_API_SANDBOX_KEY" ? " (sandbox token)" : ""
+        }.`,
+      );
+      setConvertFor(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not convert that file.");
+    } finally {
+      setConverting(null);
     }
   };
 
@@ -452,8 +487,9 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
               {files.map((file) => (
                 <li
                   key={file.id}
-                  className="group flex items-center gap-2 px-3 py-1.5"
+                  className="group px-3 py-1.5"
                 >
+                  <div className="flex items-center gap-2">
                   <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded border border-border/50 bg-muted/40">
                     {file.mime.startsWith("image/") && file.url ? (
                       <img
@@ -511,6 +547,27 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
                       missing
                     </span>
                   )}
+                  {conversionTargets(file.name).length > 0 ? (
+                    <button
+                      onClick={() =>
+                        setConvertFor(convertFor === file.id ? null : file.id)
+                      }
+                      disabled={converting !== null}
+                      className={`rounded p-1 transition-colors disabled:opacity-40 ${
+                        convertFor === file.id
+                          ? "text-foreground"
+                          : "text-muted-foreground opacity-60 hover:text-foreground group-hover:opacity-100"
+                      }`}
+                      title="Convert to another format"
+                      aria-expanded={convertFor === file.id}
+                    >
+                      {converting === file.id ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <ArrowLeftRight className="size-3.5" />
+                      )}
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => void handleDelete(file.id)}
                     className={`rounded p-1 text-[10px] transition-colors ${
@@ -522,6 +579,24 @@ export function CloudPanel({ onClose }: { onClose: () => void }) {
                   >
                     <Trash2 className="size-3.5" />
                   </button>
+                  </div>
+                  {convertFor === file.id ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-1 pl-9">
+                      <span className="text-[10px] text-muted-foreground/60">
+                        Convert to
+                      </span>
+                      {conversionTargets(file.name).map((target) => (
+                        <button
+                          key={target.ext}
+                          onClick={() => void handleConvert(file.id, target.ext)}
+                          disabled={converting !== null}
+                          className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                        >
+                          {target.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </li>
               ))}
             </ul>
