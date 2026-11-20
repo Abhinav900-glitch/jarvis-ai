@@ -64,6 +64,13 @@ export interface FileViewerProps {
 const ACCEPT =
   ".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,.pptx,.xlsx,.xlsm,.docx,.csv,.tsv";
 
+/** Bytes as a short label for the header. */
+function sizeLabel(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function SlideFace({ slide, urls, ratio }: { slide: SlideView; urls: string[]; ratio: number }) {
   const body = slide.lines.filter((line) => line !== slide.title);
   return (
@@ -260,6 +267,12 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  /**
+   * Pixel size, read by an image element — every format decodes itself. The
+   * URL travels with it so a stale decode from the previous file can be
+   * ignored rather than cleared with a synchronous setState.
+   */
+  const [decoded, setDecoded] = useState<{ url: string; width: number; height: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const pickedRef = useRef<OpenedFile | null>(null);
 
@@ -288,6 +301,30 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
   const file = picked ?? initial ?? null;
   /** A locally picked file wins over the caller's, because it is the newer one. */
   const source = picked ? ownSource : initialSource ?? null;
+
+  // Asking the browser's decoder covers png, jpeg, webp, gif, bmp, avif and
+  // svg in one path; parsing each header by hand would be a second reader that
+  // disagrees with the renderer. Zero means "no intrinsic size" (an SVG with
+  // only a viewBox), which is shown as nothing rather than 0 × 0.
+  useEffect(() => {
+    if (!file || file.kind !== "image") return;
+    const image = new Image();
+    let cancelled = false;
+    const url = file.url;
+    image.onload = () => {
+      if (cancelled) return;
+      if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+        setDecoded({ url, width: image.naturalWidth, height: image.naturalHeight });
+      }
+    };
+    image.src = url;
+    return () => {
+      cancelled = true;
+      image.onload = null;
+    };
+  }, [file]);
+
+  const imagePixels = file?.kind === "image" && decoded?.url === file.url ? decoded : null;
   const targets = source ? conversionTargets(source.name) : [];
 
   const close = (next: boolean) => {
@@ -472,7 +509,11 @@ export function FileViewer({ open, onOpenChange, initial, initialSource }: FileV
                     : file.kind === "pdf"
                       ? " · PDF"
                       : file.kind === "image"
-                        ? ` · ${(file.name.split(".").pop() ?? "image").toUpperCase()}`
+                        ? ` · ${(file.name.split(".").pop() ?? "image").toUpperCase()}` +
+                          ` · ${sizeLabel(file.size)}` +
+                          (imagePixels
+                            ? ` · ${imagePixels.width}×${imagePixels.height} px`
+                            : "")
                         : ` · ${file.rows.length} rows`}
             </span>
           ) : null}

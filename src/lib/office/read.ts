@@ -362,8 +362,12 @@ export type OpenedFile =
    * links are real, but nothing here can search or extract them.
    */
   | { kind: "pdf"; name: string; url: string }
-  /** An image is drawn as-is from a blob URL, at whatever its own size is. */
-  | { kind: "image"; name: string; url: string };
+  /**
+   * An image is drawn as-is from a blob URL, at whatever its own size is. The
+   * byte size travels with it because the header reports it; the pixel size is
+   * decoded by the viewer, which has an image element to ask.
+   */
+  | { kind: "image"; name: string; url: string; size: number };
 
 /**
  * Read any supported file by name and bytes.
@@ -389,7 +393,7 @@ export async function openOfficeFile(name: string, bytes: Uint8Array): Promise<O
   }
   if (kind === "image") {
     const url = URL.createObjectURL(new Blob([bytes.slice()], { type: imageMimeOf(name, bytes) }));
-    return { kind, name, url };
+    return { kind, name, url, size: bytes.byteLength };
   }
   throw new Error(
     "That file type isn't supported here. Open a .pdf, .png, .jpg, .webp, .pptx, .xlsx, .docx, .csv or .tsv.",
