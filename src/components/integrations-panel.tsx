@@ -56,6 +56,11 @@ import {
   pluginSkillEntries,
   type PluginRow,
 } from "@/lib/plugin-mentions";
+import {
+  isRapidApiGateway,
+  rapidApiHostOf,
+  rapidApiPrefix,
+} from "@/lib/rapidapi";
 import { api } from "@/convex/_generated/api";
 import type { McpServerRow } from "../convex/mcpServers";
 import { Button, Input } from "@/components/ui";
@@ -119,6 +124,22 @@ export function IntegrationsPanel({
 
   const isConnected = (preset: McpPreset) => connectionFor(preset) !== undefined;
 
+  /**
+   * Every RapidAPI API is one row on the shared gateway, so the preset's own
+   * URL match can only say "at least one". These are the rows themselves, which
+   * is what lets the panel add a second API and address each one by its host.
+   */
+  const rapidRows = useMemo(
+    () => mapping.filter((row) => isRapidApiGateway(row.url)),
+    [mapping],
+  );
+
+  /** The catalogue host a RapidAPI row is pinned to, if the row is valid. */
+  const rapidHostOfRow = (row: McpServerRow): string | null =>
+    row.authType === "header"
+      ? rapidApiHostOf(row.authValue ?? "")
+      : null;
+
   const canvaLinked = mapping.some((row) => row._id === "canva");
   const cloudinaryLinked = mapping.some((row) => row._id === "mcp");
 
@@ -128,7 +149,10 @@ export function IntegrationsPanel({
     return item.defaultOn;
   };
 
-  const connectedApps = MCP_PRESETS.filter(isConnected).length;
+  const connectedApps =
+    MCP_PRESETS.filter(
+      (preset) => !isRapidApiGateway(preset.url) && isConnected(preset),
+    ).length + rapidRows.length;
   const openNow = MCP_PRESETS.filter((p) => p.auth === "none").length;
 
   /**
@@ -137,21 +161,34 @@ export function IntegrationsPanel({
    * that are actually connected appear — an unconnected preset adds nothing to
    * a turn, and listing it here would imply it does.
    */
-  const connectorSkills = useMemo(
-    () =>
-      MCP_PRESETS.filter(isConnected).map((preset) => {
-        const connection = connectionFor(preset);
-        return {
-          id: preset.id,
-          name: preset.name,
-          prefix: preset.prefix,
-          tools: connection?.toolCount ?? null,
-        };
-      }),
-    // connectionFor is derived from mapping, so the rows are the real input.
+  const connectorSkills = useMemo(() => {
+    const presets = MCP_PRESETS.filter(
+      (preset) => !isRapidApiGateway(preset.url) && isConnected(preset),
+    ).map((preset) => {
+      const connection = connectionFor(preset);
+      return {
+        id: preset.id,
+        name: preset.name,
+        prefix: preset.prefix,
+        tools: connection?.toolCount ?? null,
+      };
+    });
+    // One skill per RapidAPI API, addressed by the prefix the model actually
+    // sees (the host), not the preset's generic "rapidapi" prefix.
+    const rapid = rapidRows.map((row) => {
+      const host = rapidHostOfRow(row);
+      return {
+        id: row._id,
+        name: row.name,
+        prefix: host ? rapidApiPrefix(host) : "rapidapi",
+        tools: row.toolCount ?? null,
+      };
+    });
+    return [...presets, ...rapid];
+    // connectionFor and rapidHostOfRow are derived from mapping, so the rows are
+    // the real input.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mapping],
-  );
+  }, [mapping, rapidRows]);
 
   const freshCount = RECENT_FEATURES.filter((feature) => feature.fresh).length;
 
@@ -210,6 +247,14 @@ export function IntegrationsPanel({
   const visible = presets.slice(0, limit);
 
   const connect = async (preset: McpPreset) => {
+    // RapidAPI is a catalogue behind one URL: "connect" here means naming which
+    // API, so it always opens the host field, even when rows already exist.
+    if (isRapidApiGateway(preset.url)) {
+      setKeyTarget(preset.id);
+      setKeyValue("");
+      return;
+    }
+
     if (isConnected(preset)) return;
 
     if (preset.auth === "oauth") {
@@ -257,6 +302,49 @@ export function IntegrationsPanel({
       toast.error("Paste the key first.");
       return;
     }
+
+    // A RapidAPI row stores the host (not a secret) and the key is injected
+    // server-side from RAPIDAPI_KEY, so the field is the API host pasted from
+    // its listing page or code sample.
+    if (isRapidApiGateway(preset.url)) {
+      const host = rapidApiHostOf(value);
+      if (!host) {
+        toast.error("That is not a RapidAPI host.", {
+          description:
+            "Copy it from the code sample on the API page — it ends in .p.rapidapi.com.",
+        });
+        return;
+      }
+      setBusyId(preset.id);
+      try {
+        const { created } = await create({
+          name: `RapidAPI · ${host}`,
+          url: preset.url,
+          prefix: rapidApiPrefix(host),
+          authType: "header",
+          authHeaderName: "x-api-host",
+          authValue: host,
+        });
+        if (created) {
+          toast.success(`${host} connected.`, {
+            description:
+              "Subscribe to that API on RapidAPI under the account that owns RAPIDAPI_KEY, then test it in MCP servers.",
+          });
+          setKeyTarget(null);
+          setKeyValue("");
+        } else {
+          toast.info(`${host} is already connected.`);
+        }
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not add that API.",
+        );
+      } finally {
+        setBusyId(null);
+      }
+      return;
+    }
+
     setBusyId(preset.id);
     try {
       const { created } = await create({
@@ -584,7 +672,10 @@ export function IntegrationsPanel({
                   ) : (
                     visible.map((preset) => {
                       const connection = connectionFor(preset);
-                      const connected = connection !== undefined;
+                      const rapid = isRapidApiGateway(preset.url);
+                      const connected = rapid
+                        ? rapidRows.length > 0
+                        : connection !== undefined;
                       const busy = busyId === preset.id;
                       const editingKey = keyTarget === preset.id;
                       return (
@@ -612,9 +703,13 @@ export function IntegrationsPanel({
                               </div>
                               <p className="line-clamp-1 text-[10px] leading-4 text-muted-foreground/70">
                                 {preset.note}
-                                {connection && connection.toolCount != null
-                                  ? ` · ${connection.toolCount} tools`
-                                  : ""}
+                                {rapid
+                                  ? rapidRows.length > 0
+                                    ? ` · ${rapidRows.length} API${rapidRows.length === 1 ? "" : "s"} connected`
+                                    : ""
+                                  : connection && connection.toolCount != null
+                                    ? ` · ${connection.toolCount} tools`
+                                    : ""}
                               </p>
                             </div>
 
@@ -634,7 +729,7 @@ export function IntegrationsPanel({
                               </a>
                             ) : null}
 
-                            {connected ? (
+                            {connected && !rapid ? (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -654,6 +749,8 @@ export function IntegrationsPanel({
                               >
                                 {busy ? (
                                   <Loader2 className="size-3 animate-spin" />
+                                ) : rapid ? (
+                                  <Plus className="size-3" />
                                 ) : preset.auth === "oauth" ? (
                                   <ExternalLink className="size-3" />
                                 ) : preset.auth === "none" ? (
@@ -661,18 +758,20 @@ export function IntegrationsPanel({
                                 ) : (
                                   <KeyRound className="size-3" />
                                 )}
-                                {preset.auth === "oauth"
-                                  ? "Info"
-                                  : preset.auth === "none"
-                                    ? "Connect"
-                                    : "Add key"}
+                                {rapid
+                                  ? "Add API"
+                                  : preset.auth === "oauth"
+                                    ? "Info"
+                                    : preset.auth === "none"
+                                      ? "Connect"
+                                      : "Add key"}
                               </Button>
                             )}
                           </div>
 
                           {editingKey ? (
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 p-1.5">
-                              {preset.auth === "header" ? (
+                              {preset.auth === "header" && !rapid ? (
                                 <Input
                                   value={keyHeader}
                                   onChange={(e) => setKeyHeader(e.target.value)}
@@ -684,17 +783,27 @@ export function IntegrationsPanel({
                                 value={keyValue}
                                 onChange={(e) => setKeyValue(e.target.value)}
                                 placeholder={
-                                  preset.auth === "header"
-                                    ? `${preset.headerName ?? "Header"} value`
-                                    : "Paste your token"
+                                  rapid
+                                    ? "weather.p.rapidapi.com"
+                                    : preset.auth === "header"
+                                      ? `${preset.headerName ?? "Header"} value`
+                                      : "Paste your token"
                                 }
-                                type="password"
+                                type={rapid ? "text" : "password"}
                                 autoFocus
                                 className="h-7 min-w-0 flex-1 text-[11px]"
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter") void submitKey(preset);
                                 }}
                               />
+                              {rapid ? (
+                                <span className="w-full px-1 text-[9px] leading-4 text-muted-foreground/70">
+                                  One row per API. The application key stays in the
+                                  Keys tab as RAPIDAPI_KEY and is attached
+                                  server-side, so pasting it here would only be
+                                  stored by accident.
+                                </span>
+                              ) : null}
                               <Button
                                 size="sm"
                                 className="h-7 px-2 text-[10px]"
