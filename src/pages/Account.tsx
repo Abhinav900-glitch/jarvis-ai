@@ -11,6 +11,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useAction, useQuery } from "convex/react";
 import {
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
   ArrowLeft,
   ArrowUpRight,
   BookOpen,
@@ -30,8 +38,28 @@ import {
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import { JarvisMark } from "@/components/jarvis-logo";
 import { cn } from "@/lib/utils";
+
+/** 1_234 -> "1.2K", so axis ticks and summary cards stay readable. */
+function compact(value: number): string {
+  if (value < 1000) return String(value);
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+const USAGE_CONFIG = {
+  messages: { label: "Messages", color: "var(--chart-1)" },
+  tokens: { label: "Tokens", color: "var(--chart-2)" },
+} satisfies ChartConfig;
 
 function initials(name: string | null | undefined, email: string | null | undefined) {
   const source = (name ?? "").trim() || (email ?? "").split("@")[0] || "J";
@@ -122,6 +150,9 @@ export default function Account() {
   // Fetched once on mount; a failure just leaves the card blank.
   const listMedia = useAction(api.cloudinary.listMedia);
   const [pictures, setPictures] = useState<number | null>(null);
+  /** 7 / 30 / 90 days, chosen with the small range switch on the chart. */
+  const [usageDays, setUsageDays] = useState(30);
+  const usage = useQuery(api.usage.daily, { days: usageDays });
   useEffect(() => {
     let live = true;
     void listMedia({ limit: 6 })
@@ -145,6 +176,17 @@ export default function Account() {
     (p) => p.available,
   );
   const doneDecks = (decks ?? []).filter((d) => d.status === "done").length;
+
+  // Chart rows carry a short human label, while the ISO date stays available
+  // in the tooltip payload for anyone reading the data rather than the axis.
+  const usageSeries = (usage?.points ?? []).map((point) => ({
+    ...point,
+    label: new Date(`${point.date}T00:00:00Z`).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    }),
+  }));
+  const hasUsage = usageSeries.some((point) => point.messages > 0);
 
   const memberSince = user?._creationTime
     ? new Date(user._creationTime).toLocaleDateString(undefined, {
@@ -257,6 +299,137 @@ export default function Account() {
               hint="Keyed and ready"
               loading={imageProviders === undefined}
             />
+          </div>
+        </section>
+
+        {/* ---- Usage over time ---- */}
+        <section className="mt-6">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+              Usage
+            </h2>
+            <div className="flex items-center gap-1">
+              {[7, 30, 90].map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => setUsageDays(days)}
+                  aria-pressed={usageDays === days}
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                    usageDays === days
+                      ? "border-foreground/30 bg-accent text-foreground"
+                      : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                  )}
+                >
+                  {days}d
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="hud-panel rounded-xl p-3 sm:p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ background: "var(--chart-1)" }}
+                  />
+                  Messages
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ background: "var(--chart-2)" }}
+                  />
+                  Tokens
+                </span>
+              </div>
+              <span className="tabular-nums">
+                {usage
+                  ? `${usage.totals.messages.toLocaleString()} messages · ${compact(usage.totals.tokens)} tokens`
+                  : "Reading usage…"}
+              </span>
+            </div>
+
+            {usage === undefined ? (
+              <div className="flex h-52 items-center justify-center text-[11px] text-muted-foreground">
+                <Loader2 className="mr-2 size-3.5 animate-spin" />
+                Reading usage…
+              </div>
+            ) : hasUsage ? (
+              <ChartContainer
+                config={USAGE_CONFIG}
+                className="aspect-auto h-52 w-full"
+              >
+                <ComposedChart
+                  data={usageSeries}
+                  margin={{ top: 8, right: 0, left: -20, bottom: 0 }}
+                >
+                  <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="label"
+                    tickLine={false}
+                    axisLine={false}
+                    minTickGap={24}
+                    tick={{ fontSize: 10 }}
+                  />
+                  <YAxis
+                    yAxisId="messages"
+                    allowDecimals={false}
+                    tickLine={false}
+                    axisLine={false}
+                    width={30}
+                    tick={{ fontSize: 10 }}
+                  />
+                  <YAxis
+                    yAxisId="tokens"
+                    orientation="right"
+                    tickLine={false}
+                    axisLine={false}
+                    width={40}
+                    tick={{ fontSize: 10 }}
+                    tickFormatter={(value: number) => compact(value)}
+                  />
+                  <ChartTooltip
+                    content={<ChartTooltipContent indicator="dot" />}
+                  />
+                  <Bar
+                    yAxisId="messages"
+                    dataKey="messages"
+                    fill="var(--color-messages)"
+                    radius={[3, 3, 0, 0]}
+                    maxBarSize={18}
+                  />
+                  <Line
+                    yAxisId="tokens"
+                    type="monotone"
+                    dataKey="tokens"
+                    stroke="var(--color-tokens)"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </ComposedChart>
+              </ChartContainer>
+            ) : (
+              <div className="flex h-52 flex-col items-center justify-center gap-1 text-center">
+                <Sparkles className="size-4 text-muted-foreground/60" />
+                <p className="text-xs text-muted-foreground">
+                  No messages in this window yet.
+                </p>
+                <p className="text-[10px] text-muted-foreground/70">
+                  Start a chat and the chart fills in from the first turn.
+                </p>
+              </div>
+            )}
+
+            {usage && usage.replies > 0 && usage.reported < usage.replies ? (
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                Tokens counted for {usage.reported} of {usage.replies} replies —
+                some engines answer without usage numbers.
+              </p>
+            ) : null}
           </div>
         </section>
 
