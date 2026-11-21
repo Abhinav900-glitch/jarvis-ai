@@ -119,8 +119,24 @@ export function IntegrationsPanel({
 
   const mapping = useMemo<McpServerRow[]>(() => rows ?? [], [rows]);
 
-  const connectionFor = (preset: McpPreset) =>
-    mapping.find((row) => normalizeUrl(row.url) === normalizeUrl(preset.url));
+  const connectionFor = (preset: McpPreset) => {
+    // RapidAPI APIs all share one URL, so a preset for a specific API has to
+    // match the row's x-api-host. Without this, adding the weather API would
+    // make every free RapidAPI card look connected.
+    if (isRapidApiGateway(preset.url)) {
+      if (preset.headerValue) {
+        const host = preset.headerValue.toLowerCase();
+        return mapping.find(
+          (row) =>
+            isRapidApiGateway(row.url) &&
+            row.authType === "header" &&
+            (row.authValue ?? "").toLowerCase() === host,
+        );
+      }
+      return mapping.find((row) => isRapidApiGateway(row.url));
+    }
+    return mapping.find((row) => normalizeUrl(row.url) === normalizeUrl(preset.url));
+  };
 
   const isConnected = (preset: McpPreset) => connectionFor(preset) !== undefined;
 
@@ -249,13 +265,44 @@ export function IntegrationsPanel({
   const connect = async (preset: McpPreset) => {
     // RapidAPI is a catalogue behind one URL: "connect" here means naming which
     // API, so it always opens the host field, even when rows already exist.
-    if (isRapidApiGateway(preset.url)) {
+    if (isRapidApiGateway(preset.url) && !preset.headerValue) {
       setKeyTarget(preset.id);
       setKeyValue("");
       return;
     }
 
     if (isConnected(preset)) return;
+
+    // A free RapidAPI API carries its host in the preset, so there is nothing
+    // to ask for: add the row and let the server-side key authenticate it.
+    if (preset.headerValue) {
+      setBusyId(preset.id);
+      try {
+        const { created } = await create({
+          name: preset.name,
+          url: preset.url,
+          prefix: preset.prefix,
+          authType: "header",
+          authHeaderName: preset.headerName ?? "x-api-host",
+          authValue: preset.headerValue,
+        });
+        if (created) {
+          toast.success(`${preset.name} connected.`, {
+            description:
+              "Its tools show up in the next message you send. Test it in MCP servers to see them listed.",
+          });
+        } else {
+          toast.info(`${preset.name} is already connected.`);
+        }
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not connect that API.",
+        );
+      } finally {
+        setBusyId(null);
+      }
+      return;
+    }
 
     if (preset.auth === "oauth") {
       toast.info(`${preset.name} needs its own sign-in.`, {
@@ -729,7 +776,7 @@ export function IntegrationsPanel({
                               </a>
                             ) : null}
 
-                            {connected && !rapid ? (
+                            {connected && (!rapid || preset.headerValue) ? (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -758,13 +805,15 @@ export function IntegrationsPanel({
                                 ) : (
                                   <KeyRound className="size-3" />
                                 )}
-                                {rapid
-                                  ? "Add API"
-                                  : preset.auth === "oauth"
-                                    ? "Info"
-                                    : preset.auth === "none"
-                                      ? "Connect"
-                                      : "Add key"}
+                                {preset.headerValue
+                                  ? "Connect"
+                                  : rapid
+                                    ? "Add API"
+                                    : preset.auth === "oauth"
+                                      ? "Info"
+                                      : preset.auth === "none"
+                                        ? "Connect"
+                                        : "Add key"}
                               </Button>
                             )}
                           </div>

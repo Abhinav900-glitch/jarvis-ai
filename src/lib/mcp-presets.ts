@@ -25,6 +25,8 @@
 // ---------------------------------------------------------------------------
 
 /** How a preset authenticates against the app's three supported auth shapes. */
+import { RAPIDAPI_MCP_URL, rapidApiPrefix } from "./rapidapi";
+
 export type McpPresetAuth = "none" | "bearer" | "header" | "oauth";
 
 export interface McpPreset {
@@ -36,6 +38,14 @@ export interface McpPreset {
   auth: McpPresetAuth;
   /** Header name when auth is "header". */
   headerName?: string;
+  /**
+   * A fixed, non-secret header value, so the connector is one click.
+   *
+   * Only RapidAPI rows use this: their "auth" header is x-api-host, which names
+   * the catalogue API rather than carrying a credential. The key itself is
+   * still injected server-side from RAPIDAPI_KEY, never stored here.
+   */
+  headerValue?: string;
   /** Tool-name prefix suggested for this server. */
   prefix: string;
   /** One line about what the server gives the assistant. */
@@ -1279,7 +1289,7 @@ const ROWS: PresetRow[] = [
     "Developer",
     "header",
     "rapidapi",
-    "Any RapidAPI API you are subscribed to, exposed as MCP tools. Paste its host (xxx.p.rapidapi.com).",
+    "Any RapidAPI API you are subscribed to, exposed as MCP tools. Paste its host (xxx.p.rapidapi.com); the free ones are listed under Free APIs.",
     "https://docs.rapidapi.com/docs/consume-apis-using-ai",
     "x-api-host",
   ],
@@ -1295,7 +1305,7 @@ const ROWS: PresetRow[] = [
   ],
 ];
 
-export const MCP_PRESETS: McpPreset[] = ROWS.map(
+const BASE_PRESETS: McpPreset[] = ROWS.map(
   ([id, name, url, category, auth, prefix, note, docs, headerName]) => ({
     id,
     name,
@@ -1308,6 +1318,108 @@ export const MCP_PRESETS: McpPreset[] = ROWS.map(
     ...(headerName ? { headerName } : {}),
   }),
 );
+
+/**
+ * Free RapidAPI APIs, ready to add without leaving the panel.
+ *
+ * Every host below answered a real tools/list through the gateway with a
+ * RapidAPI account key, so "free" here means what it says: a free plan on
+ * RapidAPI, one click here, and the deployment's existing RAPIDAPI_KEY does the
+ * authenticating. The host travels as x-api-host, which is why these can be
+ * one-click while a manually added RapidAPI API needs you to paste a host.
+ *
+ * Deliberately not a huge list: ten broadly useful APIs cover the queries most
+ * decks and answers need (weather, FX, words, numbers, facts, fitness, food)
+ * without turning the catalogue into a marketplace mirror.
+ */
+function rapidApiFree(
+  slug: string,
+  name: string,
+  host: string,
+  note: string,
+): McpPreset {
+  return {
+    id: `rapidapi-${slug}`,
+    name,
+    url: RAPIDAPI_MCP_URL,
+    category: "Free APIs",
+    auth: "header",
+    prefix: rapidApiPrefix(host),
+    note,
+    docs: "https://rapidapi.com/hub",
+    headerName: "x-api-host",
+    headerValue: host,
+  };
+}
+
+export const RAPIDAPI_FREE_PRESETS: McpPreset[] = [
+  rapidApiFree(
+    "weather",
+    "Weather (WeatherAPI167)",
+    "weather-api167.p.rapidapi.com",
+    "Current conditions, forecasts, earthquakes and country facts. Free plan.",
+  ),
+  rapidApiFree(
+    "currency",
+    "Currency Exchange",
+    "currency-conversion-and-exchange-rates.p.rapidapi.com",
+    "Live and historical FX rates plus the supported symbol list. Free plan.",
+  ),
+  rapidApiFree(
+    "dictionary",
+    "Dictionary (API Ninjas)",
+    "dictionary-by-api-ninjas.p.rapidapi.com",
+    "Definitions, examples and pronunciation for any English word. Free plan.",
+  ),
+  rapidApiFree(
+    "words",
+    "WordsAPI",
+    "wordsapiv1.p.rapidapi.com",
+    "Rhymes, antonyms, syllables, frequency and usage for a word. Free plan.",
+  ),
+  rapidApiFree(
+    "numbers",
+    "Numbers API",
+    "numbersapi.p.rapidapi.com",
+    "Trivia, maths and year facts about any number. Free plan.",
+  ),
+  rapidApiFree(
+    "quotes",
+    "Quotes (Quotes15)",
+    "quotes15.p.rapidapi.com",
+    "Random quotes with author and tags, for openers and section breaks.",
+  ),
+  rapidApiFree(
+    "jokes",
+    "Jokes (API Ninjas)",
+    "jokes-by-api-ninjas.p.rapidapi.com",
+    "Clean jokes filtered by category, one call each. Free plan.",
+  ),
+  rapidApiFree(
+    "dad-jokes",
+    "Dad Jokes",
+    "dad-jokes.p.rapidapi.com",
+    "Random and searched dad jokes, plus joke counts. Free plan.",
+  ),
+  rapidApiFree(
+    "nutrition",
+    "Nutrition (API Ninjas)",
+    "nutrition-by-api-ninjas.p.rapidapi.com",
+    "Calories and macros for a food, recipe or portion. Free plan.",
+  ),
+  rapidApiFree(
+    "exercises",
+    "ExerciseDB",
+    "exercisedb.p.rapidapi.com",
+    "Exercise library with target muscles, equipment and demo GIFs. Free plan.",
+  ),
+];
+
+/** The whole catalogue, in the order the panel shows it. */
+export const MCP_PRESETS: McpPreset[] = [
+  ...BASE_PRESETS,
+  ...RAPIDAPI_FREE_PRESETS,
+];
 
 /**
  * The connectors worth showing before anyone searches: one or two per

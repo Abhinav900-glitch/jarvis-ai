@@ -29,6 +29,7 @@ import {
   presetAuthLabel,
   type McpPreset,
 } from "@/lib/mcp-presets";
+import { isRapidApiGateway } from "@/lib/rapidapi";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { McpServerRow, McpAuthType } from "../convex/mcpServers";
@@ -296,8 +297,19 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
   const visiblePresets = presets.slice(0, presetLimit);
 
   const ownedUrls = new Set(owned.map((row) => row.url.replace(/\/+$/, "")));
-  const isPresetAdded = (preset: McpPreset) =>
-    ownedUrls.has(preset.url.replace(/\/+$/, ""));
+  const isPresetAdded = (preset: McpPreset) => {
+    // RapidAPI APIs share one URL, so a specific API is "added" only when a row
+    // points at the same host — otherwise adding weather would tick FX too.
+    if (isRapidApiGateway(preset.url)) {
+      const host = preset.headerValue?.toLowerCase();
+      return owned.some(
+        (row) =>
+          isRapidApiGateway(row.url) &&
+          (!host || (row.authValue ?? "").toLowerCase() === host),
+      );
+    }
+    return ownedUrls.has(preset.url.replace(/\/+$/, ""));
+  };
 
   /**
    * Open servers are created here and now. Keyed servers open the form with
@@ -306,6 +318,36 @@ export function McpPanel({ open, onClose }: McpPanelProps) {
    * so rather than failing at the first tool call.
    */
   const addPreset = async (preset: McpPreset) => {
+    // Free RapidAPI APIs know their host, so they add like an open server: one
+    // click, no key form, authentication handled by RAPIDAPI_KEY server-side.
+    if (preset.headerValue) {
+      setPresetBusy(preset.id);
+      try {
+        const { created } = await create({
+          name: preset.name,
+          url: preset.url,
+          prefix: preset.prefix,
+          authType: "header",
+          authHeaderName: preset.headerName ?? "x-api-host",
+          authValue: preset.headerValue,
+        });
+        if (created) {
+          toast.success(`${preset.name} added.`, {
+            description: "Run Test to list the tools it exposes.",
+          });
+        } else {
+          toast.info(`${preset.name} is already in your list.`);
+        }
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not add that server.",
+        );
+      } finally {
+        setPresetBusy(null);
+      }
+      return;
+    }
+
     if (preset.auth === "oauth") {
       toast.info(`${preset.name} needs its own sign-in flow.`, {
         description:
