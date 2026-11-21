@@ -96,6 +96,7 @@ import {
 import type { GestureAction } from "@/lib/gesture-actions";
 import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage } from "@/components/markdown-message";
+import { OfflineTranscriptDialog } from "@/components/offline-transcript-dialog";
 import { DesmosCalculator } from "@/components/desmos-calculator";
 import { autoGraphFor, type AutoGraph } from "@/lib/auto-graph";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
@@ -128,6 +129,12 @@ import {
   writeOutbox,
   type OutboxMessage,
 } from "@/lib/offline-outbox";
+import {
+  clearCachedTranscript,
+  readCachedTranscript,
+  saveTranscript,
+  type CachedTranscript,
+} from "@/lib/transcript-cache";
 import { memoryExcerpt } from "@/lib/remember";
 import {
   READING_FONTS,
@@ -1085,6 +1092,12 @@ export default function Dashboard() {
   // instead.
   const online = useOnlineStatus();
   const [outbox, setOutbox] = useState<OutboxMessage | null>(() => readOutbox());
+  // The last read conversation, kept decrypted on this device for offline
+  // reading; the dialog in the empty state opens it.
+  const [cachedTranscript, setCachedTranscript] = useState<CachedTranscript | null>(
+    () => readCachedTranscript(),
+  );
+  const [showOfflineTranscript, setShowOfflineTranscript] = useState(false);
   const [activeId, setActiveId] = useState<Id<"chatSessions"> | null>(null);
   // Which line of the conversation is on screen. Null is the main line, and
   // the only line for every chat that has never been edited or regenerated.
@@ -4638,7 +4651,10 @@ export default function Dashboard() {
   const handleSignOut = async () => {
     // Signing out drops the key and everything it had opened in memory —
     // otherwise the next person at this tab inherits a decrypted transcript.
+    // The offline copy is part of that transcript, so it goes too.
     lockEverything();
+    clearCachedTranscript();
+    setCachedTranscript(null);
     await signOut();
     navigate("/");
   };
@@ -5696,6 +5712,52 @@ export default function Dashboard() {
     ? sessions.find((s) => s._id === activeId)
     : undefined;
   const sessionTitle = activeSessionRow ? titleOf(activeSessionRow) : "New chat";
+
+  // Keep the last settled transcript on this device. Runs only when nothing is
+  // in flight: a streaming reply changes `messages` many times a second, and a
+  // half-written answer is not what someone wants to find offline. The
+  // fingerprint makes repeat renders free, so editing a title or toggling a
+  // panel does not rewrite the same megabyte of text.
+  const transcriptFingerprint = useRef("");
+  useEffect(() => {
+    if (
+      !activeId ||
+      !messages ||
+      messages.length === 0 ||
+      lockedOut ||
+      sending ||
+      streaming
+    ) {
+      return;
+    }
+    // A row that is still ciphertext would be saved as an empty user turn and
+    // replace an older, whole cache. Wait for the decrypt pass instead.
+    const waitingOnDecrypt = messages.some(
+      (m) =>
+        m.role === "user" &&
+        isCiphertext(m.content) &&
+        peekPlaintext(m.content) === undefined,
+    );
+    if (waitingOnDecrypt) return;
+    const source = messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({
+        id: m._id,
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        createdAt: m.createdAt,
+        ...(m.imageUrl ? { imageUrl: m.imageUrl } : {}),
+        ...(m.images && m.images.length > 0
+          ? { images: m.images.map((image) => image.url) }
+          : {}),
+      }));
+    const last = source[source.length - 1];
+    const fingerprint = `${activeId}:${sessionTitle}:${source.length}:${last?.id ?? ""}:${last?.content.length ?? 0}`;
+    if (fingerprint === transcriptFingerprint.current) return;
+    const saved = saveTranscript(activeId, sessionTitle, source);
+    transcriptFingerprint.current = fingerprint;
+    if (saved) setCachedTranscript(saved);
+  }, [activeId, messages, sessionTitle, lockedOut, sending, streaming]);
 
   // The sidebar's account chip: initials, not an uploaded avatar — the account
   // page is the one place that needs identity, not every chat render.
@@ -6950,7 +7012,9 @@ export default function Dashboard() {
                     className="relative size-14 drop-shadow-[0_0_18px_var(--signal-cyan)]"
                   />
                 </div>
-                <p className="hud-label hud-label-cyan mt-7">Core online</p>
+                <p className="hud-label hud-label-cyan mt-7">
+                  {online ? "Core online" : "Offline mode"}
+                </p>
                 <h1 className="mt-3 text-2xl font-semibold tracking-tight">
                   <span className="hud-glow-text">
                     {greeting}
@@ -6963,6 +7027,29 @@ export default function Dashboard() {
                   answers. Every turn is routed to the best engine for the task,
                   and another one takes over automatically if it fails.
                 </p>
+                {cachedTranscript && !online && (
+                  <button
+                    type="button"
+                    onClick={() => setShowOfflineTranscript(true)}
+                    className="hud-panel mt-6 flex w-full max-w-md items-center gap-3 rounded-xl px-4 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40"
+                  >
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <BookOpen className="size-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium text-foreground">
+                        {cachedTranscript.title.trim() || "Saved conversation"}
+                      </span>
+                      <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                        Read offline · {cachedTranscript.messages.length} messages
+                        saved
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-primary">
+                      Open
+                    </span>
+                  </button>
+                )}
                 <div className="mt-8 grid w-full max-w-md grid-cols-1 gap-2 sm:grid-cols-2">
                   {[
                     "Explain quantum computing simply",
@@ -9685,6 +9772,17 @@ export default function Dashboard() {
         }}
       />
       <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
+      <OfflineTranscriptDialog
+        transcript={cachedTranscript}
+        open={showOfflineTranscript}
+        onOpenChange={setShowOfflineTranscript}
+        onForget={() => {
+          clearCachedTranscript();
+          setCachedTranscript(null);
+          setShowOfflineTranscript(false);
+          toast.info("Saved conversation removed from this device.");
+        }}
+      />
       <PassphraseGate
         mode={passphraseOpen}
         salt={keyMaterial?.salt ?? null}

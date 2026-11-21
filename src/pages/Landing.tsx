@@ -9,7 +9,9 @@
 
 import { AnimatePresence, motion, useScroll, useSpring } from "framer-motion";
 import { Link } from "react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useOnlineStatus } from "@/hooks/use-online-status";
+import { readCachedTranscript } from "@/lib/transcript-cache";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -30,6 +32,7 @@ import {
   Moon,
   Plus,
   Sun,
+  WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { JarvisLogo } from "@/components/jarvis-logo";
@@ -166,6 +169,14 @@ function Wordmark({ className = "" }: { className?: string }) {
 
 export default function Landing() {
   const { isAuthenticated, isLoading } = useAuth();
+  const online = useOnlineStatus();
+  // The one thing this page can offer with no connection: the transcript the
+  // app kept from the last chat. Auth is unknown offline, so the usual
+  // "Open Jarvis" button is not rendered and this is the way back in.
+  const offlineCopy = useMemo(
+    () => (!online ? readCachedTranscript() : null),
+    [online],
+  );
   const { palette, setPalette } = usePalette();
   const [openFaq, setOpenFaq] = useState<number | null>(0);
 
@@ -220,6 +231,21 @@ export default function Landing() {
             "linear-gradient(90deg, transparent, var(--signal-cyan), var(--signal-blue), var(--signal-violet), transparent)",
         }}
       />
+
+      {offlineCopy && (
+        <Link
+          to="/dashboard"
+          className="mx-auto mt-3 flex w-[calc(100%_-_3rem)] max-w-6xl items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-[11px] text-amber-800 transition-colors hover:border-amber-500/50 dark:text-amber-300"
+        >
+          <WifiOff className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            You're offline. Your last conversation is saved on this device.
+          </span>
+          <span className="shrink-0 font-semibold uppercase tracking-[0.14em]">
+            Read it
+          </span>
+        </Link>
+      )}
 
       {/* header */}
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
