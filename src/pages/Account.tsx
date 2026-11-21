@@ -38,9 +38,11 @@ import {
   Minus,
   ShieldCheck,
   Sparkles,
+  WifiOff,
 } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/hooks/use-auth";
+import { useOnlineStatus } from "@/hooks/use-online-status";
 import { Button } from "@/components/ui/button";
 import {
   ChartContainer,
@@ -183,6 +185,7 @@ function StatusRow({
 export default function Account() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+  const online = useOnlineStatus();
 
   const sessionsQuery = useQuery(api.chats.listSessions);
   const sessions = useMemo(() => sessionsQuery ?? [], [sessionsQuery]);
@@ -316,6 +319,14 @@ export default function Account() {
           </Button>
         </Link>
       </header>
+
+      {!online && (
+        <div className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-[11px] text-amber-800 dark:text-amber-300 sm:px-8">
+          <WifiOff className="size-3.5 shrink-0" />
+          Offline — showing what was already loaded. Live counts resume with the
+          connection.
+        </div>
+      )}
 
       <motion.main
         initial={{ opacity: 0, y: 8 }}

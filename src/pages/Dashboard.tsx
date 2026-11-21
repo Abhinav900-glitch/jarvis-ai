@@ -30,6 +30,7 @@ import {
   Link2,
   Link2Off,
   LogOut,
+  WifiOff,
   MessageSquare,
   Mic,
   Menu,
@@ -120,6 +121,13 @@ import { useAuth } from "@/hooks/use-auth";
 import { PALETTES, usePalette } from "@/hooks/use-palette";
 import { useMotionPreference } from "@/hooks/use-motion-preference";
 import { draftKeyFor, loadDraft, saveDraft } from "@/lib/chat-drafts";
+import { useOnlineStatus } from "@/hooks/use-online-status";
+import {
+  clearOutbox,
+  readOutbox,
+  writeOutbox,
+  type OutboxMessage,
+} from "@/lib/offline-outbox";
 import { memoryExcerpt } from "@/lib/remember";
 import {
   READING_FONTS,
@@ -1071,6 +1079,12 @@ export default function Dashboard() {
   // A stable empty array, so memoised values that read `sessions` do not
   // rebuild on every render while the query is still loading.
   const sessions = useMemo(() => sessionsQuery ?? [], [sessionsQuery]);
+
+  // Offline is a first-class state here: the assistant runs on the server, so
+  // the UI stops pretending a turn can start and keeps the question locally
+  // instead.
+  const online = useOnlineStatus();
+  const [outbox, setOutbox] = useState<OutboxMessage | null>(() => readOutbox());
   const [activeId, setActiveId] = useState<Id<"chatSessions"> | null>(null);
   // Which line of the conversation is on screen. Null is the main line, and
   // the only line for every chat that has never been edited or regenerated.
@@ -3510,6 +3524,41 @@ export default function Dashboard() {
     overrideText?: string,
     overrideImages?: { url: string; publicId: string; messageId?: string }[],
   ) => {
+    // Offline: the model, the web tools and every upload need the server, so
+    // there is nothing honest to send. A plain text turn is kept in the local
+    // outbox and leaves by itself once the connection and this chat are back.
+    // Anything richer (a command, an image, a file) is refused with a reason.
+    if (!online) {
+      const offered = (overrideText ?? input).trim();
+      const plainTurn =
+        overrideText === undefined &&
+        pendingImages.length === 0 &&
+        pendingFiles.length === 0 &&
+        !deepResearch &&
+        offered.length > 0 &&
+        !offered.startsWith("/");
+      if (!plainTurn) {
+        toast.error("You're offline.", {
+          description:
+            "Replies, commands, images and uploads need a connection. Your text stays in the composer.",
+        });
+        return;
+      }
+      const queued: OutboxMessage = {
+        text: offered,
+        sessionId: activeId ?? null,
+        savedAt: Date.now(),
+      };
+      writeOutbox(queued);
+      setOutbox(queued);
+      setInput("");
+      toast.success("Saved to the outbox.", {
+        description:
+          "It sends by itself when this chat is open and the connection is back.",
+      });
+      return;
+    }
+
     // `$server` mentions scope this turn to the servers the user named. They
     // are stripped from the prompt — the model should read the request, not
     // the routing syntax — and their ids travel alongside the action call.
@@ -4050,6 +4099,28 @@ export default function Dashboard() {
   };
 
   const runSend = () => runSendWithText();
+
+  // Flush the offline outbox when the connection returns. The ref keeps the
+  // effect independent of the large sender closure, which is rebuilt every
+  // render; the in-flight flag stops a second flush from firing before the
+  // first has cleared the slot.
+  const runSendRef = useRef(runSendWithText);
+  useEffect(() => {
+    runSendRef.current = runSendWithText;
+  });
+  const flushingOutbox = useRef(false);
+  useEffect(() => {
+    if (!online || !outbox) return;
+    if ((outbox.sessionId ?? null) !== (activeId ?? null)) return;
+    if (flushingOutbox.current) return;
+    flushingOutbox.current = true;
+    const text = outbox.text;
+    setOutbox(null);
+    clearOutbox();
+    void runSendRef.current(text).finally(() => {
+      flushingOutbox.current = false;
+    });
+  }, [online, activeId, outbox]);
   // Live mode holds a long-lived callback; keep it in step with the newest
   // runSendWithText without writing to a ref during render.
   useEffect(() => {
@@ -4544,6 +4615,15 @@ export default function Dashboard() {
 
   // The send button: dispatch to the armed mode, else the normal chat flow.
   const runModeSend = async () => {
+    // The news and analysis modes are direct server calls, so they check the
+    // connection themselves rather than falling through to the chat sender's
+    // outbox path.
+    if (!online && (modeNews || modeAnalyze)) {
+      toast.error("You're offline.", {
+        description: "This mode needs a connection. Your text stays in the composer.",
+      });
+      return;
+    }
     if (modeNews) {
       await runNewsOnInput();
       return;
@@ -6698,6 +6778,59 @@ export default function Dashboard() {
               </DropdownMenu>
             </div>
           </header>
+
+          {/* ---- Connection notice: offline, or a queued turn ---- */}
+          {(!online || outbox) && (
+            <div
+              className={cn(
+                "flex flex-wrap items-center gap-2 border-b px-4 py-1.5 text-[11px] sm:px-6",
+                online
+                  ? "border-sky-500/30 bg-sky-500/10 text-sky-800 dark:text-sky-300"
+                  : "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+              )}
+            >
+              <WifiOff className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1">
+                {!online
+                  ? outbox
+                    ? "Offline — your message is saved on this device and sends when the connection is back."
+                    : "Offline — replies pause until the connection is back. Drafts stay on this device."
+                  : (outbox?.sessionId ?? null) === (activeId ?? null)
+                    ? "A message saved offline is waiting to send."
+                    : "A message saved offline is waiting in another chat."}
+              </span>
+              {outbox ? (
+                <>
+                  {online && (outbox?.sessionId ?? null) === (activeId ?? null) ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const text = outbox?.text;
+                        if (!text) return;
+                        setOutbox(null);
+                        clearOutbox();
+                        void runSendWithText(text);
+                      }}
+                      className="rounded-full border border-current px-2 py-0.5 font-medium opacity-80 transition-opacity hover:opacity-100"
+                    >
+                      Send now
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearOutbox();
+                      setOutbox(null);
+                      toast.info("Offline message discarded.");
+                    }}
+                    className="rounded-full border border-current px-2 py-0.5 opacity-70 transition-opacity hover:opacity-100"
+                  >
+                    Discard
+                  </button>
+                </>
+              ) : null}
+            </div>
+          )}
 
           {/* ---- Region bar ---- */}
           <div className="flex items-center justify-between border-b border-primary/15 bg-accent/20 px-4 py-1.5 text-[11px] text-muted-foreground sm:px-6">
@@ -8980,7 +9113,13 @@ export default function Dashboard() {
                       void runModeSend();
                     }}
                     data-send-button
-                    title={streaming ? "Stop generating (Esc)" : undefined}
+                    title={
+                      streaming
+                        ? "Stop generating (Esc)"
+                        : !online
+                          ? "Offline — saves to the outbox and sends when you reconnect"
+                          : undefined
+                    }
                     disabled={
                       streaming
                         ? false

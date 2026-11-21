@@ -5,6 +5,7 @@ import { BootSplash } from "@/components/boot-splash";
 import { JarvisMark } from "@/components/jarvis-logo";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import { applyStoredPalette } from "./hooks/use-palette";
+import { registerServiceWorker } from "./lib/register-sw";
 import {
   applyStoredMotionPreference,
   useMotionPreference,
@@ -22,6 +23,8 @@ import "./index.css";
 // flashes the other palette while the router lazy-loads the page.
 applyStoredPalette();
 applyStoredMotionPreference();
+// Production only, and after load: caches the shell so /opens offline.
+registerServiceWorker();
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
