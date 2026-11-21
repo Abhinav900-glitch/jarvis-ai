@@ -7,8 +7,9 @@
 // only except sign-out and the links back into the app.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { animate, motion } from "framer-motion";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
 import {
@@ -64,6 +65,48 @@ const USAGE_CONFIG = {
   tokens: { label: "Tokens", color: "var(--chart-2)" },
 } satisfies ChartConfig;
 
+/**
+ * Counts a stat up from zero the first time it arrives.
+ *
+ * Writes through a ref instead of setState on every frame: a 60 fps state
+ * update would re-render the whole page 54 times for one number. Framer
+ * Motion's own `animate` handles the easing, and the OS/in-app reduced-motion
+ * setting gets the final value immediately instead of a count-up.
+ */
+function AnimatedNumber({ value }: { value: number }) {
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const reduced =
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+      document.documentElement.dataset.motion === "reduced";
+    node.textContent = value.toLocaleString();
+    if (reduced || value === 0) return;
+
+    const controls = animate(0, value, {
+      duration: 0.9,
+      ease: "easeOut",
+      onUpdate: (latest) => {
+        node.textContent = Math.round(latest).toLocaleString();
+      },
+    });
+    return () => controls.stop();
+  }, [value]);
+
+  return <span ref={ref}>{value.toLocaleString()}</span>;
+}
+
+/** Heat buckets for the activity grid: 0 quiet, 4 busy. */
+function heatLevel(messages: number): number {
+  if (messages <= 0) return 0;
+  if (messages <= 2) return 1;
+  if (messages <= 5) return 2;
+  if (messages <= 10) return 3;
+  return 4;
+}
+
 function initials(name: string | null | undefined, email: string | null | undefined) {
   const source = (name ?? "").trim() || (email ?? "").split("@")[0] || "J";
   return source
@@ -81,7 +124,7 @@ function Stat({
   loading,
 }: {
   label: string;
-  value: number | string | null;
+  value: number | null;
   icon: typeof MessageSquare;
   hint?: string;
   loading?: boolean;
@@ -98,7 +141,7 @@ function Stat({
         ) : value === null ? (
           "—"
         ) : (
-          value
+          <AnimatedNumber value={value} />
         )}
       </p>
       {hint ? (
@@ -156,6 +199,8 @@ export default function Account() {
   /** 7 / 30 / 90 days, chosen with the small range switch on the chart. */
   const [usageDays, setUsageDays] = useState(30);
   const usage = useQuery(api.usage.daily, { days: usageDays });
+  /** Fixed 90-day window, independent of the chart's range switch. */
+  const heatmap = useQuery(api.usage.daily, { days: 90 });
   const shares = useQuery(api.chatShares.listMine);
   const revokeShare = useMutation(api.chatShares.revoke);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
@@ -193,6 +238,28 @@ export default function Account() {
     }),
   }));
   const hasUsage = usageSeries.some((point) => point.messages > 0);
+
+  // 90 days of activity as columns of seven days, Monday first. Copied into
+  // its own memo so switching the chart's range does not rebuild the grid.
+  const heatmapWeeks = useMemo(() => {
+    const points = heatmap?.points ?? [];
+    if (points.length === 0) return [];
+    const first = new Date(`${points[0].date}T00:00:00Z`).getUTCDay();
+    const pad = (first + 6) % 7;
+    const cells: ((typeof points)[number] | null)[] = [
+      ...Array.from({ length: pad }, () => null),
+      ...points,
+    ];
+    const weeks: ((typeof points)[number] | null)[][] = [];
+    for (let i = 0; i < cells.length; i += 7) {
+      weeks.push(cells.slice(i, i + 7));
+    }
+    return weeks;
+  }, [heatmap]);
+  const heatmapTotal = (heatmap?.points ?? []).reduce(
+    (sum, point) => sum + point.messages,
+    0,
+  );
 
   const copyShareLink = async (slug: string) => {
     const url = `${window.location.origin}/c/${slug}`;
@@ -250,7 +317,12 @@ export default function Account() {
         </Link>
       </header>
 
-      <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
+      <motion.main
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: "easeOut" }}
+        className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6"
+      >
         {/* ---- Identity ---- */}
         <section className="hud-panel hud-corners rounded-2xl p-5 sm:p-6">
           <div className="flex flex-wrap items-center gap-4">
@@ -433,6 +505,7 @@ export default function Account() {
                     fill="var(--color-messages)"
                     radius={[3, 3, 0, 0]}
                     maxBarSize={18}
+                    animationDuration={650}
                   />
                   <Line
                     yAxisId="tokens"
@@ -441,6 +514,7 @@ export default function Account() {
                     stroke="var(--color-tokens)"
                     strokeWidth={2}
                     dot={false}
+                    animationDuration={650}
                   />
                 </ComposedChart>
               </ChartContainer>
@@ -461,6 +535,77 @@ export default function Account() {
                 Tokens counted for {usage.reported} of {usage.replies} replies —
                 some engines answer without usage numbers.
               </p>
+            ) : null}
+
+            {heatmapWeeks.length > 0 && heatmapTotal > 0 ? (
+              <div className="mt-4 border-t border-border/50 pt-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                  <span>
+                    Last 90 days · {heatmapTotal.toLocaleString()} message
+                    {heatmapTotal === 1 ? "" : "s"}
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    Less
+                    {[0, 1, 2, 3, 4].map((level) => (
+                      <span
+                        key={level}
+                        className={cn(
+                          "size-2 rounded-[2px]",
+                          level === 0 && "bg-muted/50",
+                        )}
+                        style={
+                          level === 0
+                            ? undefined
+                            : {
+                                backgroundColor: "var(--chart-1)",
+                                opacity: 0.2 + level * 0.2,
+                              }
+                        }
+                      />
+                    ))}
+                    More
+                  </span>
+                </div>
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.5, delay: 0.1 }}
+                  className="flex gap-1 overflow-x-auto pb-1"
+                >
+                  {heatmapWeeks.map((week, weekIndex) => (
+                    <div key={weekIndex} className="flex flex-col gap-1">
+                      {week.map((cell, dayIndex) =>
+                        cell ? (
+                          <div
+                            key={cell.date}
+                            title={`${new Date(`${cell.date}T00:00:00Z`).toLocaleDateString(
+                              undefined,
+                              { month: "short", day: "numeric", year: "numeric" },
+                            )} · ${cell.messages} message${cell.messages === 1 ? "" : "s"}`}
+                            className={cn(
+                              "size-2.5 rounded-[3px] transition-transform hover:scale-125",
+                              heatLevel(cell.messages) === 0 && "bg-muted/50",
+                            )}
+                            style={
+                              heatLevel(cell.messages) === 0
+                                ? undefined
+                                : {
+                                    backgroundColor: "var(--chart-1)",
+                                    opacity: 0.18 + heatLevel(cell.messages) * 0.2,
+                                  }
+                            }
+                          />
+                        ) : (
+                          <div
+                            key={`pad-${weekIndex}-${dayIndex}`}
+                            className="size-2.5"
+                          />
+                        ),
+                      )}
+                    </div>
+                  ))}
+                </motion.div>
+              </div>
             ) : null}
           </div>
         </section>
@@ -670,7 +815,7 @@ export default function Account() {
           Keys and integrations are managed from the chat's Settings menu. This
           page only shows what is switched on.
         </p>
-      </main>
+      </motion.main>
     </div>
   );
 }
