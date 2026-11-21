@@ -2054,6 +2054,102 @@ export function buildPublicId(
  * Generate a signed upload payload so the client can upload any file type
  * (images, PDFs, docs...) directly to Cloudinary without exposing the secret.
  */
+/**
+ * Recent pictures from the account's own Cloudinary media library.
+ *
+ * Generated and uploaded pictures already land in Cloudinary, but nothing in
+ * the app could read that library back: the Gallery lists rows this app wrote,
+ * not assets the account already holds. This uses the Admin Search API so the
+ * studio can start a variation from any picture in the account.
+ *
+ * Cloudinary's expression syntax allows a trailing wildcard only, and every
+ * character below is stripped rather than escaped: an expression is a query
+ * language, and a pasted quote would otherwise change its shape.
+ */
+export const listMedia = action({
+  args: {
+    query: v.optional(v.string()),
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Signed in only.");
+
+    const { cloudName, apiKey, apiSecret } = cloudinaryConfig();
+    const limit = Math.min(48, Math.max(6, Math.round(args.limit ?? 24)));
+    const term = (args.query ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9/_-]/g, "")
+      .slice(0, 60);
+    const expression = term
+      ? `resource_type:image AND (public_id:${term}* OR display_name:${term}*)`
+      : "resource_type:image";
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${cloudName}/resources/search`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${apiKey}:${apiSecret}`).toString("base64")}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expression,
+          max_results: limit,
+          sort_by: [{ created_at: "desc" }],
+          ...(args.cursor ? { next_cursor: args.cursor } : {}),
+        }),
+        signal: AbortSignal.timeout(20_000),
+      },
+    );
+
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 200);
+      throw new Error(
+        `Cloudinary library search failed (${res.status})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+
+    const data = (await res.json()) as {
+      total_count?: number;
+      next_cursor?: string;
+      resources?: {
+        public_id?: string;
+        secure_url?: string;
+        width?: number;
+        height?: number;
+        format?: string;
+        bytes?: number;
+        created_at?: string;
+        display_name?: string;
+      }[];
+    };
+
+    return {
+      total: data.total_count ?? 0,
+      nextCursor: data.next_cursor ?? null,
+      items: (data.resources ?? [])
+        .filter(
+          (asset): asset is typeof asset & { secure_url: string; public_id: string } =>
+            typeof asset.secure_url === "string" &&
+            typeof asset.public_id === "string",
+        )
+        .map((asset) => ({
+          publicId: asset.public_id,
+          url: asset.secure_url,
+          name: asset.display_name ?? asset.public_id,
+          width: asset.width ?? null,
+          height: asset.height ?? null,
+          format: asset.format ?? null,
+          bytes: asset.bytes ?? null,
+          createdAt: asset.created_at ?? null,
+        })),
+    };
+  },
+});
+
 export const getSignedUploadUrl = action({
   args: {
     folder: v.optional(v.string()),

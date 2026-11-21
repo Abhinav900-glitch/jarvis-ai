@@ -54,6 +54,10 @@ import {
 } from "@/lib/image-export";
 import { zipFiles } from "@/lib/pptx/zip";
 import {
+  CloudinaryLibrary,
+  type CloudinaryAsset,
+} from "@/components/cloudinary-library";
+import {
   Award,
   Brain,
   Check,
@@ -63,6 +67,7 @@ import {
   Download,
   ExternalLink,
   FileText,
+  FolderOpen,
   GitCompare,
   Globe,
   ImagePlus,
@@ -664,6 +669,8 @@ export function ImageStudio({
   // than stacking a second overlay on top of the studio.
   const navigate = useNavigate();
   const [lookStage, setLookStage] = useState<string | null>(null);
+  /** Browsing the account's own Cloudinary media, not just this app's renders. */
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [reference, setReference] = useState<{
     names: string[];
     brief: string;
@@ -1940,6 +1947,7 @@ export function ImageStudio({
   }, [aspect, avoid, history, instructions, page, persist, prompt, reference]);
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-h-[92vh] gap-3 overflow-y-auto p-4 sm:max-w-3xl sm:gap-4 sm:p-6"
@@ -2022,6 +2030,17 @@ export function ImageStudio({
                 </>
               )}
             </p>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setLibraryOpen(true)}
+                title="Pictures already stored in your Cloudinary account — pick one to vary"
+                className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+              >
+                <FolderOpen className="size-3" />
+                My Cloudinary library
+              </button>
+            </div>
           </div>
 
           {/* ---- Prompt ---- */}
@@ -3307,5 +3326,20 @@ export function ImageStudio({
           )
         : null}
     </Dialog>
+
+      {/* Sibling of the studio's own dialog: a library picture becomes the
+          variation source with the strength the author already chose. */}
+      <CloudinaryLibrary
+        open={libraryOpen}
+        onClose={() => setLibraryOpen(false)}
+        onUse={(asset: CloudinaryAsset) => {
+          setLibraryOpen(false);
+          setSource({
+            url: asset.url,
+            strength: source?.strength ?? STRENGTHS[1].id,
+          });
+        }}
+      />
+    </>
   );
 }
