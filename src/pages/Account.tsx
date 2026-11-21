@@ -1,0 +1,382 @@
+// ---------------------------------------------------------------------------
+// /account — the signed-in overview.
+//
+// Separate from the chat on purpose: the workspace is for working, this is for
+// the questions people ask about their account ("how much have I made?", "is
+// Cloudinary connected?", "what is switched on?"). Everything here is read
+// only except sign-out and the links back into the app.
+// ---------------------------------------------------------------------------
+
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router";
+import { useAction, useQuery } from "convex/react";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  BookOpen,
+  Brain,
+  Check,
+  FolderOpen,
+  Image as ImageIcon,
+  KeyRound,
+  Link2,
+  Loader2,
+  LogOut,
+  MessageSquare,
+  Minus,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
+import { api } from "@/convex/_generated/api";
+import { useAuth } from "@/hooks/use-auth";
+import { Button } from "@/components/ui/button";
+import { JarvisMark } from "@/components/jarvis-logo";
+import { cn } from "@/lib/utils";
+
+function initials(name: string | null | undefined, email: string | null | undefined) {
+  const source = (name ?? "").trim() || (email ?? "").split("@")[0] || "J";
+  return source
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+function Stat({
+  label,
+  value,
+  icon: Icon,
+  hint,
+  loading,
+}: {
+  label: string;
+  value: number | string | null;
+  icon: typeof MessageSquare;
+  hint?: string;
+  loading?: boolean;
+}) {
+  return (
+    <div className="hud-panel rounded-xl px-4 py-3">
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        <Icon className="size-3" />
+        {label}
+      </div>
+      <p className="mt-2 text-2xl font-semibold tabular-nums tracking-tight">
+        {loading ? (
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        ) : value === null ? (
+          "—"
+        ) : (
+          value
+        )}
+      </p>
+      {hint ? (
+        <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{hint}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function StatusRow({
+  label,
+  ready,
+  detail,
+}: {
+  label: string;
+  ready: boolean;
+  detail?: string;
+}) {
+  return (
+    <li className="flex items-center gap-2 py-1.5 text-xs">
+      <span
+        className={cn(
+          "grid size-4 shrink-0 place-items-center rounded-full",
+          ready
+            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+            : "bg-muted text-muted-foreground",
+        )}
+      >
+        {ready ? <Check className="size-2.5" /> : <Minus className="size-2.5" />}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-foreground">{label}</span>
+      <span className="shrink-0 text-[10px] text-muted-foreground">
+        {detail ?? (ready ? "Ready" : "Not configured")}
+      </span>
+    </li>
+  );
+}
+
+export default function Account() {
+  const { user, signOut } = useAuth();
+  const navigate = useNavigate();
+
+  const sessionsQuery = useQuery(api.chats.listSessions);
+  const sessions = useMemo(() => sessionsQuery ?? [], [sessionsQuery]);
+  const memories = useQuery(api.memories.list, { limit: 200 });
+  const decks = useQuery(api.decks.list);
+  const providers = useQuery(api.config.providerHealth);
+  const imageProviders = useQuery(api.config.imageProviders);
+  const cloudinaryStatus = useQuery(api.cloudinaryOAuth.getStatus);
+
+  // The picture count is the one stat that lives in Cloudinary, not Convex.
+  // Fetched once on mount; a failure just leaves the card blank.
+  const listMedia = useAction(api.cloudinary.listMedia);
+  const [pictures, setPictures] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    void listMedia({ limit: 6 })
+      .then((page) => {
+        if (live) setPictures(page.total);
+      })
+      .catch(() => {
+        // Not fatal: the rest of the page still works without Cloudinary.
+        if (live) setPictures(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [listMedia]);
+
+  const conversationCount = sessions.filter((s) => !s.deletedAt).length;
+  const pinnedCount = sessions.filter((s) => s.pinned && !s.deletedAt).length;
+  const chatProviders = providers?.providers ?? [];
+  const keyedChatProviders = chatProviders.filter((p) => p.configured);
+  const readyImageProviders = (imageProviders?.providers ?? []).filter(
+    (p) => p.available,
+  );
+  const doneDecks = (decks ?? []).filter((d) => d.status === "done").length;
+
+  const memberSince = user?._creationTime
+    ? new Date(user._creationTime).toLocaleDateString(undefined, {
+        dateStyle: "medium",
+      })
+    : null;
+
+  const handleSignOut = async () => {
+    await signOut();
+    navigate("/");
+  };
+
+  return (
+    <div className="hud-grid-bg min-h-screen bg-background text-foreground">
+      <header className="flex items-center justify-between border-b border-border/60 px-4 py-3 sm:px-8">
+        <div className="flex items-center gap-3">
+          <Link to="/" className="flex items-center gap-2">
+            <JarvisMark className="size-6" />
+            <span className="text-sm font-medium tracking-tight">Jarvis</span>
+          </Link>
+          <span className="text-muted-foreground/40">/</span>
+          <span className="text-xs text-muted-foreground">Account</span>
+        </div>
+        <Link to="/dashboard">
+          <Button variant="outline" size="sm">
+            <ArrowLeft className="size-3.5" />
+            Back to chat
+          </Button>
+        </Link>
+      </header>
+
+      <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
+        {/* ---- Identity ---- */}
+        <section className="hud-panel hud-corners rounded-2xl p-5 sm:p-6">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="grid size-14 shrink-0 place-items-center rounded-2xl bg-primary/15 text-lg font-semibold text-primary">
+              {initials(user?.name, user?.email)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <h1 className="truncate text-xl font-semibold tracking-tight">
+                {user?.name || "Your account"}
+              </h1>
+              <p className="truncate text-xs text-muted-foreground">
+                {user?.email ?? "Signed in"}
+              </p>
+              <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                {memberSince ? <span>Member since {memberSince}</span> : null}
+                <span className="inline-flex items-center gap-1">
+                  <ShieldCheck className="size-3" />
+                  End-to-end encrypted chats
+                </span>
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleSignOut()}
+            >
+              <LogOut className="size-3.5" />
+              Sign out
+            </Button>
+          </div>
+        </section>
+
+        {/* ---- Activity ---- */}
+        <section className="mt-6">
+          <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+            Activity
+          </h2>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <Stat
+              label="Conversations"
+              icon={MessageSquare}
+              value={conversationCount}
+              hint={`${pinnedCount} pinned`}
+              loading={sessionsQuery === undefined}
+            />
+            <Stat
+              label="Memory facts"
+              icon={Sparkles}
+              value={memories?.length ?? null}
+              hint="Recalled in later chats"
+              loading={memories === undefined}
+            />
+            <Stat
+              label="Recent decks"
+              icon={BookOpen}
+              value={decks?.length ?? null}
+              hint={`${doneDecks} finished`}
+              loading={decks === undefined}
+            />
+            <Stat
+              label="Pictures in Cloudinary"
+              icon={ImageIcon}
+              value={pictures}
+              hint="Whole account, not just this app"
+              loading={pictures === null && cloudinaryStatus?.connected !== false}
+            />
+            <Stat
+              label="Chat providers"
+              icon={Brain}
+              value={keyedChatProviders.length}
+              hint={`of ${chatProviders.length || "—"} in the registry`}
+              loading={providers === undefined}
+            />
+            <Stat
+              label="Image providers"
+              icon={KeyRound}
+              value={readyImageProviders.length}
+              hint="Keyed and ready"
+              loading={imageProviders === undefined}
+            />
+          </div>
+        </section>
+
+        {/* ---- Connections ---- */}
+        <section className="mt-6 grid gap-3 md:grid-cols-2">
+          <div className="hud-panel rounded-xl px-4 py-3">
+            <h2 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              <Brain className="size-3" />
+              Chat engines
+            </h2>
+            <ul className="mt-1 divide-y divide-border/40">
+              {providers === undefined ? (
+                <li className="py-3 text-[11px] text-muted-foreground">
+                  <Loader2 className="mr-1.5 inline size-3 animate-spin" />
+                  Checking…
+                </li>
+              ) : (
+                chatProviders.map((provider) => (
+                  <StatusRow
+                    key={provider.id}
+                    label={provider.label}
+                    ready={provider.configured}
+                    detail={
+                      provider.configured
+                        ? `${provider.engines.filter((e) => e.available).length} models`
+                        : undefined
+                    }
+                  />
+                ))
+              )}
+            </ul>
+          </div>
+
+          <div className="hud-panel rounded-xl px-4 py-3">
+            <h2 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              <ImageIcon className="size-3" />
+              Media & storage
+            </h2>
+            <ul className="mt-1 divide-y divide-border/40">
+              <StatusRow
+                label="Cloudinary library"
+                ready={Boolean(cloudinaryStatus?.connected || pictures !== null)}
+                detail={
+                  cloudinaryStatus?.connected
+                    ? "OAuth linked"
+                    : pictures !== null
+                      ? "API key"
+                      : undefined
+                }
+              />
+              <li className="flex items-center gap-2 py-1.5 text-xs">
+                <FolderOpen className="ml-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                <Link
+                  to="/gallery"
+                  className="min-w-0 flex-1 truncate text-foreground underline-offset-2 hover:underline"
+                >
+                  Open the gallery
+                </Link>
+                <ArrowUpRight className="size-3 text-muted-foreground" />
+              </li>
+              <li className="flex items-center gap-2 py-1.5 text-xs">
+                <Link2 className="ml-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-foreground">
+                  Public share links
+                </span>
+                <Link
+                  to="/dashboard"
+                  className="shrink-0 text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  Share from a chat
+                </Link>
+              </li>
+              {imageProviders !== undefined ? (
+                <li className="flex flex-wrap gap-1 py-2">
+                  {(imageProviders.providers ?? []).map((provider) => (
+                    <span
+                      key={provider.id}
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-[10px]",
+                        provider.available
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                          : "border-border/70 text-muted-foreground",
+                      )}
+                    >
+                      {provider.label}
+                    </span>
+                  ))}
+                </li>
+              ) : null}
+            </ul>
+          </div>
+        </section>
+
+        {/* ---- Shortcuts ---- */}
+        <section className="mt-6 flex flex-wrap gap-2">
+          <Link to="/dashboard">
+            <Button size="sm">
+              <MessageSquare className="size-3.5" />
+              Back to chat
+            </Button>
+          </Link>
+          <Link to="/gallery">
+            <Button variant="outline" size="sm">
+              <FolderOpen className="size-3.5" />
+              Gallery
+            </Button>
+          </Link>
+          <Link to="/resources">
+            <Button variant="outline" size="sm">
+              <BookOpen className="size-3.5" />
+              Resources
+            </Button>
+          </Link>
+        </section>
+
+        <p className="mt-8 text-center text-[11px] text-muted-foreground">
+          Keys and integrations are managed from the chat's Settings menu. This
+          page only shows what is switched on.
+        </p>
+      </main>
+    </div>
+  );
+}

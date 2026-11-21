@@ -28,6 +28,9 @@ import {
   Terminal,
   Loader2,
   Link2,
+  Link2Off,
+  LogOut,
+  MessageSquare,
   Mic,
   Menu,
   Moon,
@@ -5614,6 +5617,88 @@ export default function Dashboard() {
     : undefined;
   const sessionTitle = activeSessionRow ? titleOf(activeSessionRow) : "New chat";
 
+  // The sidebar's account chip: initials, not an uploaded avatar — the account
+  // page is the one place that needs identity, not every chat render.
+  const accountInitials = (
+    (user?.name ?? "").trim() ||
+    user?.email?.split("@")[0] ||
+    "J"
+  )
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+
+  // Greeting and recents make the empty chat a home rather than a blank page,
+  // the way every other assistant opens.
+  const hour = new Date().getHours();
+  const greeting =
+    hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const firstName = (user?.name ?? "").trim().split(/\s+/)[0] ?? "";
+  const recentChats = sessions
+    .filter((s) => !s.deletedAt && !s.archivedAt)
+    .slice(0, 4);
+
+  // ---- Public share link ---------------------------------------------------
+  // The browser is the only place that can read user messages (they are
+  // end-to-end encrypted), so the snapshot is assembled here and handed to the
+  // server only when the user asks for a link. Assistant replies are already
+  // plaintext on their rows.
+  const shareChatMutation = useMutation(api.chatShares.create);
+  const revokeShareMutation = useMutation(api.chatShares.revoke);
+
+  const handleShareChat = async () => {
+    if (!activeId || !messages || messages.length === 0) return;
+    const snapshot = messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .filter((m) => m.content.trim().length > 0 || m.imageUrl)
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        ...(m.imageUrl ? { imageUrl: m.imageUrl } : {}),
+        createdAt: m.createdAt,
+      }));
+    if (snapshot.length === 0) {
+      toast.info("There is nothing to share in this chat yet.");
+      return;
+    }
+
+    try {
+      const { slug, refreshed } = await shareChatMutation({
+        sessionId: activeId,
+        title: sessionTitle,
+        messages: snapshot,
+      });
+      const url = `${window.location.origin}/c/${slug}`;
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        toast.info(url);
+      }
+      toast.success(refreshed ? "Share link refreshed and copied." : "Public link copied.", {
+        description:
+          "Anyone with this link can read a snapshot of this chat. Messages sent later are not included, and Stop sharing revokes it.",
+      });
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not create the share link.",
+      );
+    }
+  };
+
+  const handleStopSharing = async () => {
+    if (!activeId) return;
+    try {
+      const { removed } = await revokeShareMutation({ sessionId: activeId });
+      if (removed) toast.success("Public link revoked.");
+      else toast.info("This chat was not shared.");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not revoke the link.",
+      );
+    }
+  };
+
   // ---- Command palette contents -------------------------------------------
   // Built here rather than in the palette itself so every shortcut the app
   // already has becomes reachable by name, and nothing is listed twice.
@@ -5642,6 +5727,24 @@ export default function Dashboard() {
         icon: <Download className="size-4" />,
         disabled: !messages || messages.length === 0,
         run: () => setShowExport(true),
+      },
+      {
+        id: "share-chat",
+        label: "Share this chat — public link",
+        group: "Chat",
+        keywords: "public link send read only snapshot",
+        icon: <Link2 className="size-4" />,
+        disabled: !activeId || !messages || messages.length === 0,
+        run: () => void handleShareChat(),
+      },
+      {
+        id: "stop-sharing",
+        label: "Stop sharing this chat",
+        group: "Chat",
+        keywords: "revoke public link privacy",
+        icon: <Link2Off className="size-4" />,
+        disabled: !activeId,
+        run: () => void handleStopSharing(),
       },
       {
         id: "stats",
@@ -5676,6 +5779,14 @@ export default function Dashboard() {
         keywords: "apps accounts connect services directory marketplace",
         icon: <Blocks className="size-4" />,
         run: () => setShowIntegrations(true),
+      },
+      {
+        id: "account",
+        label: "Account & usage — profile, activity, connections",
+        group: "Configure",
+        keywords: "profile stats plan providers cloudinary sign out",
+        icon: <Settings className="size-4" />,
+        run: () => navigate("/account"),
       },
       {
         id: "engines",
@@ -5895,15 +6006,31 @@ export default function Dashboard() {
             onNewChat={() => setActiveId(null)}
           />
           <Separator />
-          <div className="flex items-center justify-between px-5 py-3 text-xs text-muted-foreground">
-            <span className="truncate">
-              {user?.name || user?.email || "Guest"}
-            </span>
+          <div className="flex items-center gap-1 px-3 py-2">
+            <Link
+              to="/account"
+              title="Account & usage"
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1.5 transition-colors hover:bg-accent"
+            >
+              <span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary">
+                {accountInitials}
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-xs text-foreground">
+                  {user?.name || "Your account"}
+                </span>
+                <span className="block truncate text-[10px] text-muted-foreground">
+                  {user?.email ?? "Account & usage"}
+                </span>
+              </span>
+            </Link>
             <button
               onClick={handleSignOut}
-              className="underline-offset-2 hover:text-foreground hover:underline"
+              title="Sign out"
+              aria-label="Sign out"
+              className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              Sign out
+              <LogOut className="size-3.5" />
             </button>
           </div>
         </aside>
@@ -5955,15 +6082,32 @@ export default function Dashboard() {
                   />
                 </div>
                 <Separator />
-                <div className="flex items-center justify-between px-5 py-3 text-xs text-muted-foreground">
-                  <span className="truncate">
-                    {user?.name || user?.email || "Guest"}
-                  </span>
+                <div className="flex items-center gap-1 px-3 py-2">
+                  <Link
+                    to="/account"
+                    onClick={() => setSidebarOpen(false)}
+                    title="Account & usage"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1.5 transition-colors hover:bg-accent"
+                  >
+                    <span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary">
+                      {accountInitials}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs text-foreground">
+                        {user?.name || "Your account"}
+                      </span>
+                      <span className="block truncate text-[10px] text-muted-foreground">
+                        {user?.email ?? "Account & usage"}
+                      </span>
+                    </span>
+                  </Link>
                   <button
                     onClick={handleSignOut}
-                    className="underline-offset-2 hover:text-foreground hover:underline"
+                    title="Sign out"
+                    aria-label="Sign out"
+                    className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
-                    Sign out
+                    <LogOut className="size-3.5" />
                   </button>
                 </div>
               </motion.aside>
@@ -6136,6 +6280,21 @@ export default function Dashboard() {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-52">
                   <DropdownMenuLabel>Tools</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    disabled={!activeId || !messages || messages.length === 0}
+                    onClick={() => void handleShareChat()}
+                  >
+                    <Link2 className="size-4" />
+                    Share this chat
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!activeId}
+                    onClick={() => void handleStopSharing()}
+                  >
+                    <Link2Off className="size-4" />
+                    Stop sharing
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     onClick={() => setDeepResearch((v) => !v)}
@@ -6660,10 +6819,13 @@ export default function Dashboard() {
                 </div>
                 <p className="hud-label hud-label-cyan mt-7">Core online</p>
                 <h1 className="mt-3 text-2xl font-semibold tracking-tight">
-                  <span className="hud-glow-text">How can I help?</span>
+                  <span className="hud-glow-text">
+                    {greeting}
+                    {firstName ? `, ${firstName}` : ""}
+                  </span>
                 </h1>
                 <p className="mt-2 max-w-md text-center text-sm leading-6 text-muted-foreground">
-                  Ask anything — try “solve x² in graph” for a live plot, or /solve
+                  How can I help? Ask anything — try “solve x² in graph” for a live plot, or /solve
                   for step-by-step math. Turn on Deep Research for cited web
                   answers. Every turn is routed to the best engine for the task,
                   and another one takes over automatically if it fails.
@@ -6722,6 +6884,39 @@ export default function Dashboard() {
                     </button>
                   ))}
                 </div>
+                {recentChats.length > 0 && (
+                  <div className="mt-8 w-full max-w-md">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                        Recent chats
+                      </span>
+                      <span className="text-[10px] text-muted-foreground/60">
+                        Continue where you left off
+                      </span>
+                    </div>
+                    <div className="grid gap-1">
+                      {recentChats.map((session) => (
+                        <button
+                          key={session._id}
+                          type="button"
+                          onClick={() => setActiveId(session._id)}
+                          className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:bg-accent hover:text-foreground"
+                        >
+                          <MessageSquare className="size-3 shrink-0 opacity-70" />
+                          <span className="min-w-0 flex-1 truncate">
+                            {titleOf(session) || "Untitled chat"}
+                          </span>
+                          <span className="shrink-0 text-[10px] opacity-60">
+                            {new Date(session.updatedAt).toLocaleDateString(
+                              undefined,
+                              { month: "short", day: "numeric" },
+                            )}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="mt-10 flex flex-wrap items-center justify-center gap-4 text-[11px] text-muted-foreground/60">
                   <span className="inline-flex items-center gap-1">
                     <Globe className="size-3" /> Web search

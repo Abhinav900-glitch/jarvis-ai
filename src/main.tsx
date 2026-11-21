@@ -27,6 +27,8 @@ applyStoredMotionPreference();
 const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
+const Account = lazy(() => import("./pages/Account.tsx"));
+const SharedChat = lazy(() => import("./pages/SharedChat.tsx"));
 const CloudinaryCallback = lazy(
   () => import("./pages/CloudinaryCallback.tsx"),
 );
@@ -186,6 +188,14 @@ createRoot(document.getElementById("root")!).render(
                 }
               />
               <Route
+                path="/account"
+                element={
+                  <RequireAuth>
+                    <Account />
+                  </RequireAuth>
+                }
+              />
+              <Route
                 path="/cloudinary/callback"
                 element={
                   <RequireAuth>
@@ -226,6 +236,7 @@ createRoot(document.getElementById("root")!).render(
                 }
               />
               <Route path="/s/:slug" element={<SharedRender />} />
+              <Route path="/c/:slug" element={<SharedChat />} />
               <Route
                 path="/terms"
                 element={<Terms />}

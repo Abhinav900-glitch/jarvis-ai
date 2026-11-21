@@ -373,6 +373,32 @@ const schema = defineSchema(
       // Backs the pinned list, which spans every session at once.
       .index("by_user", ["userId"]),
 
+    // Public, read-only snapshots of a conversation.
+    //
+    // A snapshot rather than a live pointer on purpose: a link sent to someone
+    // must not quietly grow new messages, edits or branch switches later. The
+    // row holds only what was in the transcript when the user shared it, and
+    // revoking deletes it outright.
+    chatShares: defineTable({
+      userId: v.id("users"),
+      sessionId: v.id("chatSessions"),
+      /** Unguessable path segment; the whole security of the public page. */
+      slug: v.string(),
+      title: v.string(),
+      messages: v.array(
+        v.object({
+          role: v.union(v.literal("user"), v.literal("assistant")),
+          content: v.string(),
+          imageUrl: v.optional(v.string()),
+          createdAt: v.number(),
+        }),
+      ),
+      createdAt: v.number(),
+    })
+      .index("by_slug", ["slug"])
+      // One share per chat: sharing again refreshes the same link.
+      .index("by_user_session", ["userId", "sessionId"]),
+
     // RAG: embeddings of past chat messages for semantic retrieval.
     // Embeddings use HuggingFace feature-extraction (384-dim all-MiniLM-L6-v2).
     messageEmbeddings: defineTable({
