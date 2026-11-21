@@ -190,6 +190,10 @@ import { MemoryPanel } from "@/components/memory-panel";
 import { CloudPanel } from "@/components/cloud-panel";
 import { MusicPanel } from "@/components/music-panel";
 import { DeckStudio } from "@/components/deck-studio";
+import {
+  DECK_TOPICS,
+  type DeckTopic,
+} from "@/lib/topics";
 import { FileViewer } from "@/components/file-viewer";
 import { ExportPanel } from "@/components/export-panel";
 import { useCamera } from "@/hooks/use-camera";
@@ -1537,6 +1541,8 @@ export default function Dashboard() {
   const [showCloud, setShowCloud] = useState(false);
   const [showMusic, setShowMusic] = useState(false);
   const [showDeck, setShowDeck] = useState(false);
+  /** The topic the deck studio is waiting on before it can build. */
+  const [deckTopic, setDeckTopic] = useState<DeckTopic | null>(null);
   // The seed of the deck studio's brief: `auto` means build it on open, which
   // is how a failed provider job still ends in a downloadable .pptx.
   const [deckSeed, setDeckSeed] = useState<{ text: string; auto: boolean } | null>(
@@ -5573,8 +5579,14 @@ export default function Dashboard() {
       // `/slides`, `/ppt`, `/deck` … all land here. With a topic the deck starts
       // writing straight away; without one the panel opens ready for a brief.
       case "slides":
-        setDeckSeed(args ? { text: args, auto: true } : null);
-        setShowDeck(true);
+        // A bare command opens the picker; a supplied topic builds immediately.
+        if (args) {
+          setDeckSeed({ text: args, auto: true });
+          setShowDeck(true);
+        } else {
+          setDeckTopic(null);
+          setShowDeck(true);
+        }
         return;
       case "mcp":
         setShowMcp(true);
@@ -7711,6 +7723,14 @@ export default function Dashboard() {
                 <DeckStudio
                   initialTopic={deckSeed?.text ?? input}
                   autoStart={deckSeed?.auto ?? false}
+                  topic={deckTopic}
+                  onTopicSelect={(topic) => {
+                    setDeckSeed({ text: topic.title, auto: true });
+                    setDeckTopic(null);
+                    setShowDeck(true);
+                  }}
+                />
+                />
                   onSendToStudio={(image) => {
                     setStudioSeed(image);
                     studioSeedUsed.current = false;
@@ -7719,6 +7739,7 @@ export default function Dashboard() {
                   onClose={() => {
                     setShowDeck(false);
                     setDeckSeed(null);
+                    setDeckTopic(null);
                   }}
                 />
               )}

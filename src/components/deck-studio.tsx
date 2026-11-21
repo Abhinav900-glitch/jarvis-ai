@@ -31,6 +31,10 @@ import { qrMatrix } from "@/lib/qr/qr";
 import { qrDataUrl } from "@/lib/qr/png";
 import { FileViewer } from "@/components/file-viewer";
 import { disposeOpenedFile, openOfficeFile, type OpenedFile } from "@/lib/office/read";
+import {
+  DECK_TOPICS,
+  type DeckTopic,
+} from "@/lib/topics";
 
 // ---------------------------------------------------------------------------
 // Deck Studio.
@@ -389,6 +393,8 @@ export function DeckStudio({
   onSendToStudio,
 }: {
   initialTopic: string;
+  topic: DeckTopic | null;
+  onTopicSelect: (topic: DeckTopic) => void;
   onClose: () => void;
   /** Forwarded to the viewer: an opened image can become a studio seed. */
   onSendToStudio?: (image: { name: string; url: string; storageId: Id<"_storage"> }) => void;
@@ -399,7 +405,10 @@ export function DeckStudio({
    */
   autoStart?: boolean;
 }) {
-  const [topic, setTopic] = useState(initialTopic.slice(0, 400));
+     const [topic, setTopic] = useState(initialTopic.slice(0, 400));
+  const [showTopics, setShowTopics] = useState(false);
+  const topicPick = topic || null;
+
   const [slideCount, setSlideCount] = useState(14);
   const [theme, setTheme] = useState<ThemeId>(() => suggestTheme(initialTopic).id);
   const [tone, setTone] = useState("");
@@ -1008,22 +1017,64 @@ export function DeckStudio({
             ))}
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-2">
-            <input
-              value={audience}
-              onChange={(e) => setAudience(e.target.value)}
-              maxLength={120}
-              placeholder="Audience (optional)"
-              className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50"
-            />
-            <input
-              value={tone}
-              onChange={(e) => setTone(e.target.value)}
-              maxLength={120}
-              placeholder="Tone (optional)"
-              className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50"
-            />
-          </div>
+          {!openTopicPanel ? (
+            <div className="mt-2 flex gap-1.5">
+                              <button
+                  type="button"
+                  onClick={() => setOpenTopicPanel(true)}
+                  className="shrink-0 rounded border border-border/60 px-1.5 py-0.5 text-[9px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+                >
+                  Topics\xFFFFFF
+                </button>
+              <input
+                value={audience}
+                onChange={(e) => setAudience(e.target.value)}
+                maxLength={120}
+                placeholder="Audience (optional)"
+                className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50"
+              />
+              <input
+                value={tone}
+                onChange={(e) => setTone(e.target.value)}
+                maxLength={120}
+                placeholder="Tone (optional)"
+                className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50"
+              />
+            </div>
+          ) : (
+            <div className="mt-2 rounded-lg border border-border/60 bg-muted/30 p-3 max-h-[32vh] overflow-y-auto">
+              <div className="mb-2 flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => setOpenTopicPanel(false)}
+                  className="ml-auto text-[9px] text-muted-foreground hover:text-foreground"
+                >
+                  Close
+                </button>
+              </div>
+                                                                        <div className="col-span-1 flex flex-wrap gap-1.5">
+                {DECK_TOPICS.map((t) => (
+                                                                              <div className="col-span-1 flex flex-wrap gap-1.5">
+                      {DECK_TOPICS.map((t) => (
+                        <button
+                          key={t.title}
+                          type="button"
+                          onClick={() => {
+                            setTopic(t.title.trim());
+                            onTopicSelect(t);
+                            setOpenTopicPanel(false);
+                          }}
+                          disabled={busy}
+                          className="col-span-full rounded border border-border/60 px-2 py-1.5 text-left text-xs transition-colors hover:border-foreground/30 hover:bg-accent/50 hover:text-foreground"
+                        >
+                          <div className="mb-1 font-medium">{t.title}</div>
+                          <div className="text-[10px] leading-snug text-muted-foreground">{t.pitch}</div>
+                          <div className="mt-0.5 text-[9px] text-muted-foreground/60">{t.audience}</div>
+                        </button>
+                      ))}
+                    </div>
+            </div>
+          )}
 
           <div className="mt-2 flex items-center gap-2">
             <QrCode className="size-3.5 shrink-0 text-muted-foreground" />
