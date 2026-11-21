@@ -9,7 +9,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
+import { toast } from "sonner";
 import {
   Bar,
   CartesianGrid,
@@ -24,10 +25,12 @@ import {
   BookOpen,
   Brain,
   Check,
+  Copy,
   FolderOpen,
   Image as ImageIcon,
   KeyRound,
   Link2,
+  Link2Off,
   Loader2,
   LogOut,
   MessageSquare,
@@ -153,6 +156,9 @@ export default function Account() {
   /** 7 / 30 / 90 days, chosen with the small range switch on the chart. */
   const [usageDays, setUsageDays] = useState(30);
   const usage = useQuery(api.usage.daily, { days: usageDays });
+  const shares = useQuery(api.chatShares.listMine);
+  const revokeShare = useMutation(api.chatShares.revoke);
+  const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
     void listMedia({ limit: 6 })
@@ -187,6 +193,32 @@ export default function Account() {
     }),
   }));
   const hasUsage = usageSeries.some((point) => point.messages > 0);
+
+  const copyShareLink = async (slug: string) => {
+    const url = `${window.location.origin}/c/${slug}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedSlug(slug);
+      window.setTimeout(() => setCopiedSlug(null), 1600);
+    } catch {
+      // Clipboard permission can be denied; showing the link still lets the
+      // user copy it by hand instead of leaving the button silently broken.
+      toast.error(url);
+    }
+  };
+
+  const stopSharing = async (sessionId: (typeof sessions)[number]["_id"]) => {
+    try {
+      const { removed } = await revokeShare({ sessionId });
+      toast[removed ? "success" : "info"](
+        removed ? "Public link revoked." : "That link was already off.",
+      );
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not revoke the link.",
+      );
+    }
+  };
 
   const memberSince = user?._creationTime
     ? new Date(user._creationTime).toLocaleDateString(undefined, {
@@ -433,6 +465,95 @@ export default function Account() {
           </div>
         </section>
 
+        {/* ---- Shared links ---- */}
+        <section id="shares" className="mt-6 scroll-mt-6">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h2 className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+              Shared links
+            </h2>
+            <span className="text-[10px] text-muted-foreground">
+              {shares ? `${shares.length} active` : "—"}
+            </span>
+          </div>
+          <div className="hud-panel rounded-xl">
+            {shares === undefined ? (
+              <div className="flex items-center justify-center py-6 text-[11px] text-muted-foreground">
+                <Loader2 className="mr-2 size-3.5 animate-spin" />
+                Reading links…
+              </div>
+            ) : shares.length === 0 ? (
+              <div className="px-4 py-6 text-center">
+                <Link2 className="mx-auto size-4 text-muted-foreground/60" />
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  No public links yet.
+                </p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+                  Share a chat from Tools → Share this chat; it appears here
+                  until you revoke it.
+                </p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/40">
+                {shares.map((share) => (
+                  <li
+                    key={share.slug}
+                    className="flex flex-wrap items-center gap-2 px-4 py-2.5"
+                  >
+                    <Link2 className="size-3.5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs text-foreground">
+                        {share.title || "Untitled chat"}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        Shared{" "}
+                        {new Date(share.createdAt).toLocaleDateString(
+                          undefined,
+                          { month: "short", day: "numeric" },
+                        )}{" "}
+                        · {share.messages} message
+                        {share.messages === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void copyShareLink(share.slug)}
+                      title="Copy the public link"
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-md border border-border/70 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground",
+                        copiedSlug === share.slug && "text-foreground",
+                      )}
+                    >
+                      {copiedSlug === share.slug ? (
+                        <Check className="size-3" />
+                      ) : (
+                        <Copy className="size-3" />
+                      )}
+                      {copiedSlug === share.slug ? "Copied" : "Copy link"}
+                    </button>
+                    <a
+                      href={`/c/${share.slug}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open the public page"
+                      className="rounded-md border border-border/70 p-1 text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+                    >
+                      <ArrowUpRight className="size-3" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => void stopSharing(share.sessionId)}
+                      title="Stop sharing this chat"
+                      className="rounded-md border border-border/70 p-1 text-muted-foreground transition-colors hover:border-destructive/40 hover:text-destructive"
+                    >
+                      <Link2Off className="size-3" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
+
         {/* ---- Connections ---- */}
         <section className="mt-6 grid gap-3 md:grid-cols-2">
           <div className="hud-panel rounded-xl px-4 py-3">
@@ -492,15 +613,15 @@ export default function Account() {
               </li>
               <li className="flex items-center gap-2 py-1.5 text-xs">
                 <Link2 className="ml-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate text-foreground">
-                  Public share links
-                </span>
-                <Link
-                  to="/dashboard"
-                  className="shrink-0 text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                <a
+                  href="#shares"
+                  className="min-w-0 flex-1 truncate text-foreground underline-offset-2 hover:underline"
                 >
-                  Share from a chat
-                </Link>
+                  Public share links
+                </a>
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {shares ? `${shares.length} active` : "—"}
+                </span>
               </li>
               {imageProviders !== undefined ? (
                 <li className="flex flex-wrap gap-1 py-2">

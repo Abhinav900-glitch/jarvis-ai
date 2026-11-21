@@ -98,6 +98,36 @@ export const create = mutation({
   },
 });
 
+/**
+ * The account's active public links, newest first, for the share manager.
+ *
+ * Returns metadata only — the message bodies stay out of this query, since the
+ * account page only needs to list and revoke links, not preview every shared
+ * transcript.
+ */
+export const listMine = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return [];
+
+    const rows = await ctx.db
+      .query("chatShares")
+      .withIndex("by_user_session", (q) => q.eq("userId", userId))
+      .take(100);
+
+    return rows
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((share) => ({
+        sessionId: share.sessionId,
+        slug: share.slug,
+        title: share.title,
+        createdAt: share.createdAt,
+        messages: share.messages.length,
+      }));
+  },
+});
+
 /** Public: the page that renders a shared conversation. */
 export const get = query({
   args: { slug: v.string() },
