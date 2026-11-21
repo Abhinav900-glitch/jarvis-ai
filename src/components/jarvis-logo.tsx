@@ -57,69 +57,126 @@ export function JarvisMark({
       aria-label="Jarvis"
     >
       <defs>
-        {/* Cyan at the top-right, through blue and violet, into the pink and
-            amber the mark ends on at the lower left. */}
+        {/* Cyan at the top, through blue and violet, into the pink and amber
+            the hook ends on at the lower left. */}
         <linearGradient
           id={ribbonId}
           x1="150"
-          y1="30"
-          x2="50"
-          y2="160"
+          y1="36"
+          x2="52"
+          y2="158"
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="#63E6FF" />
-          <stop offset="27%" stopColor="#3A8CFF" />
-          <stop offset="50%" stopColor="#7A5CFF" />
-          <stop offset="72%" stopColor="#C94BF0" />
-          <stop offset="89%" stopColor="#FF5F9E" />
-          <stop offset="100%" stopColor="#FFA45E" />
+          <stop offset="0%" stopColor="#7DF3FF" />
+          <stop offset="26%" stopColor="#3B9BFF" />
+          <stop offset="52%" stopColor="#8B5CF6" />
+          <stop offset="76%" stopColor="#E879F9" />
+          <stop offset="100%" stopColor="#FFB86B" />
         </linearGradient>
         <linearGradient
           id={ringId}
-          x1="26"
-          y1="78"
-          x2="174"
-          y2="122"
+          x1="30"
+          y1="70"
+          x2="170"
+          y2="130"
           gradientUnits="userSpaceOnUse"
         >
           <stop offset="0%" stopColor="#8B5CF6" />
-          <stop offset="45%" stopColor="#3A8CFF" />
-          <stop offset="100%" stopColor="#63E6FF" />
+          <stop offset="45%" stopColor="#3B9BFF" />
+          <stop offset="100%" stopColor="#7DF3FF" />
         </linearGradient>
-        <radialGradient id={bloomId} cx="50%" cy="45%" r="50%">
-          <stop offset="0%" stopColor="#4A7BFF" stopOpacity="0.45" />
-          <stop offset="60%" stopColor="#7A5CFF" stopOpacity="0.16" />
-          <stop offset="100%" stopColor="#7A5CFF" stopOpacity="0" />
+        {/* Rim light down the stem, fading out before the hook. */}
+        <linearGradient
+          id={`${ribbonId}-gloss`}
+          x1="0"
+          y1="42"
+          x2="0"
+          y2="120"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.55" />
+          <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
+        </linearGradient>
+        <radialGradient id={bloomId} cx="50%" cy="44%" r="52%">
+          <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.42" />
+          <stop offset="58%" stopColor="#7C3AED" stopOpacity="0.15" />
+          <stop offset="100%" stopColor="#7C3AED" stopOpacity="0" />
         </radialGradient>
       </defs>
 
-      {glow ? <circle cx="100" cy="92" r="92" fill={`url(#${bloomId})`} /> : null}
+      {glow ? <circle cx="100" cy="92" r="94" fill={`url(#${bloomId})`} /> : null}
 
-      {/* Orbit ring. The far half sits behind the ribbon, the near half in
-          front of it, which is what makes the mark read as a 3D loop. */}
+      {/* Soft halo on the aperture, so the ring reads as light rather than a
+          hairline at 24px. The bright stroke is drawn on top of it. */}
+      <path
+        d="M171.3 131.7A78 78 0 1 1 148 38.5"
+        stroke={`url(#${ringId})`}
+        strokeWidth="14"
+        strokeLinecap="round"
+        opacity="0.16"
+      />
+
+      {/* Tilted orbit behind the monogram: depth without closing the shape. */}
       <g className={orbit}>
         <ellipse
           cx="100"
           cy="100"
-          rx="74"
-          ry="23"
-          transform="rotate(-26 100 100)"
+          rx="86"
+          ry="24"
+          transform="rotate(-24 100 100)"
           stroke={`url(#${ringId})`}
-          strokeWidth="1.8"
-          opacity="0.45"
+          strokeWidth="1.4"
+          opacity="0.38"
           pathLength={drawIn ? 100 : undefined}
           className={drawIn ? "jarvis-draw-ring" : undefined}
         />
       </g>
 
-      {/* The ribbon J. Stroked rather than filled: one path carries the whole
-          gradient along the glyph's spine — cyan down the stem, pink and amber
-          through the hook. */}
+      {/* Open aperture: one wide arc with a deliberate gap at the upper right,
+          where the spark sits. Thicker than a hairline so the silhouette
+          survives a 16px favicon as well as the boot screen. The frame stays
+          still while the tilted orbit turns behind it — a rotating frame with
+          a gap would read as a glitch. */}
       <path
-        d="M146 34L132 112C128 148 102 166 78 154C64 147 56 132 54 116"
+        d="M171.3 131.7A78 78 0 1 1 148 38.5"
+        stroke={`url(#${ringId})`}
+        strokeWidth="5.5"
+        strokeLinecap="round"
+        opacity="0.95"
+        pathLength={drawIn ? 100 : undefined}
+        className={drawIn ? "jarvis-draw-ring-front" : undefined}
+      />
+
+      {/* Inner tick ring: dashed, so it reads as instrumentation rather than
+          another border. */}
+      <circle
+        cx="100"
+        cy="100"
+        r="63"
+        stroke="#8BE0FF"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeDasharray="1.2 9"
+        opacity="0.25"
+      />
+
+      {/* The monogram J: one confident stroke, cyan at the top through violet
+          into the amber hook. Stroked so a single path carries the gradient
+          along the glyph's spine. A wider, faint copy underneath gives the
+          letter its inner light without an SVG filter. */}
+      <path
+        d="M139 42V98C139 135 116 158 88 151C68 146 56 131 53 113"
         stroke={`url(#${ribbonId})`}
-        strokeWidth="26"
-        strokeLinecap="butt"
+        strokeWidth="44"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.12"
+      />
+      <path
+        d="M139 42V98C139 135 116 158 88 151C68 146 56 131 53 113"
+        stroke={`url(#${ribbonId})`}
+        strokeWidth="30"
+        strokeLinecap="round"
         strokeLinejoin="round"
         pathLength={drawIn ? 100 : undefined}
         className={[ribbon, drawIn ? "jarvis-draw-glyph" : ""]
@@ -127,28 +184,38 @@ export function JarvisMark({
           .join(" ")}
       />
 
-      <g className={orbit}>
-        {/* Near half of the ring, drawn over the ribbon. */}
-        <path
-          d="M26 100a74 23 0 00148 0"
-          transform="rotate(-26 100 100)"
-          stroke={`url(#${ringId})`}
-          strokeWidth="2.4"
-          strokeLinecap="round"
-          pathLength={drawIn ? 100 : undefined}
-          className={drawIn ? "jarvis-draw-ring-front" : undefined}
-        />
-      </g>
-
-      {/* Four-point spark, clear of the stem's top end. */}
+      {/* Glass highlight down the stem's left edge. */}
       <path
-        d="M176 22c1.6 8.1 3.6 11.3 12 13.4-8.4 2.1-10.4 5.3-12 13.4-1.6-8.1-3.6-11.3-12-13.4 8.4-2.1 10.4-5.3 12-13.4Z"
+        d="M130 52V94"
+        stroke={`url(#${ribbonId}-gloss)`}
+        strokeWidth="6"
+        strokeLinecap="round"
+        opacity="0.8"
+      />
+
+      {/* Terminal node at the hook: the mark's "live" point. */}
+      <circle cx="53" cy="113" r="5.4" fill="#9BF6FF" />
+      <circle
+        cx="53"
+        cy="113"
+        r="11"
+        stroke="#7DF3FF"
+        strokeWidth="1.4"
+        opacity="0.4"
+      />
+
+      {/* Four-point spark in the aperture gap. */}
+      <path
+        d="M174 14C176.2 25.4 180.6 29.8 192 32C180.6 34.2 176.2 38.6 174 50C171.8 38.6 167.4 34.2 156 32C167.4 29.8 171.8 25.4 174 14Z"
         fill="#F8FBFF"
         className={[spark, drawIn ? "jarvis-draw-spark" : ""]
           .filter(Boolean)
           .join(" ")}
       />
-      <circle cx="186" cy="92" r="1.6" fill="#BFE9FF" opacity="0.85" />
+
+      {/* Two quiet satellites so the field feels inhabited at large sizes. */}
+      <circle cx="186" cy="86" r="1.8" fill="#BFE9FF" opacity="0.8" />
+      <circle cx="34" cy="66" r="1.4" fill="#9BF6FF" opacity="0.5" />
     </svg>
   );
 }
