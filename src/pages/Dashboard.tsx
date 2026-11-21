@@ -7725,12 +7725,10 @@ export default function Dashboard() {
                   autoStart={deckSeed?.auto ?? false}
                   topic={deckTopic}
                   onTopicSelect={(topic) => {
-                    setDeckSeed({ text: topic.title, auto: true });
-                    setDeckTopic(null);
-                    setShowDeck(true);
+                    // The studio starts the build itself; this only remembers
+                    // the choice so a reopened panel opens on the same brief.
+                    setDeckTopic(topic);
                   }}
-                />
-                />
                   onSendToStudio={(image) => {
                     setStudioSeed(image);
                     studioSeedUsed.current = false;

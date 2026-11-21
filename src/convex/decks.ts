@@ -24,6 +24,7 @@ import {
   type SlideSpec,
 } from "../lib/pptx/spec";
 import {
+  alignLessonPlan,
   alignPlan,
   deckTitleFor,
   fallbackNotes,
@@ -633,8 +634,12 @@ export const start = action({
     const brief: DeckBrief = {
       topic,
       slideCount,
-      tone: args.tone?.trim().slice(0, 120) || undefined,
-      audience: args.audience?.trim().slice(0, 120) || undefined,
+      // 600, not 120: the studio sends a teaching brief through these fields
+      // (define terms, worked examples, misconceptions, a practice question),
+      // and a 120-character cut silently dropped the instruction that makes a
+      // student deck different from a general one.
+      tone: args.tone?.trim().slice(0, 600) || undefined,
+      audience: args.audience?.trim().slice(0, 600) || undefined,
     };
     const qrUrl = args.qrUrl?.trim().slice(0, 600) || undefined;
 
@@ -681,6 +686,10 @@ export const start = action({
       aiFailures = 1;
       error = err instanceof Error ? err.message.slice(0, 300) : "Outline generation failed.";
     }
+
+    // A lesson deck keeps its practice question and misconceptions even when
+    // the outline came back without them (or fell back to the template).
+    plan = alignLessonPlan(plan, brief);
 
     const deckId = await ctx.runMutation(internal.decks.create, {
       userId,

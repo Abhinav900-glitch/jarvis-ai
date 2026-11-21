@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   ChevronRight,
   Copy,
   Download,
@@ -388,6 +389,8 @@ function SlideThumb({ slide, themeId, index }: { slide: SlideSpec; themeId: stri
 
 export function DeckStudio({
   initialTopic,
+  topic: selectedTopic,
+  onTopicSelect,
   onClose,
   autoStart = false,
   onSendToStudio,
@@ -405,9 +408,20 @@ export function DeckStudio({
    */
   autoStart?: boolean;
 }) {
-     const [topic, setTopic] = useState(initialTopic.slice(0, 400));
-  const [showTopics, setShowTopics] = useState(false);
-  const topicPick = topic || null;
+  const [topic, setTopic] = useState(
+    (selectedTopic?.title ?? initialTopic).slice(0, 400),
+  );
+  /** The topic picker answers "what do you want to understand?" in one click. */
+  // Opened with no brief, the first useful question is the topic itself.
+  const [showTopics, setShowTopics] = useState(
+    !(selectedTopic?.title ?? initialTopic).trim(),
+  );
+  /**
+   * Teaching mode writes for a learner, not a boardroom: every term defined, a
+   * worked example per idea, the likely misconceptions named, and a check for
+   * understanding at the end.
+   */
+  const [studentMode, setStudentMode] = useState(true);
 
   const [slideCount, setSlideCount] = useState(14);
   const [theme, setTheme] = useState<ThemeId>(() => suggestTheme(initialTopic).id);
@@ -495,22 +509,44 @@ export function DeckStudio({
     }
   };
 
-  const run = async () => {
-    const text = topic.trim();
+  /** `override` lets a topic tile start the build in the same click. */
+  const run = async (override?: string) => {
+    const text = (override ?? topic).trim();
     if (!text || busy) return;
     const token = runToken.current + 1;
     runToken.current = token;
     setBusy(true);
     setError(null);
     setSelected(0);
+
+    // Both prompts read these fields, so the teaching brief travels with the
+    // deck without a second schema: audience says who is learning, tone says
+    // how thoroughly each idea has to be explained.
+    const briefAudience = [
+      audience.trim(),
+      studentMode
+        ? "a student meeting this topic for the first time, who needs every part of it explained rather than summarised"
+        : "",
+    ]
+      .filter(Boolean)
+      .join("; ");
+    const briefTone = [
+      tone.trim(),
+      studentMode
+        ? "patient and precise. Define every term on the slide where it first appears and do not repeat a definition on a later slide; show a worked example for each method; name the two most likely misconceptions and correct them; put a slide titled 'Check your understanding' immediately before the closing, with one question on it and its answer in the speaker notes"
+        : "",
+    ]
+      .filter(Boolean)
+      .join("; ");
+
     try {
       const created = await startDeck({
         topic: text,
         slideCount,
         theme,
         research: withResearch,
-        ...(tone.trim() ? { tone: tone.trim() } : {}),
-        ...(audience.trim() ? { audience: audience.trim() } : {}),
+        ...(briefTone ? { tone: briefTone } : {}),
+        ...(briefAudience ? { audience: briefAudience } : {}),
         ...(qrUrl.trim() ? { qrUrl: qrUrl.trim() } : {}),
       });
       if (!created) throw new Error("The deck could not be created.");
@@ -1017,62 +1053,56 @@ export function DeckStudio({
             ))}
           </div>
 
-          {!openTopicPanel ? (
-            <div className="mt-2 flex gap-1.5">
-                              <button
-                  type="button"
-                  onClick={() => setOpenTopicPanel(true)}
-                  className="shrink-0 rounded border border-border/60 px-1.5 py-0.5 text-[9px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
-                >
-                  Topics\xFFFFFF
-                </button>
+          <div className="mt-2 flex gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowTopics((open) => !open)}
+              aria-expanded={showTopics}
+              className="shrink-0 rounded border border-border/60 px-1.5 py-0.5 text-[9px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+            >
+              Topics
+            </button>
               <input
                 value={audience}
                 onChange={(e) => setAudience(e.target.value)}
-                maxLength={120}
+                maxLength={400}
                 placeholder="Audience (optional)"
                 className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50"
               />
               <input
                 value={tone}
                 onChange={(e) => setTone(e.target.value)}
-                maxLength={120}
+                maxLength={400}
                 placeholder="Tone (optional)"
                 className="min-w-0 flex-1 rounded border border-border/60 bg-transparent px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50"
               />
-            </div>
-          ) : (
-            <div className="mt-2 rounded-lg border border-border/60 bg-muted/30 p-3 max-h-[32vh] overflow-y-auto">
-              <div className="mb-2 flex items-center justify-end">
-                <button
-                  type="button"
-                  onClick={() => setOpenTopicPanel(false)}
-                  className="ml-auto text-[9px] text-muted-foreground hover:text-foreground"
-                >
-                  Close
-                </button>
-              </div>
-                                                                        <div className="col-span-1 flex flex-wrap gap-1.5">
+          </div>
+
+          {showTopics && (
+            <div className="mt-2 max-h-[32vh] overflow-y-auto rounded-lg border border-border/60 bg-muted/30 p-2">
+              <p className="px-1 pb-1.5 text-[9px] uppercase tracking-widest text-muted-foreground/60">
+                What do you want to understand?
+              </p>
+              <div className="flex flex-col gap-1.5">
                 {DECK_TOPICS.map((t) => (
-                                                                              <div className="col-span-1 flex flex-wrap gap-1.5">
-                      {DECK_TOPICS.map((t) => (
-                        <button
-                          key={t.title}
-                          type="button"
-                          onClick={() => {
-                            setTopic(t.title.trim());
-                            onTopicSelect(t);
-                            setOpenTopicPanel(false);
-                          }}
-                          disabled={busy}
-                          className="col-span-full rounded border border-border/60 px-2 py-1.5 text-left text-xs transition-colors hover:border-foreground/30 hover:bg-accent/50 hover:text-foreground"
-                        >
-                          <div className="mb-1 font-medium">{t.title}</div>
-                          <div className="text-[10px] leading-snug text-muted-foreground">{t.pitch}</div>
-                          <div className="mt-0.5 text-[9px] text-muted-foreground/60">{t.audience}</div>
-                        </button>
-                      ))}
-                    </div>
+                  <button
+                    key={t.title}
+                    type="button"
+                    onClick={() => {
+                      setTopic(t.title);
+                      onTopicSelect(t);
+                      setShowTopics(false);
+                      void run(t.title);
+                    }}
+                    disabled={busy}
+                    className="rounded border border-border/60 px-2 py-1.5 text-left text-xs transition-colors hover:border-foreground/30 hover:bg-accent/50 hover:text-foreground disabled:opacity-40"
+                  >
+                    <div className="font-medium">{t.title}</div>
+                    <div className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{t.pitch}</div>
+                    <div className="mt-0.5 text-[9px] text-muted-foreground/60">{t.audience}</div>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -1121,6 +1151,26 @@ export function DeckStudio({
               </div>
             </div>
           ) : null}
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setStudentMode((value) => !value)}
+              aria-pressed={studentMode}
+              title="Write for a learner: define every term, show a worked example per idea, name the misconceptions, and end with a practice question"
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                studentMode
+                  ? "border-foreground/30 bg-accent text-foreground"
+                  : "border-border/60 text-muted-foreground hover:bg-accent/50"
+              }`}
+            >
+              <BookOpen className="size-3" /> Student lesson
+            </button>
+            <span className="text-[10px] text-muted-foreground/70">
+              {studentMode
+                ? "definitions · worked examples · misconceptions · practice question"
+                : "written for a general audience"}
+            </span>
+          </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button

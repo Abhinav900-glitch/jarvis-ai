@@ -203,6 +203,71 @@ export function alignPlan(plan: DeckPlan, brief: DeckBrief): DeckPlan {
   return { ...plan, slides: slides.slice(0, wanted) };
 }
 
+/**
+ * Whether this brief is a lesson rather than a general deck.
+ *
+ * The studio passes "a student meeting this topic for the first time" and the
+ * teaching tone through the ordinary audience/tone fields, so the deck that
+ * comes back has to guarantee the two slides a lesson cannot do without. A
+ * prompt alone cannot: outlines reliably keep the cover and the closing and
+ * just as reliably drop the practice question when the slide count is tight.
+ */
+const LESSON_BRIEF =
+  /\b(student|learner|learning|first time|misconceptions?|worked example|check (for|your) understanding|class \d+)\b/i;
+
+/** Slides a lesson must contain, matched on title so a retry does not double them. */
+const LESSON_SLIDE = /^(check your understanding|common misconceptions)/i;
+
+export function isLessonBrief(brief: DeckBrief): boolean {
+  return LESSON_BRIEF.test(`${brief.audience ?? ""} ${brief.tone ?? ""}`);
+}
+
+/**
+ * Guarantee the teaching slides, without breaking the requested slide count.
+ *
+ * Order matters: a worked example before the misconceptions, the practice
+ * question last before the closing. Body slides are trimmed from the end of
+ * the middle, so the opening argument survives and only the optional extras
+ * give way.
+ */
+export function alignLessonPlan(plan: DeckPlan, brief: DeckBrief): DeckPlan {
+  if (!isLessonBrief(brief)) return plan;
+
+  const wanted = Math.min(MAX_SLIDES, Math.max(MIN_SLIDES, brief.slideCount));
+  const slides = plan.slides.filter((slide) => !LESSON_SLIDE.test(slide.title));
+
+  const hasWorkedExample = slides.some((slide) =>
+    /worked example/i.test(slide.title),
+  );
+  const extras: DeckPlan["slides"] = [];
+  if (!hasWorkedExample) {
+    extras.push({
+      kind: "bullets",
+      title: "A worked example",
+      purpose: "One example solved end to end, with every step named and explained",
+    });
+  }
+  extras.push({
+    kind: "columns",
+    title: "Common misconceptions, corrected",
+    purpose: "The two most likely wrong beliefs and why each one is wrong",
+  });
+  extras.push({
+    kind: "bullets",
+    title: "Check your understanding",
+    purpose: "One question on the slide; its answer in the speaker notes",
+  });
+
+  // The closing stays last in every plan alignPlan produced; if it is somehow
+  // not last, appending after it is still better than losing the lesson slides.
+  const last = slides[slides.length - 1];
+  const closing = last?.kind === "closing" ? slides.slice(-1) : [];
+  const body = closing.length > 0 ? slides.slice(0, -1) : slides;
+  const room = Math.max(2, wanted - extras.length - closing.length);
+
+  return { ...plan, slides: [...body.slice(0, room), ...extras, ...closing] };
+}
+
 /** Notes for a deck whose writer never produced them, so Presenter View is never blank. */
 export function fallbackNotes(slide: SlideSpec, topic: string): string {
   const lead =

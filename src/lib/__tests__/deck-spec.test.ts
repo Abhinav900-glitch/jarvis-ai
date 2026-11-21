@@ -19,7 +19,14 @@ import {
   normalizeSlide,
   normalizeSlides,
 } from "../pptx/spec";
-import { alignPlan, fallbackNotes, outlinePrompt, slidesPrompt } from "../pptx/prompts";
+import {
+  alignLessonPlan,
+  alignPlan,
+  fallbackNotes,
+  isLessonBrief,
+  outlinePrompt,
+  slidesPrompt,
+} from "../pptx/prompts";
 import { suggestTheme, themeById, themeList } from "../pptx/theme";
 
 describe("extractJson", () => {
@@ -282,5 +289,52 @@ describe("fitSlideKind and themes", () => {
     expect(deck.theme).toBe("ivory");
     expect(deck.transition).toBe("wipe");
     expect(deck.slides).toHaveLength(1);
+  });
+});
+
+describe("alignLessonPlan", () => {
+  const brief = {
+    topic: "Photosynthesis",
+    slideCount: 10,
+    audience: "a first-time biology student",
+    tone: "define every term and correct the misconceptions",
+  };
+  const plan = {
+    title: "Photosynthesis",
+    subtitle: "How plants make food",
+    sections: [],
+    slides: [
+      { kind: "cover" as const, title: "Photosynthesis" },
+      { kind: "agenda" as const, title: "What this deck covers" },
+      { kind: "bullets" as const, title: "The equation" },
+      { kind: "bullets" as const, title: "The two stages" },
+      { kind: "bullets" as const, title: "Where each input comes from" },
+      { kind: "bullets" as const, title: "Why the plant needs glucose" },
+      { kind: "bullets" as const, title: "What happens without light" },
+      { kind: "bullets" as const, title: "Why oxygen is a byproduct" },
+      { kind: "closing" as const, title: "Thank you" },
+    ],
+  };
+
+  test("recognises a learner brief from the ordinary fields", () => {
+    expect(isLessonBrief(brief)).toBe(true);
+    expect(isLessonBrief({ topic: "Board update", slideCount: 10 })).toBe(false);
+  });
+
+  test("adds a worked example, misconceptions and a check before the closing", () => {
+    const shaped = alignLessonPlan(plan, brief);
+    const titles = shaped.slides.map((slide) => slide.title);
+    expect(titles).toContain("A worked example");
+    expect(titles).toContain("Common misconceptions, corrected");
+    expect(titles).toContain("Check your understanding");
+    expect(shaped.slides[shaped.slides.length - 1].kind).toBe("closing");
+    expect(shaped.slides[shaped.slides.length - 2].title).toBe("Check your understanding");
+    // The requested count is still honoured.
+    expect(shaped.slides).toHaveLength(brief.slideCount);
+  });
+
+  test("leaves a general deck untouched", () => {
+    const shaped = alignLessonPlan(plan, { topic: "Board update", slideCount: 10 });
+    expect(shaped.slides).toHaveLength(plan.slides.length);
   });
 });
