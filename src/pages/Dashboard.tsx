@@ -44,6 +44,7 @@ import {
   CornerDownRight,
   Keyboard,
   Search,
+  Send,
   Puzzle,
   AlertTriangle,
   Settings,
@@ -97,6 +98,7 @@ import type { GestureAction } from "@/lib/gesture-actions";
 import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { OfflineTranscriptDialog } from "@/components/offline-transcript-dialog";
+import { ManyChatPanel } from "@/components/manychat-panel";
 import { DesmosCalculator } from "@/components/desmos-calculator";
 import { autoGraphFor, type AutoGraph } from "@/lib/auto-graph";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
@@ -1183,6 +1185,19 @@ export default function Dashboard() {
   // Computed inline rather than memoised: it is one backward scan of messages
   // that are already in memory, and a manual memo here defeats the compiler's
   // own optimisation of this component.
+  // The newest assistant reply, offered to ManyChat as a starting draft. Reverse
+  // scan rather than a reversed copy: transcripts can be long.
+  const latestReply = useMemo(() => {
+    if (!messages) return "";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message.role === "assistant" && message.content.trim()) {
+        return message.content;
+      }
+    }
+    return "";
+  }, [messages]);
+
   const sessionPdf = (() => {
     if (!messages) return undefined;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -1582,6 +1597,7 @@ export default function Dashboard() {
   const [showExport, setShowExport] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
+  const [showManychat, setShowManychat] = useState(false);
   /** An image handed to the studio by the viewer, used as its starting frame. */
   const [studioSeed, setStudioSeed] = useState<{
     name: string;
@@ -5931,6 +5947,14 @@ export default function Dashboard() {
         run: () => navigate("/messages"),
       },
       {
+        id: "manychat",
+        label: "ManyChat — message a subscriber",
+        group: "Chat",
+        keywords: "instagram whatsapp messenger telegram broadcast send",
+        icon: <Send className="size-4" />,
+        run: () => setShowManychat(true),
+      },
+      {
         id: "account",
         label: "Account & usage — profile, activity, connections",
         group: "Configure",
@@ -6535,6 +6559,10 @@ export default function Dashboard() {
                   >
                     <Gauge className="size-4" />
                     AeroTransformGen
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowManychat(true)}>
+                    <Send className="size-4" />
+                    Send via ManyChat
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => setShowAeroTransform(true)}
@@ -9793,6 +9821,11 @@ export default function Dashboard() {
         }}
       />
       <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
+      <ManyChatPanel
+        open={showManychat}
+        onOpenChange={setShowManychat}
+        draft={latestReply}
+      />
       <OfflineTranscriptDialog
         transcript={cachedTranscript}
         open={showOfflineTranscript}
