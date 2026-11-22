@@ -345,6 +345,24 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 4096,
     timeoutMs: 90_000,
   },
+  // Kilo's AI Gateway — one OpenAI-compatible endpoint in front of several
+  // hundred models from many labs. The key is a JWT from a Kilo account; the
+  // catalogue is public and needs no key, but a completion does. Model ids stay
+  // namespaced by lab (`openai/…`, `anthropic/…`), so changing which lab answers
+  // is a string change rather than a new integration.
+  {
+    id: "kilo",
+    label: "Kilo Gateway",
+    url: "https://ai-gateway.kilo.ai/api/v1/chat/completions",
+    keyEnv: ["KILO_CODE_API_TOKEN", "KILO_API_KEY", "KILO_CODE_API_KEY"],
+    missing: "KILO_CODE_API_TOKEN not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    textOnly: false,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    timeoutMs: 90_000,
+  },
 ];
 
 export interface EngineSpec {
@@ -1289,6 +1307,49 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.7,
     context: 262_144,
     bestFor: "steady everyday answers from an open model",
+  },
+
+  // --- Kilo Gateway ---------------------------------------------------------
+  // Chosen from the gateway's public catalogue on 2026-11-22, not from a
+  // completion: this deployment's `KILO_CODE_API_TOKEN` is not visible to
+  // Convex yet, so `kilo:check` is the first thing to run once it is. Every id
+  // here is zero-price, which is why they come first — a paid id on an account
+  // without credits answers 402 and would only be a dead rung.
+  {
+    id: "kilo/auto-free",
+    provider: "kilo",
+    modelId: "kilo-auto/free",
+    label: "Kilo Auto (free)",
+    vision: false,
+    reasoning: false,
+    quality: 0.84,
+    speed: 0.9,
+    context: 256_000,
+    bestFor: "free routing to whichever model is cheapest for the turn",
+  },
+  {
+    id: "kilo/ling-3.2-flash",
+    provider: "kilo",
+    modelId: "inclusionai/ling-3.2-flash:free",
+    label: "Ling 3.2 Flash",
+    vision: true,
+    reasoning: false,
+    quality: 0.8,
+    speed: 0.92,
+    context: 1_048_576,
+    bestFor: "a fast vision answer over a million tokens, at no cost",
+  },
+  {
+    id: "kilo/nemotron-3.5-super-vl",
+    provider: "kilo",
+    modelId: "nvidia/nemotron-3.5-super-vl:free",
+    label: "Nemotron 3.5 Super VL",
+    vision: true,
+    reasoning: true,
+    quality: 0.86,
+    speed: 0.55,
+    context: 1_000_000,
+    bestFor: "deliberate reasoning across images and long documents",
   },
 
   // --- Public AI ------------------------------------------------------------
