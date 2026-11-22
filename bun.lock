@@ -8,6 +8,8 @@
         "@capacitor/android": "^8.5.2",
         "@capacitor/core": "^8.5.2",
         "@cloudinary/url-gen": "^1.22.0",
+        "@cometchat/chat-sdk-javascript": "^4.3.0",
+        "@cometchat/chat-uikit-react": "^7.2.6",
         "@convex-dev/auth": "^0.0.90",
         "@hookform/resolvers": "^5.2.2",
         "@jridgewell/trace-mapping": "^0.3.31",
@@ -162,6 +164,14 @@
     "@cloudinary/transformation-builder-sdk": ["@cloudinary/transformation-builder-sdk@1.21.2", "", { "dependencies": { "@cloudinary/url-gen": "^1.7.0" } }, "sha512-ehOgKUaP+Nvuf7B0TosmB8iilL0kdiVjzjl8tIK06cjvsNnwSJI3xP9nEJmKkvqNxwwFwvYXT+mxUTqnSv9JOA=="],
 
     "@cloudinary/url-gen": ["@cloudinary/url-gen@1.22.0", "", { "dependencies": { "@cloudinary/transformation-builder-sdk": "^1.15.1" } }, "sha512-le8RMlgyC0JN3+FlC/YAlPYfvmJdtw8QGcSKDjCsfhS2CIem0mJl6ayti8bMoZ0P5wDvBewvRB0/dUQvhCzy3g=="],
+
+    "@cometchat/cards": ["@cometchat/cards@1.0.0", "", {}, "sha512-LVIQHVWYFzrOVDtyfhhgJIa56m6Yvx93mmJ5l1hqDdQPu3l9j5gxeAEuGYH+D43NjiSChDAnmgxrbFVlk4wzKA=="],
+
+    "@cometchat/cards-react": ["@cometchat/cards-react@1.0.0", "", { "dependencies": { "@cometchat/cards": "~1.0.0" }, "peerDependencies": { "react": ">=17.0.0", "react-dom": ">=17.0.0" } }, "sha512-QXSSR5J6uysr2HdHJflxPdnSXe/XESKdmOF7ehhRwRHqStQW4oYpmGoO6p5TOWZFxIkskQ4ID2MEeuRyUXwRvA=="],
+
+    "@cometchat/chat-sdk-javascript": ["@cometchat/chat-sdk-javascript@4.3.0", "", { "peerDependencies": { "better-sqlite3-multiple-ciphers": "*", "electron": "*" }, "optionalPeers": ["better-sqlite3-multiple-ciphers", "electron"] }, "sha512-kxY7/1BzRlK/zX42EG1FtHsv41SyvLdXYQcHHkHtsmplKtfgTylQQfKsq8w9nLfzwSMQ/tiV5x28afapR/z7kA=="],
+
+    "@cometchat/chat-uikit-react": ["@cometchat/chat-uikit-react@7.2.6", "", { "dependencies": { "@cometchat/cards-react": "~1.0.0", "dompurify": "3.4.17" }, "peerDependencies": { "@cometchat/calls-sdk-javascript": "^5.0.3", "@cometchat/chat-sdk-javascript": "^4.2.0", "react": ">=18.0.0 <21.0.0", "react-dom": ">=18.0.0 <21.0.0" }, "optionalPeers": ["@cometchat/calls-sdk-javascript"] }, "sha512-RWxwdj/FASIK/Ym9nK5tr5/4K03BOdjyU7hZYrPahHFzVZU8E5buaIH17MJIb+RKEkO78SCBCJ87d8KHLuEjGQ=="],
 
     "@convex-dev/auth": ["@convex-dev/auth@0.0.90", "", { "dependencies": { "@oslojs/crypto": "^1.0.1", "@oslojs/encoding": "^1.1.0", "cookie": "^1.0.1", "is-network-error": "^1.1.0", "jose": "^5.2.2", "jwt-decode": "^4.0.0", "lucia": "^3.2.0", "oauth4webapi": "^3.1.2", "path-to-regexp": "^6.3.0", "server-only": "^0.0.1" }, "peerDependencies": { "@auth/core": "^0.37.0", "convex": "^1.17.0", "react": "^18.2.0 || ^19.0.0-0" }, "bin": { "auth": "dist/bin.cjs" } }, "sha512-aqw88EB042HvnaF4wcf/f/wTocmT2Bus2VDQRuV79cM0+8kORM0ICK/ByZ6XsHgQ9qr6TmidNbXm6QAgndrdpQ=="],
 
@@ -579,6 +589,8 @@
 
     "@types/three": ["@types/three@0.185.4", "", { "dependencies": { "@dimforge/rapier3d-compat": "~0.12.0", "@tweenjs/tween.js": "~23.1.3", "@types/stats.js": "*", "@types/webxr": ">=0.5.17", "fflate": "~0.8.2", "meshoptimizer": "~1.1.1" } }, "sha512-gAsBIC07NIFrxjbf7tH2t71c38uulFfk/RFoC7FNBSjMRAQ8J1x/RBvusX0N5PJouaYFJawXQqfCQ0RKUx/1nA=="],
 
+    "@types/trusted-types": ["@types/trusted-types@2.0.7", "", {}, "sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw=="],
+
     "@types/unist": ["@types/unist@3.0.3", "", {}, "sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q=="],
 
     "@types/webxr": ["@types/webxr@0.5.24", "", {}, "sha512-h8fgEd/DpoS9CBrjEQXR+dIDraopAEfu4wYVNY2tEPwk60stPWhvZMf4Foo5FakuQ7HFZoa8WceaWFervK2Ovg=="],
@@ -764,6 +776,8 @@
     "devlop": ["devlop@1.1.0", "", { "dependencies": { "dequal": "^2.0.0" } }, "sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA=="],
 
     "dom-helpers": ["dom-helpers@5.2.1", "", { "dependencies": { "@babel/runtime": "^7.8.7", "csstype": "^3.0.2" } }, "sha512-nRCa7CK3VTrM2NmGkIy4cbK7IZlgBE/PYMn55rrXefr5xXDP0LdtfPnblFDoVdcAfslJ7or6iqAUnx0CCGIWQA=="],
+
+    "dompurify": ["dompurify@3.4.17", "", { "optionalDependencies": { "@types/trusted-types": "^2.0.7" } }, "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w=="],
 
     "dunder-proto": ["dunder-proto@1.0.1", "", { "dependencies": { "call-bind-apply-helpers": "^1.0.1", "es-errors": "^1.3.0", "gopd": "^1.2.0" } }, "sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A=="],
 

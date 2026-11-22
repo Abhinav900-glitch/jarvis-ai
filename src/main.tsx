@@ -31,6 +31,7 @@ const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const Account = lazy(() => import("./pages/Account.tsx"));
+const Messages = lazy(() => import("./pages/Messages.tsx"));
 const SharedChat = lazy(() => import("./pages/SharedChat.tsx"));
 const CloudinaryCallback = lazy(
   () => import("./pages/CloudinaryCallback.tsx"),
@@ -195,6 +196,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <Account />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/messages"
+                element={
+                  <RequireAuth>
+                    <Messages />
                   </RequireAuth>
                 }
               />

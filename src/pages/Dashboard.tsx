@@ -5923,6 +5923,14 @@ export default function Dashboard() {
         run: () => setShowIntegrations(true),
       },
       {
+        id: "messages",
+        label: "Messages — conversations with people",
+        group: "Chat",
+        keywords: "cometchat people dm inbox group chat",
+        icon: <MessageSquare className="size-4" />,
+        run: () => navigate("/messages"),
+      },
+      {
         id: "account",
         label: "Account & usage — profile, activity, connections",
         group: "Configure",
@@ -6334,6 +6342,19 @@ export default function Dashboard() {
                 onClick={() => setShowStudio(true)}
               >
                 <ImagePlus className="size-4" />
+              </Button>
+
+              {/* People chat runs on CometChat, on its own route. */}
+              <Button
+                asChild
+                variant="ghost"
+                size="icon-sm"
+                className="hidden sm:inline-flex"
+                title="Messages — chat with people"
+              >
+                <Link to="/messages">
+                  <MessageSquare className="size-4" />
+                </Link>
               </Button>
 
               {/* Find in this conversation — the page's own ⌘F would only

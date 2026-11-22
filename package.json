@@ -19,6 +19,8 @@
     "@capacitor/android": "^8.5.2",
     "@capacitor/core": "^8.5.2",
     "@cloudinary/url-gen": "^1.22.0",
+    "@cometchat/chat-sdk-javascript": "^4.3.0",
+    "@cometchat/chat-uikit-react": "^7.2.6",
     "@convex-dev/auth": "^0.0.90",
     "@hookform/resolvers": "^5.2.2",
     "@jridgewell/trace-mapping": "^0.3.31",

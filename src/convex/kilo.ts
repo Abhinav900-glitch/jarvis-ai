@@ -16,7 +16,7 @@ import { v } from "convex/values";
 import { ENGINES, providerById, providerKey } from "./engines";
 
 /** The engine probed when the caller does not name one. */
-const DEFAULT_MODEL = "inclusionai/ling-3.2-flash:free";
+const DEFAULT_MODEL = "kilo-auto/free";
 
 export const check = action({
   args: {

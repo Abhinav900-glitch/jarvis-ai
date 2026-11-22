@@ -1310,11 +1310,10 @@ export const ENGINES: EngineSpec[] = [
   },
 
   // --- Kilo Gateway ---------------------------------------------------------
-  // Chosen from the gateway's public catalogue on 2026-11-22, not from a
-  // completion: this deployment's `KILO_CODE_API_TOKEN` is not visible to
-  // Convex yet, so `kilo:check` is the first thing to run once it is. Every id
-  // here is zero-price, which is why they come first — a paid id on an account
-  // without credits answers 402 and would only be a dead rung.
+  // Every id below was answered with a real `pong` on 2026-11-22. The account
+  // has no paid balance — `openai/gpt-5.4-mini` and `anthropic/claude-sonnet-4.6`
+  // both answer 402 — so only zero-price models are registered. `ling-3.2-flash`
+  // is in the catalogue but answered 429 from its upstream, so it is not here.
   {
     id: "kilo/auto-free",
     provider: "kilo",
@@ -1328,16 +1327,28 @@ export const ENGINES: EngineSpec[] = [
     bestFor: "free routing to whichever model is cheapest for the turn",
   },
   {
-    id: "kilo/ling-3.2-flash",
+    id: "kilo/nemotron-3.5-lightning",
     provider: "kilo",
-    modelId: "inclusionai/ling-3.2-flash:free",
-    label: "Ling 3.2 Flash",
+    modelId: "nvidia/nemotron-3.5-lightning:free",
+    label: "Nemotron 3.5 Lightning",
+    vision: false,
+    reasoning: true,
+    quality: 0.82,
+    speed: 0.88,
+    context: 1_000_000,
+    bestFor: "a fast reasoning answer over a million tokens, at no cost",
+  },
+  {
+    id: "kilo/particle-1",
+    provider: "kilo",
+    modelId: "particle-ai/particle-1:free",
+    label: "Particle 1",
     vision: true,
-    reasoning: false,
-    quality: 0.8,
-    speed: 0.92,
+    reasoning: true,
+    quality: 0.85,
+    speed: 0.7,
     context: 1_048_576,
-    bestFor: "a fast vision answer over a million tokens, at no cost",
+    bestFor: "agentic coding and long-context work with images",
   },
   {
     id: "kilo/nemotron-3.5-super-vl",
@@ -1349,7 +1360,7 @@ export const ENGINES: EngineSpec[] = [
     quality: 0.86,
     speed: 0.55,
     context: 1_000_000,
-    bestFor: "deliberate reasoning across images and long documents",
+    bestFor: "deliberate reasoning across images and long videos",
   },
 
   // --- Public AI ------------------------------------------------------------
