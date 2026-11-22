@@ -218,4 +218,102 @@ function decodeName(raw: string): string {
   return cleaned || "file";
 }
 
+/**
+ * ManyChat External Request → Jarvis.
+ *
+ * A ManyChat automation calls this with the contact's message and gets one
+ * reply back. There is no Convex session behind the call, so the only
+ * credential is a bearer secret shared with the automation: dedicated
+ * MANYCHAT_WEBHOOK_SECRET when set, otherwise the already-configured
+ * MANYCHAT_AI_API_KEY so the channel can be wired without another secret.
+ *
+ * ManyChat's External Request times out after 10 seconds, which is why the
+ * reply uses the latency-weighted engine plan. The body is deliberately plain
+ * text in the answer: it is going straight into a messaging app.
+ */
+http.route({
+  path: "/manychat/answer",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = (
+      process.env.MANYCHAT_WEBHOOK_SECRET ??
+      process.env.MANYCHAT_AI_API_KEY ??
+      ""
+    ).trim();
+    if (!secret) {
+      return json(
+        { error: "MANYCHAT_WEBHOOK_SECRET is not configured." },
+        503,
+      );
+    }
+
+    const authorization = (req.headers.get("authorization") ?? "").trim();
+    const token = authorization.replace(/^Bearer\s+/i, "").trim();
+    if (token !== secret) {
+      return json({ error: "unauthorized" }, 401);
+    }
+
+    let body: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = await req.json();
+      if (parsed && typeof parsed === "object") {
+        body = parsed as Record<string, unknown>;
+      }
+    } catch {
+      return json({ error: "invalid JSON body" }, 400);
+    }
+
+    const candidate =
+      typeof body.message === "string"
+        ? body.message
+        : typeof body.text === "string"
+          ? body.text
+          : "";
+    const message = candidate.trim().slice(0, 6_000);
+    if (!message) {
+      return json({ error: "message is required" }, 400);
+    }
+
+    const rawHistory = Array.isArray(body.history) ? body.history : [];
+    const history = rawHistory
+      .flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const turn = item as Record<string, unknown>;
+        if (turn.role !== "user" && turn.role !== "assistant") return [];
+        if (typeof turn.content !== "string") return [];
+        return [{ role: turn.role, content: turn.content.slice(0, 4_000) }];
+      })
+      .slice(-8);
+
+    const contactCandidate =
+      typeof body.contactId === "string"
+        ? body.contactId
+        : typeof body.contact_id === "string"
+          ? body.contact_id
+          : typeof body.userId === "string"
+            ? body.userId
+            : typeof body.user_id === "string"
+              ? body.user_id
+              : "";
+    const contactId = contactCandidate
+      .trim()
+      .replace(/[^A-Za-z0-9:_-]/g, "")
+      .slice(0, 80);
+
+    try {
+      const result = await ctx.runAction(internal.ai.answerForChannel, {
+        message,
+        history,
+        ...(contactId ? { contactId } : {}),
+      });
+      return json({ ok: true, reply: result.reply, engine: result.engine });
+    } catch {
+      return json(
+        { ok: false, error: "Jarvis could not answer that just now." },
+        502,
+      );
+    }
+  }),
+});
+
 export default http;

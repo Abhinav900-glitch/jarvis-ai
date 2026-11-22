@@ -934,6 +934,21 @@ const schema = defineSchema(
     // Work waiting for that machine. A row is the whole request and the whole
     // reply: queued, then running, then done or error. The runner waits on it
     // so an agent's `run_code` still returns an ordinary result.
+    // Recent turns from a messaging channel that has no signed-in account,
+    // keyed by the channel's own contact id. ManyChat sends one External
+    // Request per contact message; keeping a short window here is what makes
+    // the second WhatsApp message aware of the first.
+    //
+    // No user id on purpose: the person may never have opened the web app.
+    // Rows are trimmed to the newest messages per contact on every save.
+    channelTurns: defineTable({
+      channel: v.string(),
+      contactId: v.string(),
+      role: v.string(),
+      content: v.string(),
+      createdAt: v.number(),
+    }).index("by_contact", ["channel", "contactId", "createdAt"]),
+
     machineJobs: defineTable({
       userId: v.id("users"),
       language: v.string(),

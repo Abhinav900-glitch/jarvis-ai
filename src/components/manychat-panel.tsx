@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { useAction } from "convex/react";
-import { Loader2, Search, Send, UserRound } from "lucide-react";
+import { Bot, Copy, Loader2, Search, Send, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,12 @@ interface SubscriberResponse {
   liveChatUrl: string | null;
 }
 
+interface ChannelResponse {
+  endpoint: string | null;
+  secretName: string | null;
+  configured: boolean;
+}
+
 export interface ManyChatPanelProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -53,9 +59,15 @@ export function ManyChatPanel({
   const checkStatus = useAction(api.manychat.status);
   const findSubscriber = useAction(api.manychat.subscriber);
   const sendText = useAction(api.manychat.sendText);
+  const getChannel = useAction(api.manychat.channel);
+  const testBrain = useAction(api.manychat.testBrain);
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [channel, setChannel] = useState<ChannelResponse | null>(null);
+  const [channelError, setChannelError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testReply, setTestReply] = useState<string | null>(null);
   const [subscriberId, setSubscriberId] = useState("");
   const [person, setPerson] = useState<SubscriberResponse | null>(null);
   const [looking, setLooking] = useState(false);
@@ -68,6 +80,20 @@ export function ManyChatPanel({
     const timer = window.setTimeout(() => {
       setStatus(null);
       setStatusError(null);
+      setChannel(null);
+      setChannelError(null);
+      setTestReply(null);
+      void getChannel({})
+        .then((result) => {
+          if (!cancelled) setChannel(result as ChannelResponse);
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setChannelError(
+              err instanceof Error ? err.message : "Could not load the channel.",
+            );
+          }
+        });
       void checkStatus({})
         .then((result) => {
           if (!cancelled) setStatus(result as StatusResponse);
@@ -84,7 +110,7 @@ export function ManyChatPanel({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [open, checkStatus]);
+  }, [open, checkStatus, getChannel]);
 
   const lookup = async () => {
     if (!subscriberId.trim()) return;
@@ -130,6 +156,32 @@ export function ManyChatPanel({
       );
     } finally {
       setSending(false);
+    }
+  };
+
+  const copyEndpoint = async () => {
+    if (!channel?.endpoint) return;
+    try {
+      await navigator.clipboard.writeText(channel.endpoint);
+      toast.success("Endpoint copied.");
+    } catch {
+      toast.error("The browser blocked clipboard access; select the URL instead.");
+    }
+  };
+
+  const runBrainTest = async () => {
+    setTesting(true);
+    setTestReply(null);
+    try {
+      const result = (await testBrain({})) as { reply: string; engine: string };
+      setTestReply(result.reply);
+      toast.success(`Jarvis answered via ${result.engine}.`);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Jarvis could not answer.",
+      );
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -183,6 +235,101 @@ export function ManyChatPanel({
                 Connected to {status?.pageName ?? "the ManyChat page"}
                 {status?.pageId ? ` · ${status.pageId}` : ""}
               </span>
+            )}
+          </div>
+
+          {/* ---- Inbound: ManyChat asks Jarvis what to reply ---- */}
+          <div className="space-y-2 rounded-lg border border-border/60 bg-muted/15 px-3 py-3">
+            <div className="flex items-center gap-1.5">
+              <Bot className="size-3.5 text-primary" />
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                WhatsApp brain
+              </p>
+            </div>
+            {channelError ? (
+              <p className="text-[11px] text-destructive">{channelError}</p>
+            ) : channel === null ? (
+              <span className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
+                <Loader2 className="size-3 animate-spin" />
+                Loading the endpoint…
+              </span>
+            ) : !channel.endpoint ? (
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                This deployment has no{" "}
+                <span className="font-mono">CONVEX_SITE_URL</span>, so ManyChat
+                has no URL to call. Set it in the deployment environment to show
+                the endpoint.
+              </p>
+            ) : (
+              <>
+                <div className="flex gap-2">
+                  <input
+                    readOnly
+                    value={channel.endpoint}
+                    aria-label="ManyChat external request endpoint"
+                    className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 font-mono text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-1 px-2"
+                    onClick={() => void copyEndpoint()}
+                  >
+                    <Copy className="size-3" />
+                    Copy
+                  </Button>
+                </div>
+                <p className="text-[11px] leading-5 text-muted-foreground">
+                  In ManyChat, add an{" "}
+                  <span className="text-foreground">External Request</span>{" "}
+                  action to the flow: POST to this URL with header{" "}
+                  <span className="font-mono text-foreground">
+                    Authorization: Bearer …
+                  </span>{" "}
+                  using the "{channel.secretName ?? "shared secret"}" value, and
+                  a JSON body of{" "}
+                  <span className="font-mono text-foreground">
+                    {
+                      '{"message": "{{last_input_text}}", "contactId": "{{user_id}}"}'
+                    }
+                  </span>
+                  . In the Response tab, map the field{" "}
+                  <span className="font-mono">reply</span> to a custom field,
+                  then send that field with a Send Message action. The contact
+                  id gives each person a short private memory, so follow-up
+                  questions work without ManyChat sending the transcript.
+                </p>
+                <p className="text-[10px] text-muted-foreground/70">
+                  ManyChat waits 10 seconds for a reply, so this path uses the
+                  fastest available engines. Add{" "}
+                  <span className="font-mono">MANYCHAT_WEBHOOK_SECRET</span> in
+                  the Keys tab to use a dedicated secret instead of the API
+                  token.
+                </p>
+                {channel.secretName ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 px-2 text-[11px]"
+                    disabled={testing}
+                    onClick={() => void runBrainTest()}
+                  >
+                    {testing ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Bot className="size-3" />
+                    )}
+                    Test Jarvis
+                  </Button>
+                ) : null}
+                {testReply ? (
+                  <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-2 text-[11px] leading-5">
+                    {testReply}
+                  </div>
+                ) : null}
+              </>
             )}
           </div>
 

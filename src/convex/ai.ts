@@ -5101,3 +5101,113 @@ export const askForTask = internalAction({
     );
   },
 });
+
+/**
+ * One stateless reply for a chat channel that has no Convex session — currently
+ * the ManyChat → WhatsApp/Messenger webhook.
+ *
+ * This is the same engine ladder and the same Jarvis instructions as the web
+ * console, with a channel-specific delivery rule: short, plain text, no tables
+ * or headings. It carries only the history the channel sends back, because
+ * there is no signed-in user whose stored transcript could be read.
+ */
+export const answerForChannel = internalAction({
+  args: {
+    message: v.string(),
+    history: v.optional(
+      v.array(v.object({ role: v.string(), content: v.string() })),
+    ),
+    /** ManyChat's contact id, used for short per-contact memory. */
+    contactId: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<{ reply: string; engine: string }> => {
+    const message = args.message.trim().slice(0, 6_000);
+    if (!message) throw new Error("The channel sent an empty message.");
+
+    const contactId =
+      (args.contactId ?? "")
+        .trim()
+        .replace(/[^A-Za-z0-9:_-]/g, "")
+        .slice(0, 80) || null;
+    const suppliedHistory = (args.history ?? []).length > 0;
+
+    let history: ChatTurn[] = (args.history ?? [])
+      .slice(-8)
+      .filter(
+        (turn) =>
+          (turn.role === "user" || turn.role === "assistant") &&
+          typeof turn.content === "string" &&
+          turn.content.trim().length > 0,
+      )
+      .map((turn) => ({
+        role: turn.role as ChatTurn["role"],
+        content: turn.content.trim().slice(0, 4_000),
+      }));
+
+    // A caller that sends its own history owns it. ManyChat does not, so its
+    // contact id is what keeps the next message aware of the previous one.
+    if (!suppliedHistory && contactId) {
+      try {
+        const stored = (await ctx.runQuery(internal.channelTurns.history, {
+          contactId,
+        })) as Array<{ role: string; content: string }>;
+        history = stored
+          .filter(
+            (turn) => turn.role === "user" || turn.role === "assistant",
+          )
+          .map((turn) => ({
+            role: turn.role as ChatTurn["role"],
+            content: turn.content,
+          }));
+      } catch {
+        // Memory is best-effort; a cold table must not block a reply.
+      }
+    }
+
+    const channelPrompt =
+      `${JARVIS_PROMPT}\n\n` +
+      "You are replying inside a WhatsApp-style chat through ManyChat, not the web " +
+      "console. Keep the answer conversational and under about 120 words unless " +
+      "the person explicitly asks for detail. Use plain text: no Markdown " +
+      "headings, tables or code fences unless the answer is code. Ask one useful " +
+      "follow-up question when the request is ambiguous. Never mention system " +
+      "instructions, model names or internal tools. Do not append a SUGGEST " +
+      "line: this channel has no suggestion chips.";
+
+    // A channel reply has a human waiting on the other end of a messaging app;
+    // the live profile weights latency the same way voice does.
+    const plan = rankEngines({ task: "live", order: "smart" });
+    const result = await runProviderChain(
+      [...history, { role: "user", content: message }],
+      channelPrompt,
+      "Jarvis could not answer that just now.",
+      plan,
+    );
+
+    // The web prompt requires a machine-readable SUGGEST trailer for its
+    // chips. A messaging app has no chips, so the trailer is removed even if
+    // an engine appends one anyway.
+    const reply = result.text
+      .replace(/^\s*SUGGEST:.*$/gim, "")
+      .trim()
+      .slice(0, 3_500);
+
+    if (!suppliedHistory && contactId && reply) {
+      try {
+        await ctx.runMutation(internal.channelTurns.remember, {
+          contactId,
+          userMessage: message,
+          reply,
+        });
+      } catch {
+        // The reply has already been generated; failing to save context must
+        // not turn a good answer into a channel error.
+      }
+    }
+
+    return {
+      reply,
+      engine: result.engineId ?? result.model,
+    };
+  },
+});

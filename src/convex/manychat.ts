@@ -13,6 +13,7 @@
 
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { action } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 
 const BASE = "https://api.manychat.com";
@@ -229,5 +230,55 @@ export const sendText = action({
       // A 200 with no body is still a delivered send.
     }
     return { ok: true as const, status: result.status, messageId };
+  },
+});
+
+/**
+ * Where to point a ManyChat External Request, and which env var holds the
+ * bearer secret it must send.
+ *
+ * The secret itself is never returned: ManyChat only needs to be told its
+ * value once, and a browser has no reason to see it. `endpoint` is null on a
+ * deployment without CONVEX_SITE_URL, which is a setup error the panel can
+ * show plainly instead of a URL that can never work.
+ */
+export const channel = action({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to configure ManyChat.");
+
+    const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
+    const secretName = process.env.MANYCHAT_WEBHOOK_SECRET?.trim()
+      ? "MANYCHAT_WEBHOOK_SECRET"
+      : process.env.MANYCHAT_AI_API_KEY?.trim()
+        ? "MANYCHAT_AI_API_KEY"
+        : null;
+
+    return {
+      endpoint: site ? `${site}/manychat/answer` : null,
+      secretName,
+      configured: secretName !== null,
+    };
+  },
+});
+
+/**
+ * A signed-in smoke test for the same brain an External Request reaches.
+ *
+ * It deliberately calls the internal action directly instead of the public
+ * endpoint: that proves the model path works before ManyChat is wired, and
+ * avoids needing the shared secret in the browser.
+ */
+export const testBrain = action({
+  args: { message: v.optional(v.string()) },
+  handler: async (ctx, args): Promise<{ reply: string; engine: string }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to test the channel.");
+
+    const message =
+      args.message?.trim().slice(0, 2_000) ||
+      "Say in one short WhatsApp message that you are ready, and ask what I need help with.";
+    return await ctx.runAction(internal.ai.answerForChannel, { message });
   },
 });
