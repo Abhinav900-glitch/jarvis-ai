@@ -57,25 +57,37 @@ function TwilioSandboxHelp({ webhook }: { webhook: string | null }) {
       </summary>
       <div className="mt-2 space-y-1.5 text-[10px] leading-4 text-muted-foreground">
         <p>
-          Join Twilio&apos;s Sandbox from your phone by sending the join code
-          from the Twilio console to{" "}
-          <span className="font-mono text-foreground">+14155238886</span>. Twilio
-          only delivers messages from phones that joined your Sandbox.
+          <span className="font-medium text-foreground">1.</span> Open{" "}
+          <a
+            href="https://www.twilio.com/console/sms/whatsapp/sandbox"
+            target="_blank"
+            rel="noreferrer"
+            className="underline decoration-border underline-offset-2 hover:text-foreground"
+          >
+            Twilio&apos;s WhatsApp Sandbox
+          </a>{" "}
+          and accept the terms. From your phone, send the displayed{" "}
+          <span className="font-mono text-foreground">join …</span> code to the
+          number shown (usually{" "}
+          <span className="font-mono text-foreground">+14155238886</span>).
         </p>
         <p>
-          Then set the Sandbox&apos;s inbound webhook to this URL with{" "}
-          <span className="font-mono text-foreground">
-            ?key=&lt;TWILIO_WEBHOOK_SECRET&gt;
-          </span>{" "}
-          appended:
+          <span className="font-medium text-foreground">2.</span> In{" "}
+          <span className="text-foreground">Sandbox settings → Sandbox
+          configuration → When a Message Comes in</span>, paste the URL below with{" "}
+          <span className="font-mono text-foreground">?key=…</span> appended and
+          save. On a trial console, use{" "}
+          <span className="text-foreground">Receive a message → Custom → Webhook URL</span>
+          instead.
         </p>
         <span className="block break-all rounded bg-muted/60 px-1.5 py-1 font-mono text-[9px] text-foreground">
           {webhook}
         </span>
         <p>
-          The URL is enough for replies — Twilio API keys are not needed. The
-          shared Sandbox is for testing only; a public number needs a registered
-          WhatsApp sender.
+          <span className="font-medium text-foreground">3.</span> Connect the same
+          number above, then send <span className="text-foreground">hello</span>{" "}
+          from the phone that joined. No API key is needed. The Sandbox is for
+          testing and expires three days after joining; rejoin if replies stop.
         </p>
       </div>
     </details>
