@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { action } from "./_generated/server";
+import { action, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
@@ -257,59 +257,100 @@ export const sendText = action({
   },
 });
 
+/** Key under which the public assistant number is stored. */
+const WHATSAPP_KEY = "whatsapp-number";
+
+function whatsappFields(raw: string) {
+  // wa.me wants digits only, including the country code and no plus sign.
+  const number = raw.replace(/\D/g, "").slice(0, 15);
+  const valid = number.length >= 8;
+  const parsed = valid ? parsePhoneNumberFromString(`+${number}`) : undefined;
+  const regionCode = parsed?.country ?? null;
+  const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
+  const secretConfigured = Boolean(
+    (process.env.MANYCHAT_WEBHOOK_SECRET ??
+      process.env.MANYCHAT_AI_API_KEY ??
+      "").trim(),
+  );
+
+  return {
+    display: valid ? `+${number}` : null,
+    number: valid ? number : null,
+    link: valid
+      ? `https://wa.me/${number}?text=${encodeURIComponent("Hi Jarvis")}`
+      : null,
+    /** Country code is derived from the number, not configured twice. */
+    region:
+      regionCode && parsed
+        ? {
+            code: regionCode,
+            name: regionName(regionCode),
+            callingCode: `+${parsed.countryCallingCode}`,
+          }
+        : null,
+    /** The inbound path is usable only when a URL and a secret exist. */
+    channelReady: Boolean(site && secretConfigured),
+    envName: "WHATSAPP_NUMBER",
+  };
+}
+
 /**
  * The assistant's own WhatsApp number, shown to people who want to chat there.
  *
  * WhatsApp does not let an app mint a phone number: a number is issued by Meta
  * or by a provider that connects to the WhatsApp Business Platform (ManyChat
  * in this deployment). The number is therefore configuration, not something
- * created at runtime; this action only normalises and publishes it.
+ * created at runtime; this query only normalises and publishes it.
  *
- * The wa.me link is built here so the browser never has to know the spacing or
- * country-code rules, and so the number is shown one way everywhere.
+ * A number saved through the dialog wins over the deployment env var, so the
+ * number can be connected without a redeploy.
  */
-export const whatsapp = action({
+export const whatsapp = query({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Sign in to see the WhatsApp number.");
 
+    const saved = await ctx.db
+      .query("channelSettings")
+      .withIndex("by_key", (q) => q.eq("key", WHATSAPP_KEY))
+      .unique();
     const raw = (
+      saved?.value ??
       process.env.WHATSAPP_NUMBER ??
       process.env.MANYCHAT_WHATSAPP_NUMBER ??
       ""
     ).trim();
-    // wa.me wants digits only, including the country code and no plus sign.
-    const number = raw.replace(/\D/g, "").slice(0, 15);
-    const valid = number.length >= 8;
-    const parsed = valid ? parsePhoneNumberFromString(`+${number}`) : undefined;
-    const regionCode = parsed?.country ?? null;
-    const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
-    const secretConfigured = Boolean(
-      (process.env.MANYCHAT_WEBHOOK_SECRET ??
-        process.env.MANYCHAT_AI_API_KEY ??
-        "").trim(),
-    );
+    return whatsappFields(raw);
+  },
+});
 
-    return {
-      display: valid ? `+${number}` : null,
-      number: valid ? number : null,
-      link: valid
-        ? `https://wa.me/${number}?text=${encodeURIComponent("Hi Jarvis")}`
-        : null,
-      /** Country code is derived from the number, not configured twice. */
-      region:
-        regionCode && parsed
-          ? {
-              code: regionCode,
-              name: regionName(regionCode),
-              callingCode: `+${parsed.countryCallingCode}`,
-            }
-          : null,
-      /** The inbound path is usable only when a URL and a secret exist. */
-      channelReady: Boolean(site && secretConfigured),
-      envName: "WHATSAPP_NUMBER",
-    };
+/** Connect or replace the assistant's public WhatsApp number. */
+export const saveWhatsapp = mutation({
+  args: { number: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to connect a number.");
+
+    const number = args.number.replace(/\D/g, "").slice(0, 15);
+    if (number.length < 8) {
+      throw new Error("Enter the full number including its country code.");
+    }
+
+    const existing = await ctx.db
+      .query("channelSettings")
+      .withIndex("by_key", (q) => q.eq("key", WHATSAPP_KEY))
+      .unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, { value: number, updatedAt: Date.now() });
+    } else {
+      await ctx.db.insert("channelSettings", {
+        key: WHATSAPP_KEY,
+        value: number,
+        updatedAt: Date.now(),
+      });
+    }
+    return { number };
   },
 });
 

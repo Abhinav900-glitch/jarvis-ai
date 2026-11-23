@@ -12,9 +12,9 @@
 // set the dialog says exactly what is missing instead of showing a fake number.
 // ---------------------------------------------------------------------------
 
-import { useAction } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { Check, Copy, Loader2, MessageCircle, Phone } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,37 +45,28 @@ export interface WhatsAppDialogProps {
 }
 
 export function WhatsAppDialog({ open, onOpenChange }: WhatsAppDialogProps) {
-  const getWhatsapp = useAction(api.manychat.whatsapp);
-  const [info, setInfo] = useState<WhatsappInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const info = useQuery(api.manychat.whatsapp) as WhatsappInfo | undefined;
+  const saveNumber = useMutation(api.manychat.saveWhatsapp);
+  const [numberDraft, setNumberDraft] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      setInfo(null);
-      setError(null);
-      setCopied(false);
-      void getWhatsapp({})
-        .then((result) => {
-          if (!cancelled) setInfo(result as WhatsappInfo);
-        })
-        .catch((err: unknown) => {
-          if (!cancelled) {
-            setError(
-              err instanceof Error
-                ? err.message
-                : "Could not load the WhatsApp number.",
-            );
-          }
-        });
-    }, 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [open, getWhatsapp]);
+  const connectNumber = async () => {
+    setSaving(true);
+    try {
+      const saved = await saveNumber({ number: numberDraft });
+      toast.success(`Connected +${saved.number}.`);
+      setNumberDraft("");
+      setEditing(false);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not save that number.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const copyNumber = async () => {
     if (!info?.display) return;
@@ -104,34 +95,67 @@ export function WhatsAppDialog({ open, onOpenChange }: WhatsAppDialogProps) {
         </DialogHeader>
 
         <div className="space-y-4 px-5 py-4">
-          {error ? (
-            <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-[11px] text-destructive">
-              {error}
-            </p>
-          ) : info === null ? (
+          {info === undefined ? (
             <span className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
               Loading the assistant's number…
             </span>
-          ) : !info.display || !info.number || !info.link ? (
-            <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-3 text-[11px] leading-5">
-              <p className="font-medium text-amber-800 dark:text-amber-300">
-                No WhatsApp number is connected yet.
+          ) : editing || !info.display || !info.number || !info.link ? (
+            <div className="space-y-2.5 rounded-lg border border-border/60 bg-muted/20 px-3 py-3 text-[11px] leading-5">
+              <p className="font-medium text-foreground">
+                {info.display
+                  ? "Replace the assistant's number"
+                  : "Connect the assistant's WhatsApp number"}
               </p>
               <p className="text-muted-foreground">
-                In ManyChat, open Settings → WhatsApp → Connect and use a number
-                you own, or let ManyChat issue one. Copy that number and save it
-                as{" "}
-                <span className="font-mono text-foreground">
-                  {info.envName}
-                </span>{" "}
-                in the Keys tab — digits with the country code, for example{" "}
-                <span className="font-mono text-foreground">14155550123</span>.
+                Use the number connected to ManyChat (Settings → WhatsApp), or
+                one ManyChat issued. Include the country code; spaces and a
+                leading + are fine.
               </p>
+              <div className="flex gap-2">
+                <input
+                  value={numberDraft}
+                  onChange={(event) =>
+                    setNumberDraft(
+                      event.target.value.replace(/[^\d+]/g, "").slice(0, 16),
+                    )
+                  }
+                  inputMode="tel"
+                  placeholder="14155550123"
+                  aria-label="WhatsApp number with country code"
+                  className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 font-mono text-[11px] outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-8 gap-1.5"
+                  disabled={
+                    saving || numberDraft.replace(/\D/g, "").length < 8
+                  }
+                  onClick={() => void connectNumber()}
+                >
+                  {saving ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : null}
+                  Connect
+                </Button>
+              </div>
+              {info.display ? (
+                <button
+                  type="button"
+                  className="text-[10px] text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    setEditing(false);
+                    setNumberDraft("");
+                  }}
+                >
+                  Cancel
+                </button>
+              ) : null}
               <p className="text-muted-foreground/80">
-                WhatsApp numbers are issued by Meta or the provider that connects
-                to it. An app cannot mint a real number at runtime; this screen
-                publishes the number ManyChat connected.
+                Saving the number only publishes it. Replies start when the
+                ManyChat automation calls the Jarvis endpoint — a number alone
+                cannot answer a WhatsApp message.
               </p>
             </div>
           ) : (
@@ -183,6 +207,18 @@ export function WhatsAppDialog({ open, onOpenChange }: WhatsAppDialogProps) {
                     )}
                     {copied ? "Copied" : "Copy number"}
                   </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5"
+                    onClick={() => {
+                      setNumberDraft(info.number ?? "");
+                      setEditing(true);
+                    }}
+                  >
+                    Change number
+                  </Button>
                 </div>
               </div>
 
@@ -216,9 +252,10 @@ export function WhatsAppDialog({ open, onOpenChange }: WhatsAppDialogProps) {
                   Request at the endpoint in the ManyChat panel.
                 </p>
               ) : (
-                <p className="inline-flex items-center gap-1.5 text-[10px] text-emerald-700 dark:text-emerald-400">
-                  <Check className="size-3" />
-                  Reply path configured
+                <p className="inline-flex items-start gap-1.5 text-[10px] leading-4 text-emerald-700 dark:text-emerald-400">
+                  <Check className="mt-0.5 size-3 shrink-0" />
+                  Jarvis endpoint configured. The ManyChat automation must also
+                  be live, or messages still get no answer.
                 </p>
               )}
             </>

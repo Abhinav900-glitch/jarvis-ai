@@ -949,6 +949,16 @@ const schema = defineSchema(
       createdAt: v.number(),
     }).index("by_contact", ["channel", "contactId", "createdAt"]),
 
+    // Small key/value settings for messaging channels — currently the
+    // assistant's public WhatsApp number. It is not a secret, but it belongs
+    // to the deployment rather than one browser, so it cannot live in
+    // localStorage and must survive a page reload.
+    channelSettings: defineTable({
+      key: v.string(),
+      value: v.string(),
+      updatedAt: v.number(),
+    }).index("by_key", ["key"]),
+
     machineJobs: defineTable({
       userId: v.id("users"),
       language: v.string(),
