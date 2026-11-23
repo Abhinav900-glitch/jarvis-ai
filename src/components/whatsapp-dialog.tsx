@@ -12,7 +12,7 @@
 // set the dialog says exactly what is missing instead of showing a fake number.
 // ---------------------------------------------------------------------------
 
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { Check, Copy, Loader2, MessageCircle, Phone } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -49,7 +49,35 @@ interface WhatsappInfo {
  * common "I added keys, why does nothing happen?" dead end.
  */
 function TwilioSandboxHelp({ webhook }: { webhook: string | null }) {
+  const getWebhookUrl = useAction(api.manychat.twilioWebhookUrl);
+  const [copying, setCopying] = useState(false);
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
+
   if (!webhook) return null;
+
+  // The secret is appended server-side: the operator pastes one finished URL
+  // into Twilio's single-line field instead of editing a 32-character key into
+  // it by hand, which is the step that usually goes wrong.
+  const copyFullWebhook = async () => {
+    setCopying(true);
+    try {
+      const result = await getWebhookUrl();
+      if (!result.url) {
+        toast.error("Add TWILIO_WEBHOOK_SECRET in the Keys tab first.");
+        return;
+      }
+      await navigator.clipboard.writeText(result.url);
+      setCopiedWebhook(true);
+      toast.success("Webhook URL copied. Paste it into Twilio and save.");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not copy the webhook URL.",
+      );
+    } finally {
+      setCopying(false);
+    }
+  };
+
   return (
     <details className="rounded-lg border border-border/60 px-3 py-2">
       <summary className="cursor-pointer text-[11px] font-medium text-foreground">
@@ -74,15 +102,44 @@ function TwilioSandboxHelp({ webhook }: { webhook: string | null }) {
         <p>
           <span className="font-medium text-foreground">2.</span> In{" "}
           <span className="text-foreground">Sandbox settings → Sandbox
-          configuration → When a Message Comes in</span>, paste the URL below with{" "}
-          <span className="font-mono text-foreground">?key=…</span> appended and
-          save. On a trial console, use{" "}
+          configuration → When a Message Comes in</span>, paste the copied URL
+          and save. On a trial console, use{" "}
           <span className="text-foreground">Receive a message → Custom → Webhook URL</span>
           instead.
         </p>
         <span className="block break-all rounded bg-muted/60 px-1.5 py-1 font-mono text-[9px] text-foreground">
           {webhook}
         </span>
+        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 text-[10px]"
+            disabled={copying}
+            onClick={() => void copyFullWebhook()}
+          >
+            {copying ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : copiedWebhook ? (
+              <Check className="size-3" />
+            ) : (
+              <Copy className="size-3" />
+            )}
+            {copiedWebhook ? "Webhook URL copied" : "Copy full webhook URL"}
+          </Button>
+          <a
+            href="https://www.twilio.com/console/sms/whatsapp/sandbox"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[10px] underline decoration-border underline-offset-2 hover:text-foreground"
+          >
+            Open Sandbox settings
+          </a>
+        </div>
+        <p>
+          The copied URL includes the secret, so paste it exactly as copied.
+        </p>
         <p>
           <span className="font-medium text-foreground">3.</span> Connect the same
           number above, then send <span className="text-foreground">hello</span>{" "}
@@ -212,17 +269,25 @@ export function WhatsAppDialog({ open, onOpenChange }: WhatsAppDialogProps) {
                 inbound webhook calls the Jarvis endpoint — a number alone cannot
                 answer a WhatsApp message.
               </p>
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
-                <span>Free test route:</span>
-                <button
+              <div className="rounded-md border border-dashed border-border/70 px-2.5 py-2">
+                <p className="text-[10px] font-medium text-foreground">
+                  Free test route
+                </p>
+                <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                  Twilio&apos;s shared Sandbox number. Join it from your phone
+                  first, then connect it here.
+                </p>
+                <Button
                   type="button"
+                  size="sm"
+                  variant="outline"
                   disabled={saving}
-                  className="font-mono text-foreground underline decoration-border underline-offset-2 hover:decoration-foreground disabled:opacity-50"
+                  className="mt-1.5 h-7 gap-1.5 font-mono text-[10px]"
                   onClick={() => void connectNumber("14155238886")}
                 >
-                  connect +14155238886
-                </button>
-                <span>(Twilio Sandbox; join it first).</span>
+                  <Phone className="size-3" />
+                  Connect +1 415 523 8886
+                </Button>
               </div>
               <TwilioSandboxHelp webhook={info.twilioWebhook} />
             </div>

@@ -260,19 +260,33 @@ export const sendText = action({
 /** Key under which the public assistant number is stored. */
 const WHATSAPP_KEY = "whatsapp-number";
 
+/**
+ * The shared secret for the Twilio inbound webhook, if one is configured.
+ *
+ * Twilio's inbound webhook screen supports no custom headers, so the secret
+ * has to travel as a query parameter. Same precedence as the route in http.ts:
+ * a dedicated Twilio secret first, then the ManyChat one, then its API key so
+ * a deployment with only the AI key can still be wired up.
+ */
+function twilioSecret(): string | null {
+  const value = (
+    process.env.TWILIO_WEBHOOK_SECRET ??
+    process.env.MANYCHAT_WEBHOOK_SECRET ??
+    process.env.MANYCHAT_AI_API_KEY ??
+    ""
+  ).trim();
+  return value || null;
+}
+
 function whatsappFields(raw: string) {
   // wa.me wants digits only, including the country code and no plus sign.
   const number = raw.replace(/\D/g, "").slice(0, 15);
   const valid = number.length >= 8;
   const parsed = valid ? parsePhoneNumberFromString(`+${number}`) : undefined;
   const regionCode = parsed?.country ?? null;
-  const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
-  const secretConfigured = Boolean(
-    (process.env.TWILIO_WEBHOOK_SECRET ??
-      process.env.MANYCHAT_WEBHOOK_SECRET ??
-      process.env.MANYCHAT_AI_API_KEY ??
-      "").trim(),
-  );
+    const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
+  const secretConfigured = twilioSecret() !== null;
+
 
   return {
     display: valid ? `+${number}` : null,
@@ -354,6 +368,34 @@ export const saveWhatsapp = mutation({
       });
     }
     return { number };
+  },
+});
+
+/**
+ * The complete Twilio webhook URL, secret included.
+ *
+ * The Twilio console has no field for a custom header, so the shared secret
+ * must be appended as `?key=`. Splicing a 32-character secret into a URL by
+ * hand is the step most likely to be mistyped, so this action hands the
+ * finished URL to the signed-in dialog to copy. It is never logged or stored;
+ * it exists only long enough to reach the clipboard.
+ *
+ * Null means the deployment has no site URL or no secret to authenticate the
+ * inbound call, which the dialog can explain instead of copying a URL that
+ * could never work.
+ */
+export const twilioWebhookUrl = action({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to copy the webhook URL.");
+
+    const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
+    const secret = twilioSecret();
+    if (!site || !secret) return { url: null as string | null };
+    return {
+      url: `${site}/twilio/whatsapp?key=${encodeURIComponent(secret)}`,
+    };
   },
 });
 
