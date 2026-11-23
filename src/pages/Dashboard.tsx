@@ -45,6 +45,7 @@ import {
   Keyboard,
   Search,
   Send,
+  Phone,
   Puzzle,
   AlertTriangle,
   Settings,
@@ -99,6 +100,7 @@ import { Lightbox } from "@/components/lightbox";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { OfflineTranscriptDialog } from "@/components/offline-transcript-dialog";
 import { ManyChatPanel } from "@/components/manychat-panel";
+import { WhatsAppDialog } from "@/components/whatsapp-dialog";
 import { DesmosCalculator } from "@/components/desmos-calculator";
 import { autoGraphFor, type AutoGraph } from "@/lib/auto-graph";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
@@ -1598,6 +1600,7 @@ export default function Dashboard() {
   const [showStats, setShowStats] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
   const [showManychat, setShowManychat] = useState(false);
+  const [showWhatsapp, setShowWhatsapp] = useState(false);
   /** An image handed to the studio by the viewer, used as its starting frame. */
   const [studioSeed, setStudioSeed] = useState<{
     name: string;
@@ -5947,6 +5950,14 @@ export default function Dashboard() {
         run: () => navigate("/messages"),
       },
       {
+        id: "whatsapp",
+        label: "WhatsApp — chat with Jarvis on WhatsApp",
+        group: "Chat",
+        keywords: "phone number mobile chat whatsapp message",
+        icon: <Phone className="size-4" />,
+        run: () => setShowWhatsapp(true),
+      },
+      {
         id: "manychat",
         label: "ManyChat — message a subscriber",
         group: "Chat",
@@ -6381,6 +6392,17 @@ export default function Dashboard() {
                 </Link>
               </Button>
 
+              {/* WhatsApp mode: the assistant's own number, opened in WhatsApp. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="hidden sm:inline-flex"
+                title="WhatsApp — text Jarvis"
+                onClick={() => setShowWhatsapp(true)}
+              >
+                <Phone className="size-4" />
+              </Button>
+
               {/* Find in this conversation — the page's own ⌘F would only
                   ever see ciphertext. */}
               <Button
@@ -6559,6 +6581,10 @@ export default function Dashboard() {
                   >
                     <Gauge className="size-4" />
                     AeroTransformGen
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowWhatsapp(true)}>
+                    <Phone className="size-4" />
+                    WhatsApp mode
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setShowManychat(true)}>
                     <Send className="size-4" />
@@ -9821,6 +9847,7 @@ export default function Dashboard() {
         }}
       />
       <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
+      <WhatsAppDialog open={showWhatsapp} onOpenChange={setShowWhatsapp} />
       <ManyChatPanel
         open={showManychat}
         onOpenChange={setShowManychat}

@@ -234,6 +234,51 @@ export const sendText = action({
 });
 
 /**
+ * The assistant's own WhatsApp number, shown to people who want to chat there.
+ *
+ * WhatsApp does not let an app mint a phone number: a number is issued by Meta
+ * or by a provider that connects to the WhatsApp Business Platform (ManyChat
+ * in this deployment). The number is therefore configuration, not something
+ * created at runtime; this action only normalises and publishes it.
+ *
+ * The wa.me link is built here so the browser never has to know the spacing or
+ * country-code rules, and so the number is shown one way everywhere.
+ */
+export const whatsapp = action({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to see the WhatsApp number.");
+
+    const raw = (
+      process.env.WHATSAPP_NUMBER ??
+      process.env.MANYCHAT_WHATSAPP_NUMBER ??
+      ""
+    ).trim();
+    // wa.me wants digits only, including the country code and no plus sign.
+    const number = raw.replace(/\D/g, "").slice(0, 15);
+    const valid = number.length >= 8;
+    const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
+    const secretConfigured = Boolean(
+      (process.env.MANYCHAT_WEBHOOK_SECRET ??
+        process.env.MANYCHAT_AI_API_KEY ??
+        "").trim(),
+    );
+
+    return {
+      display: valid ? `+${number}` : null,
+      number: valid ? number : null,
+      link: valid
+        ? `https://wa.me/${number}?text=${encodeURIComponent("Hi Jarvis")}`
+        : null,
+      /** The inbound path is usable only when a URL and a secret exist. */
+      channelReady: Boolean(site && secretConfigured),
+      envName: "WHATSAPP_NUMBER",
+    };
+  },
+});
+
+/**
  * Where to point a ManyChat External Request, and which env var holds the
  * bearer secret it must send.
  *
