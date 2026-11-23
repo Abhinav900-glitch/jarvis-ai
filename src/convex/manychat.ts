@@ -268,7 +268,8 @@ function whatsappFields(raw: string) {
   const regionCode = parsed?.country ?? null;
   const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
   const secretConfigured = Boolean(
-    (process.env.MANYCHAT_WEBHOOK_SECRET ??
+    (process.env.TWILIO_WEBHOOK_SECRET ??
+      process.env.MANYCHAT_WEBHOOK_SECRET ??
       process.env.MANYCHAT_AI_API_KEY ??
       "").trim(),
   );
@@ -290,6 +291,8 @@ function whatsappFields(raw: string) {
         : null,
     /** The inbound path is usable only when a URL and a secret exist. */
     channelReady: Boolean(site && secretConfigured),
+    /** Twilio's inbound webhook; the secret is appended by the operator. */
+    twilioWebhook: site ? `${site}/twilio/whatsapp` : null,
     envName: "WHATSAPP_NUMBER",
   };
 }

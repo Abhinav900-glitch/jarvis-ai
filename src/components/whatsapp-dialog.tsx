@@ -36,6 +36,7 @@ interface WhatsappInfo {
     callingCode: string;
   } | null;
   channelReady: boolean;
+  twilioWebhook: string | null;
   envName: string;
 }
 
@@ -154,8 +155,16 @@ export function WhatsAppDialog({ open, onOpenChange }: WhatsAppDialogProps) {
               ) : null}
               <p className="text-muted-foreground/80">
                 Saving the number only publishes it. Replies start when the
-                ManyChat automation calls the Jarvis endpoint — a number alone
-                cannot answer a WhatsApp message.
+                inbound webhook calls the Jarvis endpoint — a number alone cannot
+                answer a WhatsApp message.
+              </p>
+              <p className="text-muted-foreground/80">
+                Free test route: enter Twilio Sandbox&apos;s shared US number{" "}
+                <span className="font-mono text-foreground">
+                  +14155238886
+                </span>{" "}
+                and join it with the code from the Twilio console. No ManyChat
+                number purchase is needed for testing.
               </p>
             </div>
           ) : (
@@ -244,20 +253,52 @@ export function WhatsAppDialog({ open, onOpenChange }: WhatsAppDialogProps) {
                 </li>
               </ol>
 
-              {!info.channelReady ? (
-                <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[11px] leading-5 text-amber-800 dark:text-amber-300">
-                  The number is set, but the reply path is not: add{" "}
-                  <span className="font-mono">MANYCHAT_WEBHOOK_SECRET</span> or a
-                  ManyChat key in the Keys tab, and point the ManyChat External
-                  Request at the endpoint in the ManyChat panel.
-                </p>
-              ) : (
-                <p className="inline-flex items-start gap-1.5 text-[10px] leading-4 text-emerald-700 dark:text-emerald-400">
-                  <Check className="mt-0.5 size-3 shrink-0" />
-                  Jarvis endpoint configured. The ManyChat automation must also
-                  be live, or messages still get no answer.
-                </p>
-              )}
+                              {!info.channelReady ? (
+                  <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[11px] leading-5 text-amber-800 dark:text-amber-300">
+                    The number is set, but the reply path is not: add{" "}
+                    <span className="font-mono">MANYCHAT_WEBHOOK_SECRET</span> or a
+                    ManyChat key in the Keys tab, and point the inbound webhook
+                    at the Jarvis endpoint.
+                  </p>
+                ) : (
+                  <p className="inline-flex items-start gap-1.5 text-[10px] leading-4 text-emerald-700 dark:text-emerald-400">
+                    <Check className="mt-0.5 size-3 shrink-0" />
+                    Jarvis endpoint configured. The inbound webhook must also be
+                    live, or messages still get no answer.
+                  </p>
+                )}
+
+                {info.twilioWebhook ? (
+                  <details className="rounded-lg border border-border/60 px-3 py-2">
+                    <summary className="cursor-pointer text-[11px] font-medium text-foreground">
+                      Free test option: Twilio Sandbox
+                    </summary>
+                    <div className="mt-2 space-y-1.5 text-[10px] leading-4 text-muted-foreground">
+                      <p>
+                        Twilio&apos;s shared US number is{" "}
+                        <span className="font-mono text-foreground">
+                          +14155238886
+                        </span>
+                        . Each phone joins first with the join code from the
+                        Twilio console, then chats with Jarvis.
+                      </p>
+                      <p>
+                        Set the Sandbox&apos;s inbound webhook to this URL with{" "}
+                        <span className="font-mono text-foreground">
+                          ?key=&lt;TWILIO_WEBHOOK_SECRET&gt;
+                        </span>{" "}
+                        appended:
+                      </p>
+                      <span className="block break-all rounded bg-muted/60 px-1.5 py-1 font-mono text-[9px] text-foreground">
+                        {info.twilioWebhook}
+                      </span>
+                      <p>
+                        Sandbox only — for a public number, connect a registered
+                        WhatsApp sender instead.
+                      </p>
+                    </div>
+                  </details>
+                ) : null}
             </>
           )}
         </div>

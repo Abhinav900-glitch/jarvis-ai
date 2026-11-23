@@ -316,4 +316,90 @@ http.route({
   }),
 });
 
+/**
+ * Twilio WhatsApp webhook, including the free Sandbox sender.
+ *
+ * Twilio posts form-encoded fields (Body, From, WaId) to this URL from the
+ * number configured in the Twilio console. Returning TwiML is enough to send
+ * the reply from that same number — no Account SID or Auth Token is needed in
+ * this deployment, so the free Sandbox works without another API client.
+ *
+ * The shared secret is a query parameter because Twilio's inbound webhook
+ * screen does not support custom headers. A dedicated TWILIO_WEBHOOK_SECRET is
+ * preferred; the ManyChat secret is accepted as a fallback so one secret can
+ * cover both channels during setup.
+ */
+http.route({
+  path: "/twilio/whatsapp",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = (
+      process.env.TWILIO_WEBHOOK_SECRET ??
+      process.env.MANYCHAT_WEBHOOK_SECRET ??
+      process.env.MANYCHAT_AI_API_KEY ??
+      ""
+    ).trim();
+    if (!secret) {
+      return twiml(
+        "<Response><Message>Twilio is not configured yet.</Message></Response>",
+        503,
+      );
+    }
+
+    const provided = new URL(req.url).searchParams.get("key") ?? "";
+    if (provided !== secret) {
+      return new Response("unauthorized", { status: 401 });
+    }
+
+    const body = new URLSearchParams(await req.text());
+    const message = (body.get("Body") ?? "").trim().slice(0, 6_000);
+    if (!message) return twiml("<Response/>");
+
+    // WaId is the plain international number; From keeps the whatsapp: prefix.
+    const rawContact = body.get("WaId") ?? body.get("From") ?? "";
+    const contactId = rawContact
+      .replace(/^whatsapp:/i, "")
+      .replace(/[^A-Za-z0-9:_-]/g, "")
+      .slice(0, 80);
+
+    try {
+      const result = await ctx.runAction(internal.ai.answerForChannel, {
+        message,
+        ...(contactId ? { contactId: `twilio:${contactId}` } : {}),
+      });
+      // TwiML bodies are safer below the WhatsApp text ceiling; the AI action
+      // already caps its own answer, but 1500 leaves room for XML wrapping.
+      return twiml(
+        `<Response><Message>${xmlEscape(result.reply.slice(0, 1_500))}</Message></Response>`,
+      );
+    } catch {
+      return twiml(
+        "<Response><Message>Jarvis could not answer that just now.</Message></Response>",
+      );
+    }
+  }),
+});
+
+function twiml(xml: string, status = 200): Response {
+  return new Response(xml, {
+    status,
+    headers: {
+      "content-type": "text/xml; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+/** XML text for a TwiML message; control characters would make it invalid. */
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
+}
+
 export default http;
