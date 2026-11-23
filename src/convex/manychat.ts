@@ -15,6 +15,30 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { parsePhoneNumberFromString } from "libphonenumber-js/min";
+
+/**
+ * English region name for an ISO country code, without pulling a second
+ * country-name table into the bundle. Intl.DisplayNames is present in the
+ * deployment's V8/Node runtimes; the cast only bridges this project's ES2020
+ * type library. The ISO code is a useful fallback if it is ever absent.
+ */
+function regionName(code: string): string {
+  try {
+    const DisplayNames = (
+      Intl as unknown as {
+        DisplayNames?: new (
+          locales: string[],
+          options: { type: "region" },
+        ) => { of: (regionCode: string) => string | undefined };
+      }
+    ).DisplayNames;
+    if (!DisplayNames) return code;
+    return new DisplayNames(["en"], { type: "region" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
 
 const BASE = "https://api.manychat.com";
 
@@ -258,6 +282,8 @@ export const whatsapp = action({
     // wa.me wants digits only, including the country code and no plus sign.
     const number = raw.replace(/\D/g, "").slice(0, 15);
     const valid = number.length >= 8;
+    const parsed = valid ? parsePhoneNumberFromString(`+${number}`) : undefined;
+    const regionCode = parsed?.country ?? null;
     const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
     const secretConfigured = Boolean(
       (process.env.MANYCHAT_WEBHOOK_SECRET ??
@@ -271,6 +297,15 @@ export const whatsapp = action({
       link: valid
         ? `https://wa.me/${number}?text=${encodeURIComponent("Hi Jarvis")}`
         : null,
+      /** Country code is derived from the number, not configured twice. */
+      region:
+        regionCode && parsed
+          ? {
+              code: regionCode,
+              name: regionName(regionCode),
+              callingCode: `+${parsed.countryCallingCode}`,
+            }
+          : null,
       /** The inbound path is usable only when a URL and a secret exist. */
       channelReady: Boolean(site && secretConfigured),
       envName: "WHATSAPP_NUMBER",

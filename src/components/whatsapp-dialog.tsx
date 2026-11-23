@@ -30,6 +30,11 @@ interface WhatsappInfo {
   display: string | null;
   number: string | null;
   link: string | null;
+  region: {
+    code: string;
+    name: string;
+    callingCode: string;
+  } | null;
   channelReady: boolean;
   envName: string;
 }
@@ -137,6 +142,21 @@ export function WhatsAppDialog({ open, onOpenChange }: WhatsAppDialogProps) {
                 </p>
                 <p className="mt-1 font-mono text-2xl font-semibold tracking-tight text-foreground">
                   {info.display}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {info.region ? (
+                    <>
+                      Region:{" "}
+                      <span className="text-foreground">
+                        {info.region.name}
+                      </span>{" "}
+                      <span className="font-mono text-muted-foreground/80">
+                        ({info.region.code} · {info.region.callingCode})
+                      </span>
+                    </>
+                  ) : (
+                    "Region: unknown — the number needs a country code."
+                  )}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button
