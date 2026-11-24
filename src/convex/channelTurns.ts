@@ -1,10 +1,12 @@
 // ---------------------------------------------------------------------------
 // Short conversation memory for channels with no Convex account.
 //
-// ManyChat calls the webhook once per contact message and does not send the
-// earlier turns. Without this table every WhatsApp reply would start from
-// nothing, so the second question could not refer to the first. Rows are
+// A messaging provider calls the webhook once per contact message and does not
+// send the earlier turns. Without this table every WhatsApp reply would start
+// from nothing, so the second question could not refer to the first. Rows are
 // scoped by the channel's own contact id, never merged into a web account.
+// The contact id carries the provider prefix (manychat:, twilio:, sent:), so
+// one table can hold conversations from every channel without collisions.
 //
 // The window is deliberately small: this is conversational continuity, not a
 // transcript archive. Every save trims the contact back to the newest KEEP
@@ -14,7 +16,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 
-/** Only ManyChat uses this today; the column leaves room for another channel. */
+/** Stored label for existing rows; the contact id carries the real provider. */
 const CHANNEL = "manychat";
 
 /** How much context the model sees: eight exchanges. */

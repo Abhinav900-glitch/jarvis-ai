@@ -5225,8 +5225,8 @@ export const askForTask = internalAction({
 });
 
 /**
- * One stateless reply for a chat channel that has no Convex session — currently
- * the ManyChat → WhatsApp/Messenger webhook.
+ * One stateless reply for a chat channel that has no Convex session — the
+ * ManyChat, Twilio and Sent WhatsApp webhooks all call this.
  *
  * This is the same engine ladder and the same Jarvis instructions as the web
  * console, with a channel-specific delivery rule: short, plain text, no tables
@@ -5288,7 +5288,7 @@ export const answerForChannel = internalAction({
 
     const channelPrompt =
       `${JARVIS_PROMPT}\n\n` +
-      "You are replying inside a WhatsApp-style chat through ManyChat, not the web " +
+      "You are replying inside a WhatsApp-style chat, not the web " +
       "console. Keep the answer conversational and under about 120 words unless " +
       "the person explicitly asks for detail. Use plain text: no Markdown " +
       "headings, tables or code fences unless the answer is code. Ask one useful " +

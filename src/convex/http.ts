@@ -3,6 +3,12 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
 import { artifactMimeType } from "../lib/code-run";
+import {
+  sentApiKey,
+  sentFallbackWebhookKey,
+  sentSigningSecret,
+  verifySentSignature,
+} from "../lib/sent";
 
 const http = httpRouter();
 
@@ -377,6 +383,110 @@ http.route({
         "<Response><Message>Jarvis could not answer that just now.</Message></Response>",
       );
     }
+  }),
+});
+
+/**
+ * Sent (sent.dm) incoming WhatsApp webhook.
+ *
+ * Sent posts one envelope per event. The route verifies the Standard Webhooks
+ * signature when SENT_WEBHOOK_SECRET is set; until that exists the URL carries
+ * a key derived from SENT_API_KEY, so a first reply can be wired without
+ * another env var. It acknowledges immediately and schedules the brain, which
+ * keeps Sent's delivery timeout from cutting off a slow model and prevents a
+ * retry for a message that is already being answered.
+ */
+http.route({
+  path: "/sent/whatsapp",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!sentApiKey()) {
+      return json({ error: "SENT_API_KEY is not configured." }, 503);
+    }
+
+    const signingSecret = sentSigningSecret();
+    // Without a signing secret the query key is the only credential, so check
+    // it before reading the body. With one, the body is exactly what the
+    // signature covers and must be read first.
+    if (!signingSecret) {
+      const expected = await sentFallbackWebhookKey();
+      const provided = new URL(req.url).searchParams.get("key") ?? "";
+      if (!expected || provided !== expected) {
+        return new Response("unauthorized", { status: 401 });
+      }
+    }
+
+    const rawBody = await req.text();
+    if (signingSecret) {
+      const valid = await verifySentSignature({
+        rawBody,
+        id: req.headers.get("webhook-id") ?? "",
+        timestamp: req.headers.get("webhook-timestamp") ?? "",
+        signature: req.headers.get("webhook-signature") ?? "",
+        secret: signingSecret,
+      });
+      if (!valid) return new Response("unauthorized", { status: 401 });
+    }
+
+    let body: { event?: unknown; payload?: Record<string, unknown> };
+    try {
+      const parsed: unknown = JSON.parse(rawBody);
+      if (!parsed || typeof parsed !== "object") {
+        return json({ error: "invalid JSON body" }, 400);
+      }
+      body = parsed as typeof body;
+    } catch {
+      return json({ error: "invalid JSON body" }, 400);
+    }
+
+    // Sent also posts delivery receipts; only an inbound message needs a
+    // reply. Acknowledging the rest keeps retries away from status events.
+    if (body.event !== "message.received") {
+      return json({ ok: true, ignored: true });
+    }
+    const payload = body.payload ?? {};
+    if (payload.channel !== "whatsapp") {
+      return json({ ok: true, ignored: true });
+    }
+
+    const message = (typeof payload.text === "string" ? payload.text : "")
+      .trim()
+      .slice(0, 6_000);
+    const from = (
+      typeof payload.inbound_number === "string"
+        ? payload.inbound_number
+        : ""
+    ).trim();
+    const messageId =
+      typeof payload.message_id === "string" ? payload.message_id : "";
+    if (!message || !from) return json({ ok: true, ignored: true });
+
+    // Sent and Meta handle opt-out keywords themselves; answering would
+    // undermine the confirmation they send.
+    if (/^(stop|unsubscribe|cancel|end|quit|opt\s*out)$/i.test(message)) {
+      return json({ ok: true, ignored: true });
+    }
+
+    const contactId = `sent:${from.replace(/[^A-Za-z0-9:_-]/g, "")}`.slice(
+      0,
+      80,
+    );
+    try {
+      await ctx.scheduler.runAfter(0, internal.sent.processInbound, {
+        to: from,
+        message,
+        contactId,
+        messageId,
+      });
+    } catch (err) {
+      console.error(
+        "[sent] could not schedule reply",
+        err instanceof Error ? err.message : err,
+      );
+      return json({ error: "could not schedule reply" }, 500);
+    }
+
+    return json({ ok: true });
   }),
 });
 

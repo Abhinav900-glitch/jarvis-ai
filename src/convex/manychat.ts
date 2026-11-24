@@ -284,9 +284,15 @@ function whatsappFields(raw: string) {
   const valid = number.length >= 8;
   const parsed = valid ? parsePhoneNumberFromString(`+${number}`) : undefined;
   const regionCode = parsed?.country ?? null;
-    const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
+  const site = process.env.CONVEX_SITE_URL?.trim() ?? "";
   const secretConfigured = twilioSecret() !== null;
-
+  // Sent can answer as soon as its key and the public site URL exist. The
+  // webhook route derives its own fallback secret from the key, so no second
+  // env var is needed for the first test.
+  const sentKeyPresent = Boolean(
+    (process.env.SENT_API_KEY ?? process.env.SENT_DM_API_KEY ?? "").trim(),
+  );
+  const sentReady = Boolean(site && sentKeyPresent);
 
   return {
     display: valid ? `+${number}` : null,
@@ -303,10 +309,14 @@ function whatsappFields(raw: string) {
             callingCode: `+${parsed.countryCallingCode}`,
           }
         : null,
-    /** The inbound path is usable only when a URL and a secret exist. */
+    /** The Twilio inbound path is usable only when a URL and a secret exist. */
     channelReady: Boolean(site && secretConfigured),
     /** Twilio's inbound webhook; the secret is appended by the operator. */
     twilioWebhook: site ? `${site}/twilio/whatsapp` : null,
+    /** Sent's key is configured, even if its channel still needs setup. */
+    sentKeyPresent,
+    /** Sent can authenticate an inbound webhook without another secret. */
+    sentReady,
     envName: "WHATSAPP_NUMBER",
   };
 }
@@ -315,9 +325,10 @@ function whatsappFields(raw: string) {
  * The assistant's own WhatsApp number, shown to people who want to chat there.
  *
  * WhatsApp does not let an app mint a phone number: a number is issued by Meta
- * or by a provider that connects to the WhatsApp Business Platform (ManyChat
- * in this deployment). The number is therefore configuration, not something
- * created at runtime; this query only normalises and publishes it.
+ * or by a provider that connects to the WhatsApp Business Platform (Sent,
+ * ManyChat or Twilio in this deployment). The number is therefore
+ * configuration, not something created at runtime; this query only normalises
+ * and publishes it.
  *
  * A number saved through the dialog wins over the deployment env var, so the
  * number can be connected without a redeploy.
