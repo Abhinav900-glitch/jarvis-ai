@@ -77,6 +77,12 @@ import {
   enhancePromptRequest,
 } from "../lib/enhance-prompt";
 import {
+  BRIEF_SYSTEM_PROMPT,
+  briefRequest,
+  freeTextWaitSeconds,
+  parseImageBrief,
+} from "../lib/image-brief";
+import {
   characterKey,
   cleanLookBrief,
   lookSearchQuery,
@@ -3163,6 +3169,122 @@ export const enhanceImagePrompt = action({
         err instanceof Error ? err.message : err,
       );
       return { prompt: base, model: null, changed: false };
+    }
+  },
+});
+
+/**
+ * A long visual brief for one image type, written without an API key.
+ *
+ * Pollinations' Classic text endpoint is free, needs no signup and no key, and
+ * is the one text model every deployment can reach. It is also rate-limited to
+ * one request every 45 seconds per IP, so this action never throws on a 402:
+ * the dialog gets the wait and can say exactly when to try again.
+ *
+ * The answer is split into a 500-word brief and a compact prompt. The compact
+ * half is what a diffusion model can actually read; see `lib/image-brief.ts`
+ * for why sending the whole brief would be lost to truncation.
+ */
+export const imagePromptBrief = action({
+  args: {
+    prompt: v.string(),
+    style: v.optional(v.string()),
+    instructions: v.optional(v.string()),
+    avoid: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    brief: string;
+    prompt: string;
+    words: number;
+    model: string | null;
+    reason: string | null;
+  }> => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Sign in to write a prompt brief.");
+
+    const base = args.prompt.trim().slice(0, 600);
+    if (!base) throw new Error("Nothing to write a brief for.");
+
+    const message = briefRequest({
+      prompt: base,
+      style: args.style?.slice(0, 200),
+      instructions: args.instructions?.slice(0, 220),
+      avoid: args.avoid?.slice(0, 220),
+    });
+
+    try {
+      const res = await fetch("https://text.pollinations.ai/openai", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // The API asks clients to identify themselves; an anonymous default
+          // is indistinguishable from a script that forgot to.
+          "User-Agent": "Jarvis:1.0:freebuff",
+        },
+        body: JSON.stringify({
+          model: "openai",
+          temperature: 0.8,
+          // 500 words is about 700 tokens; the headroom lets the model finish
+          // its sixth paragraph instead of stopping mid-sentence.
+          max_tokens: 2_400,
+          messages: [
+            { role: "system", content: BRIEF_SYSTEM_PROMPT },
+            { role: "user", content: message },
+          ],
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const wait = freeTextWaitSeconds(
+          body,
+          res.headers.get("retry-after"),
+        );
+        return {
+          brief: "",
+          prompt: base,
+          words: 0,
+          model: null,
+          reason:
+            wait !== null
+              ? `The free text model allows one request every 45 seconds — try again in ${wait}s.`
+              : `The free brief service answered ${res.status}${
+                  body ? ` — ${body.slice(0, 160)}` : "."
+                }`,
+        };
+      }
+
+      const data = (await res.json()) as {
+        choices?: { message?: { content?: unknown } }[];
+      };
+      const raw = data.choices?.[0]?.message?.content;
+      if (typeof raw !== "string" || !raw.trim()) {
+        return {
+          brief: "",
+          prompt: base,
+          words: 0,
+          model: null,
+          reason: "The free brief service returned no text.",
+        };
+      }
+
+      const parsed = parseImageBrief(raw, base);
+      return { ...parsed, model: "pollinations/openai" };
+    } catch (err) {
+      return {
+        brief: "",
+        prompt: base,
+        words: 0,
+        model: null,
+        reason:
+          err instanceof Error
+            ? err.message
+            : "Could not reach the free brief service.",
+      };
     }
   },
 });

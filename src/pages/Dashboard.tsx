@@ -1274,6 +1274,7 @@ export default function Dashboard() {
   const generateTitleAction = useAction(api.ai.generateTitle);
   const searchWebImagesAction = useAction(api.ai.searchWebImages);
   const enhanceImagePromptAction = useAction(api.ai.enhanceImagePrompt);
+  const imagePromptBriefAction = useAction(api.ai.imagePromptBrief);
   const characterLookAction = useAction(api.ai.characterLook);
   const critiqueImageAction = useAction(api.ai.critiqueImage);
   // The Image Studio's Supabase copy. The secret key stays in the deployment;
@@ -8390,6 +8391,14 @@ export default function Dashboard() {
             }}
             enhance={async ({ prompt: p, style, instructions: extra, avoid }) =>
               await enhanceImagePromptAction({
+                prompt: p,
+                style,
+                instructions: extra,
+                avoid,
+              })
+            }
+            promptBrief={async ({ prompt: p, style, instructions: extra, avoid }) =>
+              await imagePromptBriefAction({
                 prompt: p,
                 style,
                 instructions: extra,

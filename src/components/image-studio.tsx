@@ -132,6 +132,18 @@ export interface StudioReview {
   reason: string | null;
 }
 
+/**
+ * A long description of the picture, plus the compact prompt the image model
+ * can actually read. The two are returned together so they cannot drift.
+ */
+export interface StudioPromptBrief {
+  brief: string;
+  prompt: string;
+  words: number;
+  model: string | null;
+  reason: string | null;
+}
+
 export interface StudioSearchResult {
   images: StudioCandidate[];
   /** The AI's choice. `matched: false` means it found nothing close enough. */
@@ -288,6 +300,19 @@ export interface ImageStudioProps {
     instructions?: string;
     avoid?: string;
   }) => Promise<{ prompt: string; model: string | null; changed: boolean }>;
+  /**
+   * Writes a ~500-word brief for the chosen image type, with no API key.
+   *
+   * The free text model does the writing. `brief` is shown and copyable;
+   * `prompt` is the compact version the image model receives, because a
+   * diffusion prompt is truncated long before 500 words.
+   */
+  promptBrief?: (input: {
+    prompt: string;
+    style?: string;
+    instructions?: string;
+    avoid?: string;
+  }) => Promise<StudioPromptBrief>;
   /**
    * Researches the characters named in a prompt: which ones they are, what
    * they look like, and their newest form. An empty `brief` means the prompt
@@ -539,6 +564,7 @@ export function ImageStudio({
   generate,
   search,
   enhance,
+  promptBrief,
   lookup,
   readPage,
   judge,
@@ -571,6 +597,14 @@ export function ImageStudio({
   // retyping what the user had already written.
   const [sharpenedFrom, setSharpenedFrom] = useState<string | null>(null);
   const [sharpenNote, setSharpenNote] = useState<string | null>(null);
+  // The 500-word brief, the wording it was written for, and the compact prompt
+  // that was applied. Both wordings count as current: Undo returns to the
+  // first, the rewrite is the second, and only a manual edit is stale.
+  const [briefing, setBriefing] = useState(false);
+  const [briefResult, setBriefResult] = useState<StudioPromptBrief | null>(null);
+  const [briefFor, setBriefFor] = useState<string | null>(null);
+  const [briefApplied, setBriefApplied] = useState<string | null>(null);
+  const [briefCopied, setBriefCopied] = useState(false);
   // Character grounding is on by default: naming a character is a request for
   // that character, and without a reference the generator invents its own.
   // A page read is deliberately not part of the request: it is a reference the
@@ -1385,6 +1419,75 @@ export function ImageStudio({
   }, [avoid, busy, enhance, instructions, polishing, prompt, style.suffix]);
 
   /**
+   * Write the 500-word brief with the keyless text model.
+   *
+   * The brief is for reading. A 500-word description is several times what a
+   * diffusion model reads, so the action also returns a compact prompt and
+   * that replaces the textarea; Undo brings the user's wording back.
+   */
+  const writeBrief = useCallback(async () => {
+    if (!promptBrief || briefing || busy) return;
+    const base = prompt.trim();
+    if (!base) return;
+    setBriefing(true);
+    setBriefResult(null);
+    setBriefFor(null);
+    setBriefApplied(null);
+    setBriefCopied(false);
+    setSharpenNote(null);
+    try {
+      const result = await promptBrief({
+        prompt: base,
+        style: style.suffix || undefined,
+        instructions: note(instructions) || undefined,
+        avoid: note(avoid) || undefined,
+      });
+      const applied =
+        result.prompt && result.prompt !== base ? result.prompt : base;
+      setBriefResult(result);
+      setBriefFor(base);
+      setBriefApplied(applied);
+      if (applied !== base) {
+        setSharpenedFrom(prompt);
+        setPrompt(applied);
+      }
+    } catch (err) {
+      setBriefResult({
+        brief: "",
+        prompt: base,
+        words: 0,
+        model: null,
+        reason:
+          err instanceof Error ? err.message : "Couldn't write that brief.",
+      });
+      setBriefFor(base);
+      setBriefApplied(base);
+    } finally {
+      setBriefing(false);
+    }
+  }, [
+    avoid,
+    briefing,
+    busy,
+    instructions,
+    prompt,
+    promptBrief,
+    style.suffix,
+  ]);
+
+  const copyBrief = useCallback(async () => {
+    if (!briefResult?.brief) return;
+    try {
+      await navigator.clipboard.writeText(briefResult.brief);
+      setBriefCopied(true);
+    } catch {
+      setSharpenNote(
+        "Clipboard access was blocked; select the brief to copy it.",
+      );
+    }
+  }, [briefResult]);
+
+  /**
    * Read a page as a visual reference.
    *
    * The brief lives beside the prompt, never inside it: the user's wording is
@@ -2050,7 +2153,7 @@ export function ImageStudio({
                 Prompt
               </span>
               {resolved === "ai" && (
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
                   {sharpenedFrom !== null && (
                     <button
                       type="button"
@@ -2059,6 +2162,22 @@ export function ImageStudio({
                     >
                       <Undo2 className="size-3" />
                       Undo
+                    </button>
+                  )}
+                  {promptBrief && (
+                    <button
+                      type="button"
+                      onClick={() => void writeBrief()}
+                      disabled={briefing || polishing || busy || !prompt.trim()}
+                      title="Write a ~500-word brief for this image type with the free text model — no API key. The compact prompt it returns is what the generator uses."
+                      className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {briefing ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <FileText className="size-3" />
+                      )}
+                      {briefing ? "Writing brief…" : "500-word brief"}
                     </button>
                   )}
                   <button
@@ -2110,6 +2229,63 @@ export function ImageStudio({
                 {sharpenNote}
               </p>
             )}
+            {resolved === "ai" && briefResult ? (
+              <div className="mt-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Prompt brief
+                    {briefResult.words > 0
+                      ? ` · ${briefResult.words} words`
+                      : ""}
+                  </p>
+                  {briefResult.brief ? (
+                    <button
+                      type="button"
+                      onClick={() => void copyBrief()}
+                      className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+                    >
+                      {briefCopied ? (
+                        <Check className="size-3" />
+                      ) : (
+                        <Copy className="size-3" />
+                      )}
+                      {briefCopied ? "Copied" : "Copy brief"}
+                    </button>
+                  ) : null}
+                </div>
+                {briefResult.brief ? (
+                  <div className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap pr-1 text-[11px] leading-4 text-muted-foreground">
+                    {briefResult.brief}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-[11px] leading-4 text-amber-700 dark:text-amber-400">
+                    {briefResult.reason ?? "The brief came back empty."}
+                  </p>
+                )}
+                {briefResult.brief && briefResult.reason ? (
+                  <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground">
+                    {briefResult.reason}
+                  </p>
+                ) : null}
+                {briefResult.brief &&
+                briefFor !== null &&
+                briefApplied !== null &&
+                prompt.trim() !== briefFor &&
+                prompt.trim() !== briefApplied ? (
+                  <p className="mt-1.5 text-[10px] leading-4 text-amber-700 dark:text-amber-400">
+                    This brief describes the earlier wording. Press 500-word
+                    brief again to refresh it.
+                  </p>
+                ) : null}
+                {briefResult.model ? (
+                  <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground/80">
+                    Written by {briefResult.model} · no API key used. Free
+                    tier: one brief every 45 seconds. The compact prompt is in
+                    the box above; the full brief is for reference.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             {describing ? (
               <p className="mt-1.5 flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground">
                 <Loader2 className="size-3 animate-spin" />
@@ -2127,7 +2303,15 @@ export function ImageStudio({
                   <button
                     key={s.id}
                     type="button"
-                    onClick={() => setStyleId(s.id)}
+                    onClick={() => {
+                      setStyleId(s.id);
+                      // A brief is written for one image type; keeping it
+                      // beside a new type would describe the wrong picture.
+                      setBriefResult(null);
+                      setBriefFor(null);
+                      setBriefApplied(null);
+                      setBriefCopied(false);
+                    }}
                     className={cn(
                       "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition-colors",
                       styleId === s.id
