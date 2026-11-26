@@ -15,6 +15,7 @@ import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import {
   SENT_API_BASE,
+  sendSentWhatsappText,
   sentApiKey,
   sentFallbackWebhookKey,
   sentProfileId,
@@ -197,89 +198,11 @@ export const webhookUrl = action({
 });
 
 /**
- * One free-form WhatsApp reply through Sent.
- *
- * The channel is pinned to WhatsApp because this is a reply to an inbound
- * WhatsApp message, which is the only case where Meta's 24-hour customer
- * service window is open. Omitting `channel` would let Sent fall back to SMS
- * or RCS, which is not the conversation the person is having.
+ * One free-form WhatsApp reply through Sent. The shared helper pins the channel
+ * to WhatsApp and is also used by the WhatsApp OTP provider.
  */
 async function sendWhatsappText(to: string, text: string) {
-  const key = sentApiKey();
-  if (!key) {
-    return {
-      ok: false,
-      status: 0,
-      messageId: null as string | null,
-      error: "SENT_API_KEY is not configured.",
-    };
-  }
-
-  const recipient = to.trim();
-  if (!/^\+[1-9]\d{7,14}$/.test(recipient)) {
-    return {
-      ok: false,
-      status: 0,
-      messageId: null as string | null,
-      error: "Sent received a number that is not in E.164 format.",
-    };
-  }
-
-  const body = text.trim();
-  if (!body) {
-    return {
-      ok: false,
-      status: 0,
-      messageId: null as string | null,
-      error: "Refusing to send an empty reply.",
-    };
-  }
-
-  try {
-    const profileId = sentProfileId();
-    const response = await fetch(`${SENT_API_BASE}/v3/messages`, {
-      method: "POST",
-      headers: {
-        "x-api-key": key,
-        "content-type": "application/json",
-        ...(profileId ? { "x-profile-id": profileId } : {}),
-      },
-      body: JSON.stringify({
-        to: [recipient],
-        text: body,
-        channel: ["whatsapp"],
-      }),
-      signal: AbortSignal.timeout(25_000),
-    });
-    const raw = await response.text();
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        messageId: null as string | null,
-        error: detail(raw),
-      };
-    }
-
-    let messageId: string | null = null;
-    try {
-      const parsed = JSON.parse(raw) as {
-        data?: { recipients?: Array<{ message_id?: unknown }> };
-      };
-      const id = parsed.data?.recipients?.[0]?.message_id;
-      if (typeof id === "string") messageId = id;
-    } catch {
-      // A 202 with an unexpected body still means Sent accepted the send.
-    }
-    return { ok: true, status: response.status, messageId, error: null };
-  } catch (err) {
-    return {
-      ok: false,
-      status: 0,
-      messageId: null as string | null,
-      error: err instanceof Error ? err.message : "Could not reach Sent.",
-    };
-  }
+  return await sendSentWhatsappText(to, text);
 }
 
 /**

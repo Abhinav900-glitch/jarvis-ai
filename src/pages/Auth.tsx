@@ -16,12 +16,32 @@ import {
 
 import { useAuth } from "@/hooks/use-auth";
 import { JarvisLogo, JarvisMark } from "@/components/jarvis-logo";
-import { ArrowLeft, ArrowRight, Loader2, Mail, UserX } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Loader2,
+  Mail,
+  MessageCircle,
+  UserX,
+} from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
 interface AuthProps {
   redirectAfterAuth?: string;
+}
+
+type AuthStep =
+  | "signIn"
+  | "phoneEntry"
+  | { email: string }
+  | { phone: string };
+
+const PHONE_PATTERN = /^\+[1-9]\d{7,14}$/;
+
+function normalizePhone(value: string): string {
+  const compact = value.trim().replace(/[^\d+]/g, "");
+  return compact.startsWith("+") ? compact : `+${compact}`;
 }
 
 function resolveRedirectAfterAuth(
@@ -42,10 +62,19 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     searchParams.get("returnTo"),
     redirectAfterAuth,
   );
-  const [step, setStep] = useState<"signIn" | { email: string }>("signIn");
+  const [step, setStep] = useState<AuthStep>("signIn");
   const [otp, setOtp] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const otpStep = typeof step === "object" ? step : null;
+  const isPhoneStep = otpStep !== null && "phone" in otpStep;
+  const otpTarget =
+    otpStep === null
+      ? ""
+      : "phone" in otpStep
+        ? otpStep.phone
+        : otpStep.email;
 
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
@@ -73,13 +102,43 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     }
   };
 
+  const handlePhoneSubmit = async (
+    event: React.FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    try {
+      const formData = new FormData(event.currentTarget);
+      const phone = normalizePhone(String(formData.get("phone") ?? ""));
+      if (!PHONE_PATTERN.test(phone)) {
+        throw new Error(
+          "Enter a mobile number with its country code, e.g. +14155550123.",
+        );
+      }
+      formData.set("phone", phone);
+      await signIn("whatsapp-otp", formData);
+      setOtp("");
+      setStep({ phone });
+      setIsLoading(false);
+    } catch (err) {
+      console.error("WhatsApp sign-in error:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not send the WhatsApp code. Please try again.",
+      );
+      setIsLoading(false);
+    }
+  };
+
   const handleOtpSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsLoading(true);
     setError(null);
     try {
       const formData = new FormData(event.currentTarget);
-      await signIn("email-otp", formData);
+      await signIn(isPhoneStep ? "whatsapp-otp" : "email-otp", formData);
 
       console.log("signed in");
 
@@ -218,21 +277,108 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       <UserX className="mr-2 h-4 w-4" />
                       Continue as guest
                     </Button>
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full mt-2"
+                      onClick={() => {
+                        setError(null);
+                        setStep("phoneEntry");
+                      }}
+                      disabled={isLoading}
+                    >
+                      <MessageCircle className="mr-2 h-4 w-4" />
+                      Continue with WhatsApp
+                    </Button>
                   </div>
                 </CardContent>
+              </form>
+            </>
+          ) : step === "phoneEntry" ? (
+            <>
+              <CardHeader className="text-center mt-4">
+                <div className="mx-auto mb-3 flex size-12 items-center justify-center rounded-full border border-border/60 bg-muted/40">
+                  <MessageCircle className="size-5 text-muted-foreground" />
+                </div>
+                <CardTitle>Continue with WhatsApp</CardTitle>
+                <CardDescription>
+                  Enter your mobile number with its country code. We&apos;ll
+                  send a 6-digit code on WhatsApp.
+                </CardDescription>
+              </CardHeader>
+              <form onSubmit={handlePhoneSubmit}>
+                <CardContent className="pb-4">
+                  <div className="relative">
+                    <MessageCircle className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      name="phone"
+                      placeholder="+1 415 555 0123"
+                      type="tel"
+                      className="pl-9"
+                      disabled={isLoading}
+                      required
+                    />
+                  </div>
+                  {error && (
+                    <p className="mt-2 text-sm text-destructive">{error}</p>
+                  )}
+                  <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
+                    This signs you in with your number. Standard WhatsApp
+                    message rates may apply.
+                  </p>
+                </CardContent>
+                <CardFooter className="flex-col gap-2">
+                  <Button type="submit" className="w-full" disabled={isLoading}>
+                    {isLoading ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <MessageCircle className="mr-2 h-4 w-4" />
+                    )}
+                    Send code on WhatsApp
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="w-full"
+                    onClick={() => {
+                      setError(null);
+                      setStep("signIn");
+                    }}
+                    disabled={isLoading}
+                  >
+                    Use email instead
+                  </Button>
+                </CardFooter>
               </form>
             </>
           ) : (
             <>
               <CardHeader className="text-center mt-4">
-                <CardTitle>Check your email</CardTitle>
+                <CardTitle>
+                  {isPhoneStep ? "Check WhatsApp" : "Check your email"}
+                </CardTitle>
                 <CardDescription>
-                  We've sent a code to {step.email}
+                  We've sent a code to{" "}
+                  {isPhoneStep ? `WhatsApp at ${otpTarget}` : otpTarget}
                 </CardDescription>
               </CardHeader>
               <form onSubmit={handleOtpSubmit}>
                 <CardContent className="pb-4">
-                  <input type="hidden" name="email" value={step.email} />
+                  {otpStep && "email" in otpStep ? (
+                    <input
+                      type="hidden"
+                      name="email"
+                      value={otpStep.email}
+                    />
+                  ) : null}
+                  {otpStep && "phone" in otpStep ? (
+                    <input
+                      type="hidden"
+                      name="phone"
+                      value={otpStep.phone}
+                    />
+                  ) : null}
                   <input type="hidden" name="code" value={otp} />
 
                   <div className="flex justify-center">
@@ -264,13 +410,18 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                     </p>
                   )}
                   <p className="text-sm text-muted-foreground text-center mt-4">
-                    Didn't receive a code?{" "}
+                    {isPhoneStep
+                      ? "Need a different number?"
+                      : "Didn't receive a code?"}{" "}
                     <Button
                       variant="link"
                       className="p-0 h-auto"
-                      onClick={() => setStep("signIn")}
+                      onClick={() => {
+                        setError(null);
+                        setStep(isPhoneStep ? "phoneEntry" : "signIn");
+                      }}
                     >
-                      Try again
+                      {isPhoneStep ? "Use a different number" : "Try again"}
                     </Button>
                   </p>
                 </CardContent>
@@ -295,11 +446,16 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                   <Button
                     type="button"
                     variant="ghost"
-                    onClick={() => setStep("signIn")}
+                    onClick={() => {
+                      setError(null);
+                      setStep(isPhoneStep ? "phoneEntry" : "signIn");
+                    }}
                     disabled={isLoading}
                     className="w-full"
                   >
-                    Use different email
+                    {isPhoneStep
+                      ? "Use a different number"
+                      : "Use different email"}
                   </Button>
                 </CardFooter>
               </form>

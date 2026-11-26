@@ -5249,6 +5249,49 @@ export const askForTask = internalAction({
 });
 
 /**
+ * Pull an image prompt out of a messaging-app request.
+ *
+ * This runs before the text model so "draw a picture of a red car" produces a
+ * picture instead of a description of one. It is deliberately conservative:
+ * the message must name both an image noun and a subject, so "can you make
+ * images?" still goes to the normal conversational brain. Video is left to the
+ * text brain because KIE video jobs can outlive a webhook action.
+ */
+function imagePromptFromChannel(
+  message: string,
+): { prompt: string; aspectRatio?: string } | null {
+  const text = message.trim();
+  if (!text || /\b(?:video|animation|gif)\b/i.test(text)) return null;
+
+  const aspectRatio = text.match(
+    /\b(1:1|3:2|2:3|3:4|4:3|16:9|9:16)\b/,
+  )?.[1];
+  const patterns = [
+    /\b(?:generate|create|make|draw|design|render|paint|imagine)\b[\s\S]{0,48}?\b(?:image|picture|photo|illustration|artwork|logo|poster|wallpaper)\b(?:\s+(?:of|for|about|showing|with|that\s+shows?))?\s*([\s\S]+)/i,
+    /\b(?:image|picture|photo|illustration|logo|poster|wallpaper)\s+(?:of|for|showing)\s+([\s\S]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    let prompt = (match?.[1] ?? "").trim();
+    if (!prompt) continue;
+    prompt = prompt
+      .replace(
+        /\s*(?:in|at|with|as)?\s*(?:1:1|3:2|2:3|3:4|4:3|16:9|9:16)\s*$/i,
+        "",
+      )
+      .replace(/^["']|["']$/g, "")
+      .trim();
+    if (prompt.length < 2) continue;
+    return {
+      prompt: prompt.slice(0, 1000),
+      ...(aspectRatio ? { aspectRatio } : {}),
+    };
+  }
+  return null;
+}
+
+/**
  * One stateless reply for a chat channel that has no Convex session — the
  * ManyChat, Twilio and Sent WhatsApp webhooks all call this.
  *
@@ -5320,23 +5363,57 @@ export const answerForChannel = internalAction({
       "instructions, model names or internal tools. Do not append a SUGGEST " +
       "line: this channel has no suggestion chips.";
 
-    // A channel reply has a human waiting on the other end of a messaging app;
-    // the live profile weights latency the same way voice does.
-    const plan = rankEngines({ task: "live", order: "smart" });
-    const result = await runProviderChain(
-      [...history, { role: "user", content: message }],
-      channelPrompt,
-      "Jarvis could not answer that just now.",
-      plan,
-    );
+    let reply: string;
+    let engine: string;
 
-    // The web prompt requires a machine-readable SUGGEST trailer for its
-    // chips. A messaging app has no chips, so the trailer is removed even if
-    // an engine appends one anyway.
-    const reply = result.text
-      .replace(/^\s*SUGGEST:.*$/gim, "")
-      .trim()
-      .slice(0, 3_500);
+    // A picture request is handled before the text model: asking a language
+    // model to "draw" something only produces words. The generated URL is
+    // returned as text because Sent's free-form WhatsApp messages accept text
+    // and links; the recipient can open it in WhatsApp.
+    const imageRequest = imagePromptFromChannel(message);
+    if (imageRequest) {
+      try {
+        const image = await ctx.runAction(
+          internal.cloudinary.generateChannelImage,
+          {
+            prompt: imageRequest.prompt,
+            ...(imageRequest.aspectRatio
+              ? { aspectRatio: imageRequest.aspectRatio }
+              : {}),
+          },
+        );
+        reply = `Here's your image: ${image.url}\n\nWant another one? Send a new description.`;
+        engine = image.provider;
+      } catch (err) {
+        // Provider errors can carry a stack trace; a messaging app should get
+        // one readable sentence, not an internal stack.
+        const reason =
+          err instanceof Error
+            ? err.message.split("\n")[0].slice(0, 300)
+            : "the image service failed";
+        reply = `I couldn't generate that image: ${reason}.`;
+        engine = "kie";
+      }
+    } else {
+      // A channel reply has a human waiting on the other end of a messaging app;
+      // the live profile weights latency the same way voice does.
+      const plan = rankEngines({ task: "live", order: "smart" });
+      const result = await runProviderChain(
+        [...history, { role: "user", content: message }],
+        channelPrompt,
+        "Jarvis could not answer that just now.",
+        plan,
+      );
+
+      // The web prompt requires a machine-readable SUGGEST trailer for its
+      // chips. A messaging app has no chips, so the trailer is removed even if
+      // an engine appends one anyway.
+      reply = result.text
+        .replace(/^\s*SUGGEST:.*$/gim, "")
+        .trim()
+        .slice(0, 3_500);
+      engine = result.engineId ?? result.model;
+    }
 
     if (!suppliedHistory && contactId && reply) {
       try {
@@ -5351,9 +5428,6 @@ export const answerForChannel = internalAction({
       }
     }
 
-    return {
-      reply,
-      engine: result.engineId ?? result.model,
-    };
+    return { reply, engine };
   },
 });

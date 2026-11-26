@@ -1,7 +1,7 @@
 "use node";
 
 import { v } from "convex/values";
-import { action, type ActionCtx } from "./_generated/server";
+import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v2 as cloudinary } from "cloudinary";
 import { internal as internalApi } from "./_generated/api";
@@ -925,6 +925,60 @@ async function generateViaKie(
 
   throw new Error("kie did not finish in time");
 }
+
+/**
+ * Image generation for a messaging channel.
+ *
+ * A WhatsApp contact has no Convex session, so the authenticated
+ * `generateImage` action cannot serve them. This internal action is reachable
+ * only from another Convex function and deliberately uses the account's Kie
+ * key rather than the full web-provider chain: the channel asked for media and
+ * Kie's Nano Banana is the keyed leg this deployment owns.
+ *
+ * The new `_2` key is tried first, then any of the older Kie names, so adding
+ * the dedicated key does not break an existing image-generation key.
+ */
+export const generateChannelImage = internalAction({
+  args: {
+    prompt: v.string(),
+    aspectRatio: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const prompt = args.prompt.trim();
+    if (!prompt) throw new Error("Image prompt is empty.");
+    if (prompt.length > 1000) {
+      throw new Error("Image prompt too long — keep it under 1000 characters.");
+    }
+
+    const keys = [
+      process.env.KIE_AI_API_KEY_2?.trim() ?? "",
+      ...KIE_KEY_ENVS.map((name) => process.env[name]?.trim() ?? ""),
+    ].filter(Boolean);
+    const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.length === 0) {
+      throw new Error("Add KIE_AI_API_KEY_2 in the Keys tab.");
+    }
+
+    let lastError: unknown = null;
+    for (const key of uniqueKeys) {
+      try {
+        const image = await generateViaKie(
+          ctx,
+          key,
+          prompt,
+          args.aspectRatio,
+          null,
+        );
+        return { url: image.url, provider: image.provider };
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Kie.ai could not generate that image.");
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Image-to-image — "vary this picture"

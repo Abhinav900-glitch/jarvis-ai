@@ -32,6 +32,176 @@ export function sentProfileId(): string | null {
   return value || null;
 }
 
+export interface SentWhatsAppSendResult {
+  ok: boolean;
+  status: number;
+  messageId: string | null;
+  error: string | null;
+}
+
+/** A compact, non-secret error line from Sent's JSON response. */
+function sentResponseError(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as {
+      error?: { message?: unknown; code?: unknown };
+      message?: unknown;
+    };
+    const message =
+      typeof parsed.error?.message === "string"
+        ? parsed.error.message.trim()
+        : typeof parsed.message === "string"
+          ? parsed.message.trim()
+          : "";
+    if (message) {
+      const code =
+        typeof parsed.error?.code === "string"
+          ? `${parsed.error.code}: `
+          : "";
+      return `${code}${message}`.slice(0, 300);
+    }
+  } catch {
+    // Not JSON; fall through to the raw prefix.
+  }
+  return text.slice(0, 300);
+}
+
+/**
+ * Is the account's WhatsApp channel actually connected?
+ *
+ * Sent accepts a send and reports a blocked message asynchronously, so a 202
+ * is not proof that WhatsApp exists. The OTP provider checks this first and
+ * fails with a setup message instead of telling the user a code was sent when
+ * no channel could deliver it.
+ */
+export async function sentWhatsAppReady(): Promise<{
+  ready: boolean;
+  error: string | null;
+}> {
+  const key = sentApiKey();
+  if (!key) {
+    return { ready: false, error: "SENT_API_KEY is not configured." };
+  }
+  try {
+    const response = await fetch(`${SENT_API_BASE}/v3/me`, {
+      headers: { "x-api-key": key },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      return {
+        ready: false,
+        error: `Sent answered ${response.status} — ${sentResponseError(raw)}`,
+      };
+    }
+    const parsed = JSON.parse(raw) as {
+      data?: { channels?: { whatsapp?: { configured?: unknown } } };
+    };
+    if (parsed.data?.channels?.whatsapp?.configured !== true) {
+      return {
+        ready: false,
+        error:
+          "Sent's WhatsApp channel is not configured. Connect WhatsApp Business in Sent first.",
+      };
+    }
+    return { ready: true, error: null };
+  } catch (err) {
+    return {
+      ready: false,
+      error:
+        err instanceof Error ? err.message : "Could not reach Sent to check WhatsApp.",
+    };
+  }
+}
+
+/**
+ * Send one free-form WhatsApp message through Sent.
+ *
+ * This is shared by the inbound reply path and the WhatsApp OTP provider, so
+ * both use the same validation, profile scoping and error shape. The channel is
+ * pinned to WhatsApp: the caller is either replying inside an open WhatsApp
+ * window or sending a sign-in code to a number that asked for one.
+ */
+export async function sendSentWhatsappText(
+  to: string,
+  text: string,
+): Promise<SentWhatsAppSendResult> {
+  const key = sentApiKey();
+  if (!key) {
+    return {
+      ok: false,
+      status: 0,
+      messageId: null,
+      error: "SENT_API_KEY is not configured.",
+    };
+  }
+
+  const recipient = to.trim();
+  if (!/^\+[1-9]\d{7,14}$/.test(recipient)) {
+    return {
+      ok: false,
+      status: 0,
+      messageId: null,
+      error: "Sent received a number that is not in E.164 format.",
+    };
+  }
+
+  const body = text.trim();
+  if (!body) {
+    return {
+      ok: false,
+      status: 0,
+      messageId: null,
+      error: "Refusing to send an empty reply.",
+    };
+  }
+
+  try {
+    const profileId = sentProfileId();
+    const response = await fetch(`${SENT_API_BASE}/v3/messages`, {
+      method: "POST",
+      headers: {
+        "x-api-key": key,
+        "content-type": "application/json",
+        ...(profileId ? { "x-profile-id": profileId } : {}),
+      },
+      body: JSON.stringify({
+        to: [recipient],
+        text: body,
+        channel: ["whatsapp"],
+      }),
+      signal: AbortSignal.timeout(25_000),
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        messageId: null,
+        error: sentResponseError(raw),
+      };
+    }
+
+    let messageId: string | null = null;
+    try {
+      const parsed = JSON.parse(raw) as {
+        data?: { recipients?: Array<{ message_id?: unknown }> };
+      };
+      const id = parsed.data?.recipients?.[0]?.message_id;
+      if (typeof id === "string") messageId = id;
+    } catch {
+      // A 202 with an unexpected body still means Sent accepted the send.
+    }
+    return { ok: true, status: response.status, messageId, error: null };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      messageId: null,
+      error: err instanceof Error ? err.message : "Could not reach Sent.",
+    };
+  }
+}
+
 /**
  * A stable fallback secret for the webhook URL.
  *

@@ -69,6 +69,9 @@ export function readEnv(names: readonly string[]): string | null {
  * why it is also usable as a variation leg.
  */
 export const KIE_KEY_ENVS = [
+  // The dedicated key is first because the older names may be stale or
+  // revoked; readEnv returns the first non-empty value.
+  "KIE_AI_API_KEY_2",
   "KIE_API_KEY",
   "KIE_AI_API_KEY",
   "KIEAI_API_KEY",
