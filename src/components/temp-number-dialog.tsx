@@ -46,6 +46,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { extractOtp } from "@/lib/otp";
 import type {
   TempNumberAccount,
   TempNumberCountry,
@@ -91,23 +92,6 @@ function formatTime(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-/**
- * The shortest useful code finder.
- *
- * Most OTPs are six digits after a word like "code", "OTP" or "verification".
- * The fallback catches a bare six-digit code, which is the other common shape.
- * It deliberately does not try to parse every provider's format.
- */
-function extractCode(text: string): string | null {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  const keyword = normalized.match(
-    /\b(?:code|otp|pin|passcode|verification)\b[^A-Z0-9]{0,24}([A-Z0-9]{4,8})\b/i,
-  );
-  if (keyword) return keyword[1].toUpperCase();
-  const bare = normalized.match(/\b(\d{6})\b/);
-  return bare ? bare[1] : null;
 }
 
 function statusClass(status: string): string {
@@ -709,7 +693,7 @@ export function TempNumberDialog({
                     </p>
                   ) : inbox?.messages.length ? (
                     inbox.messages.map((message) => {
-                      const code = extractCode(message.body);
+                      const code = extractOtp(message.body);
                       return (
                         <div
                           key={message.id}

@@ -49,6 +49,12 @@ import {
 } from "./chain";
 import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
 import {
+  GHOST_OTP_PROMPT,
+  GHOST_OTP_TOOL,
+  readGhostOtp,
+  wantsGhostOtp,
+} from "./ghostChatTool";
+import {
   isRapidApiGateway,
   rapidApiGatewayHost,
   rapidApiKey,
@@ -1024,22 +1030,28 @@ export const ask = action({
 
     // MCP tools (Canva, any env server, and the user's own registered servers)
     // are available on the non-streaming ask path too, so live mode gets the same
-    // tool access as the streaming chat. Best-effort: if nothing is reachable,
-    // runProviderChain runs without tools, exactly as before.
+    // tool access as the streaming chat. The Ghost line OTP tool is built in and
+    // needs no server, so it is attached only on turns that ask for a code.
+    // Best-effort: if nothing is reachable, the normal reply still runs.
+    const ghostTurn = wantsGhostOtp(args.prompt);
+    let mcp: McpBundle = { specs: [], bindings: new Map(), clients: [] };
     try {
-      const mcp = await buildMcpToolSpecs(
+      mcp = await buildMcpToolSpecs(
         await mcpServersFor(ctx, args.mcpServers),
       );
-      if (mcp.specs.length > 0) {
-        return await runMcpToolRound({
-          turns: [...history, { role: "user", content: userContent }],
-          systemPrompt,
-          plan,
-          mcp,
-        });
-      }
     } catch {
-      // MCP is best-effort — fall through to a plain reply.
+      // MCP is best-effort — fall through with no server tools.
+    }
+    const tools = ghostTurn ? [...mcp.specs, GHOST_OTP_TOOL] : mcp.specs;
+    if (tools.length > 0) {
+      if (ghostTurn) systemPrompt = `${systemPrompt}${GHOST_OTP_PROMPT}`;
+      return await runMcpToolRound({
+        turns: [...history, { role: "user", content: userContent }],
+        systemPrompt,
+        plan,
+        mcp,
+        tools,
+      });
     }
 
     // Chain routing: opt-in, and only when the turn is one a chain can serve.
@@ -1545,9 +1557,12 @@ async function runMcpToolRound(
     systemPrompt: string;
     plan: EnginePlan;
     mcp: McpBundle;
+    /** MCP specs plus any built-in tools attached to this turn. */
+    tools?: ToolSpec[];
   },
 ): Promise<LlmResult> {
   const { turns, systemPrompt, plan, mcp } = input;
+  const tools = input.tools ?? mcp.specs;
   const messages: ChatTurn[] = [...turns];
   let last: LlmResult | null = null;
 
@@ -1558,7 +1573,7 @@ async function runMcpToolRound(
         systemPrompt,
         "All models failed automatically.",
         plan,
-        { tools: mcp.specs },
+        { tools },
       );
       last = result;
       const calls = result.toolCalls ?? [];
@@ -1576,11 +1591,15 @@ async function runMcpToolRound(
         })),
       });
       for (const call of calls) {
+        const content =
+          call.name === GHOST_OTP_TOOL.function.name
+            ? await readGhostOtp(call.arguments)
+            : await dispatchMcpCall(mcp, call);
         messages.push({
           role: "tool",
           tool_call_id: call.id,
           name: call.name,
-          content: await dispatchMcpCall(mcp, call),
+          content,
         });
       }
     }
@@ -1626,6 +1645,7 @@ async function runMcpChatLoop(
     systemPrompt: string;
     plan: EnginePlan;
     mcp: McpBundle;
+    tools?: ToolSpec[];
   },
 ): Promise<LlmResult> {
   const result = await runMcpToolRound(input);
@@ -1759,27 +1779,31 @@ export const askStream = action({
     });
 
     // MCP tools — Canva and any configured server (an aggregator or a custom
-    // Streamable-HTTP endpoint). Only entered when a server is actually
-    // reachable: with none connected this is a no-op and the streaming path
-    // below runs exactly as it always has.
+    // Streamable-HTTP endpoint). The built-in Ghost line OTP tool is attached
+    // only on turns that ask for a code, so ordinary chat keeps its normal path.
+    const ghostTurn = wantsGhostOtp(args.prompt);
+    let mcp: McpBundle = { specs: [], bindings: new Map(), clients: [] };
     try {
-      const mcp = await buildMcpToolSpecs(
+      mcp = await buildMcpToolSpecs(
         await mcpServersFor(ctx, args.mcpServers),
       );
-      if (mcp.specs.length > 0) {
-        return await runMcpChatLoop(ctx, args.messageId, {
-          turns: [
-            ...history,
-            { role: "user", content: buildUserContent(prompt, args.imageUrls) },
-          ],
-          systemPrompt,
-          plan,
-          mcp,
-        });
-      }
     } catch {
       // MCP is best-effort — a flaky or unreachable server must never block a
-      // reply, so we fall through to the normal streaming path.
+      // reply, so we fall through with no server tools.
+    }
+    const tools = ghostTurn ? [...mcp.specs, GHOST_OTP_TOOL] : mcp.specs;
+    if (tools.length > 0) {
+      if (ghostTurn) systemPrompt = `${systemPrompt}${GHOST_OTP_PROMPT}`;
+      return await runMcpChatLoop(ctx, args.messageId, {
+        turns: [
+          ...history,
+          { role: "user", content: buildUserContent(prompt, args.imageUrls) },
+        ],
+        systemPrompt,
+        plan,
+        mcp,
+        tools,
+      });
     }
 
     // Chain routing. Deliberately not streamed stage by stage: the value of a
