@@ -363,6 +363,25 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 8192,
     timeoutMs: 90_000,
   },
+  // LM Studio / any OpenAI-compatible local server. The real surface is the
+  // base URL the user sets — the key is optional in LM Studio's default setup,
+  // so a deployment that only stores `LM_STUDIO_BASE_URL` is still reachable.
+  // The endpoint is OpenAI-shaped, so it shares the same request builder and
+  // response parser as every other provider in this table.
+  {
+    id: "lm-studio",
+    label: "LM Studio / local model",
+    url: "http://localhost:1234/v1/chat/completions",
+    keyEnv: ["LM_STUDIO_API_KEY"],
+    missing:
+      "LM_STUDIO_BASE_URL or LM_STUDIO_API_KEY not configured",
+    plugins: HTTP_PROVIDER,
+    imageUrlAsString: false,
+    textOnly: false,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    timeoutMs: 60_000,
+  },
 ];
 
 export interface EngineSpec {

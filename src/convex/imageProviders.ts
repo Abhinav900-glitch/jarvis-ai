@@ -77,6 +77,17 @@ export const KIE_KEY_ENVS = [
   "KIEAI_API_KEY",
 ] as const;
 
+/**
+ * LM Studio / any OpenAI-compatible local server.
+ *
+ * `LM_STUDIO_API_KEY` is the typical label for a key that mostly gates the UI,
+ * but the app keeps the real connection through `LM_STUDIO_BASE_URL` so the
+ * key is optional and the base URL is the real surface. Added here so the
+ * engine registry and the image-provider status query both read from one list
+ * when a local server is wired in later.
+ */
+export const LM_STUDIO_KEY_ENVS = ["LM_STUDIO_API_KEY"] as const;
+
 export interface ImageProviderStatus {
   /** Matches the `provider` field the generation chain returns. */
   id: string;
@@ -112,6 +123,14 @@ export function imageProviderStatuses(): ImageProviderStatus[] {
       id: "kie",
       label: "Kie.ai Nano Banana",
       available: Boolean(readEnv(KIE_KEY_ENVS)),
+    },
+    {
+      id: "lm-studio",
+      label: "LM Studio / local OpenAI-compatible",
+      available: Boolean(
+        process.env.LM_STUDIO_BASE_URL?.trim() ||
+          readEnv(LM_STUDIO_KEY_ENVS),
+      ),
     },
     {
       id: "meta",

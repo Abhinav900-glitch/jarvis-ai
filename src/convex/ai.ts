@@ -33,6 +33,7 @@ import {
   type ProviderSpec,
   type RankedEngine,
 } from "./engines";
+
 import {
   bestAvailableText,
   CHAIN_SYSTEM_PROMPT,
@@ -51,9 +52,89 @@ import { McpClient, mcpToolToSpec, type McpServerConfig } from "../lib/mcp";
 import {
   GHOST_OTP_PROMPT,
   GHOST_OTP_TOOL,
+  lmStudioBaseUrl,
+  lmStudioWiredIn,
   readGhostOtp,
   wantsGhostOtp,
-} from "./ghostChatTool";
+} from "./chatTools";
+import {
+  LM_STUDIO_KEY_ENVS,
+  readEnv,
+} from "./imageProviders";
+
+const LM_STUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1/chat/completions";
+
+export function lmStudioProviderUrl(): string | null {
+  return process.env.LM_STUDIO_BASE_URL?.trim() ?? lmStudioBaseUrl();
+}
+
+export function lmStudioProviderSpec(): import("./engines").ProviderSpec {
+  return {
+    id: "lm-studio",
+    label: "LM Studio / local model",
+    url: lmStudioProviderUrl()!,
+    keyEnv: [...LM_STUDIO_KEY_ENVS],
+    missing:
+      "LM_STUDIO_BASE_URL not set and LM_STUDIO_BASE_URL is not available",
+    plugins: [],
+    imageUrlAsString: false,
+    textOnly: false,
+    reasoningEffort: false,
+    maxTokens: 8192,
+    timeoutMs: 60_000,
+  };
+}
+
+/**
+ * Blend an LM Studio / local provider into a ranked engine plan.
+ *
+ * The local server is a single endpoint, so it is placed at the front of the
+ * ladder and the rest of the plan keeps its order. This is only called when the
+ * provider is already wired in, so it never stamps a providers-only placeholder
+ * into a plan.
+ */
+export function withLmStudioProvider(
+  plan: import("./engines").EnginePlan,
+  provider: import("./engines").ProviderSpec,
+): import("./engines").EnginePlan {
+  if (!lmStudioWiredIn()) return plan;
+  const localKey = readEnv(LM_STUDIO_KEY_ENVS);
+  const localAvailable =
+    Boolean(provider.url) && (Boolean(localKey) || lmStudioWiredIn());
+  if (!localAvailable) return plan;
+
+  const localEngine: import("./engines").EngineSpec = {
+    id: "lm-studio/local",
+    provider: provider.id,
+    modelId: "local",
+    label: "Local model",
+    vision: false,
+    reasoning: false,
+    quality: 0.8,
+    speed: 0.9,
+    context: 128_000,
+    bestFor: "your own model, running nearby",
+  };
+
+  const ranked: import("./engines").RankedEngine[] = [
+    {
+      available: true,
+      engine: localEngine,
+      score: 0,
+      because: "the local model is wired in",
+    },
+    ...plan.ranked,
+  ];
+
+  return {
+    ...plan,
+    ranked,
+    reason:
+      plan.reason
+        ? `${plan.reason} · LM Studio / local model`
+        : "LM Studio / local model first, then the rest of the ladder",
+  };
+}
 import {
   isRapidApiGateway,
   rapidApiGatewayHost,
@@ -1054,6 +1135,23 @@ export const ask = action({
       });
     }
 
+    // If LM Studio is wired in, blend its provider into the plan so a local
+    // OpenAI-compatible server can be chosen for this turn like any other
+    // provider. The local server is one endpoint, so it takes the first spot in
+    // the plan and the rest of the ladder stays intact.
+    const planForRouting = lmStudioWiredIn()
+      ? await routingFor(ctx, userId, {
+          task,
+          hasImages,
+          prompt: args.prompt,
+          excludeEngineId: undefined,
+        })
+      : plan;
+    const effectivePlan =
+      lmStudioWiredIn() && lmStudioProviderUrl()
+        ? withLmStudioProvider(planForRouting, lmStudioProviderSpec())
+        : planForRouting;
+
     // Chain routing: opt-in, and only when the turn is one a chain can serve.
     // A failure at every stage falls through to the single-engine reply below,
     // so switching it on can cost time but never the answer.
@@ -1086,7 +1184,7 @@ export const ask = action({
       [...history, { role: "user", content: userContent }],
       systemPrompt,
       "All models failed automatically.",
-      plan,
+      effectivePlan,
     );
   },
 });
