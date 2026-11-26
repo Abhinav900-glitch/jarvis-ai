@@ -46,6 +46,7 @@ import {
   Search,
   Send,
   Phone,
+  Smartphone,
   Puzzle,
   AlertTriangle,
   Settings,
@@ -101,6 +102,7 @@ import { MarkdownMessage } from "@/components/markdown-message";
 import { OfflineTranscriptDialog } from "@/components/offline-transcript-dialog";
 import { ManyChatPanel } from "@/components/manychat-panel";
 import { WhatsAppDialog } from "@/components/whatsapp-dialog";
+import { TempNumberDialog } from "@/components/temp-number-dialog";
 import { DesmosCalculator } from "@/components/desmos-calculator";
 import { autoGraphFor, type AutoGraph } from "@/lib/auto-graph";
 import { looksLikeMathOrMarkdown } from "@/lib/markdown-normalize";
@@ -1602,6 +1604,7 @@ export default function Dashboard() {
   const [showStudio, setShowStudio] = useState(false);
   const [showManychat, setShowManychat] = useState(false);
   const [showWhatsapp, setShowWhatsapp] = useState(false);
+  const [showTempNumber, setShowTempNumber] = useState(false);
   /** An image handed to the studio by the viewer, used as its starting frame. */
   const [studioSeed, setStudioSeed] = useState<{
     name: string;
@@ -5959,6 +5962,14 @@ export default function Dashboard() {
         run: () => setShowWhatsapp(true),
       },
       {
+        id: "temp-number",
+        label: "Ghost line — temporary numbers & SMS",
+        group: "Chat",
+        keywords: "phone number sms otp verification burner virtual temp",
+        icon: <Smartphone className="size-4" />,
+        run: () => setShowTempNumber(true),
+      },
+      {
         id: "manychat",
         label: "ManyChat — message a subscriber",
         group: "Chat",
@@ -6404,6 +6415,17 @@ export default function Dashboard() {
                 <Phone className="size-4" />
               </Button>
 
+              {/* Ghost line: a temporary number with a live SMS/OTP inbox. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="hidden sm:inline-flex"
+                title="Ghost line — temporary numbers & SMS"
+                onClick={() => setShowTempNumber(true)}
+              >
+                <Smartphone className="size-4" />
+              </Button>
+
               {/* Find in this conversation — the page's own ⌘F would only
                   ever see ciphertext. */}
               <Button
@@ -6586,6 +6608,10 @@ export default function Dashboard() {
                   <DropdownMenuItem onClick={() => setShowWhatsapp(true)}>
                     <Phone className="size-4" />
                     WhatsApp mode
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowTempNumber(true)}>
+                    <Smartphone className="size-4" />
+                    Ghost line — temp numbers
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setShowManychat(true)}>
                     <Send className="size-4" />
@@ -9857,6 +9883,10 @@ export default function Dashboard() {
       />
       <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
       <WhatsAppDialog open={showWhatsapp} onOpenChange={setShowWhatsapp} />
+      <TempNumberDialog
+        open={showTempNumber}
+        onOpenChange={setShowTempNumber}
+      />
       <ManyChatPanel
         open={showManychat}
         onOpenChange={setShowManychat}
