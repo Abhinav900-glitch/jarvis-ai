@@ -162,9 +162,9 @@ import { playAckChime, stopThinkingHum } from "@/lib/audio";
 import { getTranslateLanguage, TRANSLATE_LANGUAGES } from "@/lib/languages";
 import {
   ELEVENLABS_VOICES,
-  SARVAM_SPEAKERS,
   VOICE_PREVIEW_TEXT,
   describeVoice,
+  SARVAM_SPEAKERS,
   loadVoicePreference,
   saveVoicePreference,
   type VoicePreference,
@@ -1450,12 +1450,21 @@ export default function Dashboard() {
   const [modeAnalyze, setModeAnalyze] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>([]);
   const [showSounds, setShowSounds] = useState(false);
-  const [showVoices, setShowVoices] = useState(false);
-  const [showTranslate, setShowTranslate] = useState(false);
   // Voice + translation choices, persisted so they survive a reload.
   const [voicePref, setVoicePref] = useState<VoicePreference>(
     loadVoicePreference,
   );
+  // Mirror of voice pref for the live HUD snippet; only provider/voice/pace.
+  const [liveVoicePref, setLiveVoicePref] = useState<VoicePreference>(loadVoicePreference);
+  const [showVoices, setShowVoices] = useState(false);
+  const [showTranslate, setShowTranslate] = useState(true);
+  const [translateTarget, setTranslateTarget] = useState(() => {
+    try {
+      return localStorage.getItem("jarvis-translate-target") ?? "en-IN";
+    } catch {
+      return "en-IN";
+    }
+  });
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   // Per-message translations, shown beneath the original reply.
   const [translations, setTranslations] = useState<
@@ -1516,17 +1525,6 @@ export default function Dashboard() {
 
   // Live-translation target, seeded once. It lives down here because the default
   // depends on the selected country's language.
-  const [translateTarget, setTranslateTarget] = useState<string>(() => {
-    try {
-      return (
-        localStorage.getItem("jarvis-translate-target") ||
-        getTranslateLanguage(getCountry(countryCode).langTag)?.code ||
-        "hi-IN"
-      );
-    } catch {
-      return "hi-IN";
-    }
-  });
 
   const changeCountry = (code: string) => {
     setCountryCode(code);
@@ -2531,7 +2529,12 @@ export default function Dashboard() {
   // above, so there is nothing to hydrate after mount.
   useEffect(() => {
     saveVoicePreference(voicePref);
-  }, [voicePref]);
+    try {
+      localStorage.setItem("jarvis-translate-target", translateTarget);
+    } catch {
+      /* ignore */
+    }
+  }, [voicePref, translateTarget]);
 
   useEffect(() => {
     try {
@@ -2621,6 +2624,7 @@ export default function Dashboard() {
   // provider is configured — no key material, so it is safe to send to the
   // browser and needs no auth.
   const voiceOptions = useQuery(api.config.voiceOptions, {});
+
   const live = useLiveMode(
     async (audio: Blob, country: string) => {
       const lang = getCountry(country).language;
