@@ -101,6 +101,19 @@ export const FREE_META_MODELS: PluginEntry[] = [
   },
 ];
 
+// Z.ai ships the GLM-based chat models as plugins: present in the list,
+// absent from chat until the user switches one on. The GLM-5.3-Flash model
+// has not yet returned a real visible answer from this deployment's key, so it
+// is not registered as an always-on engine — the same policy as every other
+// "thinking" model here.
+export const ZAI_PLUGINS: ProviderSpec["plugins"] = [
+  {
+    slug: "zai-glm-5.3-flash",
+    title: "GLM-5.3 Flash",
+    when: "Strong long-context reasoning from Z.ai's GLM line; switch on for hard steps.",
+    enabled: false,
+  },
+];
 export const PROVIDERS: ProviderSpec[] = [
   {
     id: "mistral",
@@ -271,6 +284,25 @@ export const PROVIDERS: ProviderSpec[] = [
     maxTokens: 8192,
     timeoutMs: 90_000,
   },
+  // Z.ai (z.ai / chat.z.ai). OpenAI-compatible, bearer key. Free tier
+  // provides the GLM-based chat models; the GLM-5.3-Flash model answered 200
+  // but returned no visible content within the short probe budget, so it is
+  // installed here as a gated engine (off by default) pending a real visible
+  // answer — the same policy as every other "thinking" model in this table.
+  {
+    id: "zai",
+    label: "Z.ai (z.ai)",
+    url: "https://chat.z.ai/v1/chat/completions",
+    keyEnv: ["ZAI_API_KEY", "ZAI_KEY"],
+    missing: "ZAI_API_KEY not configured",
+    plugins: ZAI_PLUGINS,
+    imageUrlAsString: false,
+    textOnly: false,
+    reasoningEffort: true,
+    maxTokens: 8192,
+    timeoutMs: 90_000,
+  },
+
   // Aion Labs — OpenAI-compatible, bearer key, text only. Its models are a
   // GLM-based multi-model system (3.0/3.5) and DeepSeek variants (2.0/3.0 Mini),
   // with a dedicated roleplay fine-tune. No `reasoning_effort` knob is sent:
@@ -1276,6 +1308,25 @@ export const ENGINES: EngineSpec[] = [
     speed: 0.95,
     context: 16_384,
     bestFor: "roleplay and character voice",
+  },
+
+  // --- Z.ai (z.ai) ---------------------------------------------------------
+  // GLM-5.3-Flash is installed as a gated engine only: the same model answered
+  // 200 from the Gonka broker probe but returned no visible content within the
+  // short token budget, so it is not routed in chat until a real answer is seen.
+  // Registered here as the always-on first-attempt engine only after that probe
+  // succeeds on this deployment's own key.
+  {
+    id: "zai/glm-5.3-flash",
+    provider: "zai",
+    modelId: "zai-org/GLM-5.3-Flash",
+    label: "GLM-5.3 Flash",
+    vision: false,
+    reasoning: true,
+    quality: 0.9,
+    speed: 0.7,
+    context: 262_144,
+    bestFor: "strong long-context reasoning from Z.ai's GLM line",
   },
 
   // --- Requesty -------------------------------------------------------------
